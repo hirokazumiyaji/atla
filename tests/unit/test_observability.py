@@ -53,6 +53,9 @@ def test_extract_sql_meta_operations() -> None:
     assert extract_sql_meta("UPDATE users SET name = $1") == ("UPDATE", "users")
     assert extract_sql_meta("DELETE FROM `orders` WHERE id = %s") == ("DELETE", "orders")
     assert extract_sql_meta("BEGIN") == ("BEGIN", None)
+    assert extract_sql_meta(
+        "WITH cte AS (SELECT id FROM posts) SELECT id FROM users"
+    ) == ("SELECT", None)
 
 
 @pytest.mark.asyncio

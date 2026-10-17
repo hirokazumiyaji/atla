@@ -41,7 +41,10 @@ def extract_sql_meta(sql: str) -> tuple[str, str | None]:
     cleaned = _COMMENT.sub(" ", sql)
     cleaned = _LEADING_WS.sub("", cleaned)
     upper = cleaned[:16].upper()
-    if upper.startswith("SELECT") or upper.startswith("WITH"):
+    if upper.startswith("WITH"):
+        # CTEs embed their own FROM clauses; avoid attributing the wrong table.
+        return "SELECT", None
+    if upper.startswith("SELECT"):
         match = _FROM.search(cleaned)
         return "SELECT", _strip_ident(match.group("table")) if match else None
     if upper.startswith("INSERT"):
