@@ -40,14 +40,19 @@ class FakeAdapter:
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         self.calls.append(("fetch_all", sql, list(params)))
-        rows = self.rows
-        marker = " LIMIT $"
-        if marker in sql:
-            # `$N` is 1-based; take the bind that corresponds to LIMIT.
-            index = int(sql.split(marker, 1)[1].split(None, 1)[0]) - 1
+        rows = list(self.rows)
+        offset = 0
+        if " OFFSET $" in sql:
+            index = int(sql.split(" OFFSET $", 1)[1].split(None, 1)[0]) - 1
+            offset = int(params[index])
+        elif " OFFSET ?" in sql or " OFFSET %s" in sql:
+            offset = int(params[-1])
+        if offset:
+            rows = rows[offset:]
+        if " LIMIT $" in sql:
+            index = int(sql.split(" LIMIT $", 1)[1].split(None, 1)[0]) - 1
             rows = rows[: int(params[index])]
         elif " LIMIT ?" in sql or " LIMIT %s" in sql:
-            # LIMIT is the first pagination bind after WHERE params: last int before OFFSET.
             limit_value = params[-2] if " OFFSET " in sql else params[-1]
             rows = rows[: int(limit_value)]
         return rows
@@ -137,6 +142,28 @@ async def test_first_and_one_preserve_existing_limit() -> None:
     last_fetch = next(call for call in reversed(adapter.calls) if call[0] == "fetch_all")
     assert "LIMIT $1" in last_fetch[1]
     assert last_fetch[2] == [1]
+
+
+@pytest.mark.asyncio
+async def test_first_and_one_preserve_existing_offset() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [
+        (1, "a@example.com"),
+        (2, "b@example.com"),
+        (3, "c@example.com"),
+        (4, "d@example.com"),
+        (5, "e@example.com"),
+        (6, "f@example.com"),
+    ]
+    first = await UserQuery(adapter).offset(5).first()
+    assert first == UserRecord(6, "f@example.com")
+    last_fetch = next(call for call in reversed(adapter.calls) if call[0] == "fetch_all")
+    assert "OFFSET $2" in last_fetch[1] or "OFFSET $1" in last_fetch[1]
+    assert 5 in last_fetch[2]
+    assert "LIMIT $" in last_fetch[1]
+
+    one = await UserQuery(adapter).offset(5).limit(1).one()
+    assert one == UserRecord(6, "f@example.com")
 
 
 @pytest.mark.asyncio
