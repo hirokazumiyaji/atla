@@ -16,11 +16,44 @@ jobs:
   quality:
     name: Lint, typecheck, and test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: atla
+          POSTGRES_PASSWORD: atla
+          POSTGRES_DB: atla
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atla -d atla"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: atla
+          MYSQL_DATABASE: atla
+          MYSQL_USER: atla
+          MYSQL_PASSWORD: atla
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uatla -patla"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      ATLA_TEST_POSTGRES_DSN: postgresql://atla:atla@127.0.0.1:5432/atla
+      ATLA_TEST_MYSQL_DSN: mysql://atla:atla@127.0.0.1:3306/atla
 
     steps:
       - name: Checkout

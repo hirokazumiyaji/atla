@@ -1,8 +1,12 @@
 """SQLite end-to-end integration using aiosqlite + generated client."""
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -35,7 +39,8 @@ SCHEMA = """
 
 @pytest.mark.asyncio
 async def test_sqlite_insert_many_upsert_select(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    load_appdb: Callable[[Path], Any],
 ) -> None:
     schema_path = tmp_path / "schema.json"
     schema_path.write_text(SCHEMA, encoding="utf-8")
@@ -54,8 +59,9 @@ async def test_sqlite_insert_many_upsert_select(
         )
         == 0
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    from appdb import AtlaClient, User  # type: ignore[import-not-found]
+    appdb = load_appdb(tmp_path)
+    AtlaClient = appdb.AtlaClient
+    User = appdb.User
 
     db_path = tmp_path / "test.db"
     conn = await aiosqlite.connect(db_path)

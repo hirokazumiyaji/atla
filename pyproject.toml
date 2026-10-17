@@ -34,8 +34,15 @@ atlagen = { workspace = true }
 target-version = "py312"
 line-length = 100
 src = ["packages/atla/src", "packages/atlagen/src", "tests"]
-extend-exclude = ["docs", "README.md", "tests/benchmarks"]
-include = ["packages/**/*.py", "tests/unit/**/*.py", "tests/typecheck/**/*.py", "tests/fixtures/**/*.py"]
+extend-exclude = ["docs", "README.md"]
+include = [
+    "packages/**/*.py",
+    "tests/unit/**/*.py",
+    "tests/typecheck/**/*.py",
+    "tests/integration/**/*.py",
+    "tests/benchmarks/**/*.py",
+    "tests/fixtures/**/*.py",
+]
 
 [tool.ruff.lint]
 select = [
@@ -58,8 +65,15 @@ indent-style = "space"
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["packages/atla/src", "packages/atlagen/src", "tests/unit", "tests/typecheck"]
-exclude = ["**/__pycache__", ".venv", "tests/benchmarks", "tests/integration"]
+include = [
+    "packages/atla/src",
+    "packages/atlagen/src",
+    "tests/unit",
+    "tests/typecheck",
+    "tests/integration",
+    "tests/benchmarks",
+]
+exclude = ["**/__pycache__", ".venv"]
 venvPath = "."
 venv = ".venv"
 
@@ -72,6 +86,8 @@ files = [
     "packages/atlagen/src",
     "tests/unit",
     "tests/typecheck",
+    "tests/integration",
+    "tests/benchmarks",
 ]
 
 [tool.pytest.ini_options]

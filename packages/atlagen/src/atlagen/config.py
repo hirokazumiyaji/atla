@@ -39,7 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name, help_text in (
         ("generate", "Generate atla client modules from an Atlas schema"),
-        ("check", "Fail if generated modules are out of date with the schema"),
+        (
+            "check",
+            "Fail if generated modules drift, are missing, or the out dir has unexpected files "
+            "(hand-written helpers under --out are not allowed)",
+        ),
     ):
         cmd = sub.add_parser(name, help=help_text)
         cmd.add_argument(

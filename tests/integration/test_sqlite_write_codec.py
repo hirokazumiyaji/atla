@@ -1,3 +1,4 @@
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 """SQLite round-trip for UUID / Decimal / datetime / JSON / StrEnum bind encoding."""
 
 from __future__ import annotations

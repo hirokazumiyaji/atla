@@ -45,8 +45,7 @@ class UserQuery(BaseSelectQuery[UserRecord]):
 class UserRepository:
     __slots__ = ("_adapter",)
     _GET_BY_PK_SQL = (
-        'SELECT "users"."id", "users"."email" FROM "users" '
-        'WHERE "users"."id" = ? LIMIT 1'
+        'SELECT "users"."id", "users"."email" FROM "users" WHERE "users"."id" = ? LIMIT 1'
     )
 
     def __init__(self, adapter: AiosqliteAdapter) -> None:
@@ -91,7 +90,7 @@ async def run(rows: int, lookups: int, repeats: int) -> None:
         keys = list(range(0, lookups))
 
         async def raw() -> object:
-            out = []
+            out: list[Any] = []
             for key in keys:
                 cursor = await conn.execute(
                     "SELECT id, email FROM users WHERE id = ? LIMIT 1", (key,)
