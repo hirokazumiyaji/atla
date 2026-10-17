@@ -53,9 +53,11 @@ class TableRef[RecordT]:
 
     def map_row_optional(self, row: Sequence[Any]) -> RecordT | None:
         pk_indexes = type(self)._PK_INDEXES
-        if pk_indexes:
-            # LEFT JOIN absent rows are NULL across every PK column.
-            if all(row[index] is None for index in pk_indexes):
+        # Single-column PK: O(1) absence check (non-null by definition on most engines).
+        # Composite / unknown keys: scan the whole slice so SQLite NULL PK rows and
+        # custom descriptors without key metadata stay correct.
+        if len(pk_indexes) == 1:
+            if row[pk_indexes[0]] is None:
                 return None
         elif all(value is None for value in row):
             return None
