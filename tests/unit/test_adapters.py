@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -316,4 +317,222 @@ async def test_asyncmy_pool_blocks_outer_ops_during_transaction() -> None:
     async with adapter.transaction() as tx:
         with pytest.raises(RuntimeError, match="active transaction"):
             await adapter.fetch_all("SELECT 1")
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_allows_concurrent_tasks() -> None:
+    """Sharing one pool adapter across tasks must not raise RuntimeError."""
+
+    class CountingPool:
+        def __init__(self) -> None:
+            self.in_use = 0
+            self.max_in_use = 0
+            self.lock = asyncio.Lock()
+
+        def acquire(self) -> CountingAcquireCM:
+            return CountingAcquireCM(self)
+
+    class CountingAcquireCM:
+        def __init__(self, pool: CountingPool) -> None:
+            self.pool = pool
+
+        async def __aenter__(self) -> FakeAsyncpgConnection:
+            async with self.pool.lock:
+                self.pool.in_use += 1
+                self.pool.max_in_use = max(self.pool.max_in_use, self.pool.in_use)
+            return FakeAsyncpgConnection()
+
+        async def __aexit__(self, *args: object) -> None:
+            async with self.pool.lock:
+                self.pool.in_use -= 1
+
+    pool = CountingPool()
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async def run_query() -> Sequence[Sequence[Any]]:
+        return await adapter.fetch_all("SELECT 1")
+
+    async def run_tx() -> None:
+        async with adapter.transaction() as tx:
+            await tx.fetch_all("SELECT 1")
+            await asyncio.sleep(0.01)
+
+    results = await asyncio.gather(
+        *[run_query() for _ in range(20)],
+        *[run_tx() for _ in range(20)],
+    )
+    assert all(r == [(1, "alice")] for r in results[:20])
+    assert pool.max_in_use > 1
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_pool_allows_concurrent_tasks() -> None:
+    """Sharing one asyncmy pool adapter across tasks must not raise RuntimeError."""
+
+    class CountingAsyncmyPool:
+        def __init__(self) -> None:
+            self._in_use = 0
+            self.max_in_use = 0
+            self._lock = asyncio.Lock()
+
+        async def acquire(self) -> FakeAsyncmyConnection:
+            async with self._lock:
+                self._in_use += 1
+                self.max_in_use = max(self.max_in_use, self._in_use)
+            return FakeAsyncmyConnection()
+
+        async def release(self, conn: FakeAsyncmyConnection) -> None:
+            async with self._lock:
+                self._in_use -= 1
+
+    pool = CountingAsyncmyPool()
+    adapter = AsyncmyAdapter(pool, dialect=MySQLDialect())
+
+    async def run_query() -> Sequence[Sequence[Any]]:
+        return await adapter.fetch_all("SELECT 1")
+
+    async def run_tx() -> None:
+        async with adapter.transaction() as tx:
+            await tx.fetch_all("SELECT 1")
+            await asyncio.sleep(0.01)
+
+    results = await asyncio.gather(
+        *[run_query() for _ in range(20)],
+        *[run_tx() for _ in range(20)],
+    )
+    assert all(r == [(1, "alice")] for r in results[:20])
+    assert pool.max_in_use > 1
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_peer_task_not_blocked_by_transaction() -> None:
+    """A peer task must keep using the pool while another task holds a transaction."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+    peer_done = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def holder() -> None:
+        async with adapter.transaction() as tx:
+            gate.set()
+            await peer_done.wait()
+            assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+    async def peer() -> None:
+        await gate.wait()
+        assert await adapter.fetch_all("SELECT 1") == [(1, "alice")]
+        peer_done.set()
+
+    await asyncio.gather(holder(), peer())
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_child_task_can_use_outer_adapter() -> None:
+    """Child tasks must not inherit the parent's checkout restriction."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await adapter.fetch_all("SELECT 1")
+
+        child_result: list[Sequence[Sequence[Any]]] = []
+
+        async def child() -> None:
+            child_result.append(await adapter.fetch_all("SELECT 1"))
+
+        await asyncio.create_task(child())
+        assert child_result == [[(1, "alice")]]
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_serializes_concurrent_writes(tmp_path: Path) -> None:
+    db_path = tmp_path / "concurrent.db"
+    conn = await aiosqlite.connect(db_path)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+
+        async def insert_one(i: int) -> None:
+            await adapter.execute("INSERT INTO t(name) VALUES (?)", (f"n{i}",))
+
+        await asyncio.gather(*[insert_one(i) for i in range(30)])
+        assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 30
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_blocks_outer_ops_during_transaction() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        async with adapter.transaction() as tx:
+            await tx.execute("INSERT INTO t(name) VALUES (?)", ("alice",))
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.fetch_all("SELECT 1")
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.execute("INSERT INTO t(name) VALUES (?)", ("bob",))
+        assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 1
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_peer_task_rejected_during_transaction() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        gate = asyncio.Event()
+        peer_done = asyncio.Event()
+
+        async def holder() -> None:
+            async with adapter.transaction() as tx:
+                await tx.execute("INSERT INTO t(name) VALUES (?)", ("alice",))
+                gate.set()
+                await peer_done.wait()
+
+        async def peer() -> None:
+            await gate.wait()
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.execute("INSERT INTO t(name) VALUES (?)", ("bob",))
+            peer_done.set()
+
+        await asyncio.gather(holder(), peer())
+        assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 1
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_checkout_is_per_adapter_instance() -> None:
+    """Checkout ownership lives on the adapter, not in a shared registry."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    first = AsyncpgAdapter(pool, dialect=PostgresDialect())
+    second = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with first.transaction():
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await first.fetch_all("SELECT 1")
+        assert await second.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_blocks_nested_outer_transaction() -> None:
+    """Outer ``transaction()`` must not re-enter while a checkout is held."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            async with adapter.transaction():
+                pass
         assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
