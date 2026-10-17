@@ -18,8 +18,9 @@ class AiosqliteAdapter:
     while a transaction is active raise ``RuntimeError``; use the yielded
     adapter to nest via SAVEPOINT.
 
-    A single connection is serialized with an ``asyncio.Lock`` so concurrent
-    tasks sharing the adapter cannot race on configuration or commits.
+    A single connection is serialized with an ``asyncio.Lock``. Outer-adapter
+    operations check ``_tx_active`` under that lock so peer tasks cannot join
+    an in-flight transaction.
     """
 
     __slots__ = (
@@ -62,9 +63,9 @@ class AiosqliteAdapter:
     def _ensure_not_in_active_transaction(self) -> None:
         """Reject ops on the outer adapter while a transaction is open.
 
-        The yielded (pinned) adapter has ``_depth > 0`` and is the only
-        allowed entry point for the connection during that window, so peer
-        tasks cannot accidentally join another task's transaction.
+        Must be called while holding ``self._lock``. The yielded (pinned)
+        adapter has ``_depth > 0`` and is the only allowed entry point for the
+        connection during that window.
         """
         if self._depth == 0 and self._tx_active:
             msg = (
@@ -73,24 +74,22 @@ class AiosqliteAdapter:
             )
             raise RuntimeError(msg)
 
-    async def _ensure_configured(self) -> None:
+    async def _ensure_configured_unlocked(self) -> None:
+        """Apply one-time PRAGMA setup. Caller must hold ``self._lock``."""
         if not self._needs_configure:
             return
-        async with self._lock:
-            if not self._needs_configure:
-                return
-            if self._foreign_keys:
-                await self._conn.execute("PRAGMA foreign_keys = ON")
-            self._needs_configure = False
+        if self._foreign_keys:
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+        self._needs_configure = False
 
     async def _commit_if_autocommit(self) -> None:
         if self._depth == 0 and not self._tx_active:
             await self._conn.commit()
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
-        self._ensure_not_in_active_transaction()
-        await self._ensure_configured()
         async with self._lock:
+            self._ensure_not_in_active_transaction()
+            await self._ensure_configured_unlocked()
             cursor = await self._conn.execute(sql, tuple(params))
             try:
                 rows: Sequence[Sequence[Any]] = await cursor.fetchall()
@@ -99,9 +98,9 @@ class AiosqliteAdapter:
                 await cursor.close()
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
-        self._ensure_not_in_active_transaction()
-        await self._ensure_configured()
         async with self._lock:
+            self._ensure_not_in_active_transaction()
+            await self._ensure_configured_unlocked()
             cursor = await self._conn.execute(sql, tuple(params))
             try:
                 row: Sequence[Any] | None = await cursor.fetchone()
@@ -116,9 +115,9 @@ class AiosqliteAdapter:
         return row[0]
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        self._ensure_not_in_active_transaction()
-        await self._ensure_configured()
         async with self._lock:
+            self._ensure_not_in_active_transaction()
+            await self._ensure_configured_unlocked()
             cursor = await self._conn.execute(sql, tuple(params))
             try:
                 rowcount = int(cursor.rowcount)
@@ -128,9 +127,9 @@ class AiosqliteAdapter:
         return rowcount
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
-        self._ensure_not_in_active_transaction()
-        await self._ensure_configured()
         async with self._lock:
+            self._ensure_not_in_active_transaction()
+            await self._ensure_configured_unlocked()
             await self._conn.executemany(sql, [tuple(params) for params in params_seq])
             await self._commit_if_autocommit()
 
@@ -140,9 +139,9 @@ class AiosqliteAdapter:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AiosqliteAdapter]:
-        await self._ensure_configured()
         if self._depth == 0:
             async with self._lock:
+                await self._ensure_configured_unlocked()
                 if self._tx_active:
                     msg = (
                         "transaction already active on this adapter; "
@@ -167,13 +166,17 @@ class AiosqliteAdapter:
                 yield pinned
             except BaseException:
                 async with self._lock:
-                    await self._exec_control("ROLLBACK")
+                    try:
+                        await self._exec_control("ROLLBACK")
+                    finally:
+                        self._tx_active = False
                 raise
             else:
                 async with self._lock:
-                    await self._exec_control("COMMIT")
-            finally:
-                self._tx_active = False
+                    try:
+                        await self._exec_control("COMMIT")
+                    finally:
+                        self._tx_active = False
             return
 
         savepoint = f"atla_sp_{self._depth}"
