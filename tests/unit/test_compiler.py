@@ -10,6 +10,7 @@ from atla import (
     Dialect,
     MySQLDialect,
     PostgresDialect,
+    SQLCompiler,
     SQLiteDialect,
     TiDBDialect,
     and_,
@@ -134,3 +135,18 @@ def test_raw_sql_rebinding_on_sqlite_keeps_qmark() -> None:
     sql, params = compile_expr(SQLiteDialect(), expr)
     assert sql == '("users"."age" = ? AND x = ?)'
     assert params == [1, 2]
+
+
+def test_raw_sql_placeholder_count_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="placeholder"):
+        compile_expr(SQLiteDialect(), raw_sql("x = ? AND y = ?", 1))
+    with pytest.raises(ValueError, match="placeholder"):
+        compile_expr(MySQLDialect(), raw_sql("x = %s AND y = %s", 1))
+
+
+def test_mysql_nulls_rejection_does_not_mutate_compiler() -> None:
+    created = Column[object]("users", "created_at")
+    compiler = SQLCompiler(MySQLDialect())
+    with pytest.raises(ValueError, match="does not support NULLS"):
+        compiler.visit_order_by(created.desc(nulls="LAST"))
+    assert compiler.build() == ("", [])

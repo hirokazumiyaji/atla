@@ -70,17 +70,16 @@ class SQLCompiler:
         raise TypeError(msg)
 
     def visit_order_by(self, clause: OrderByClause) -> None:
-        self.visit(clause.expr)
-        self.write(f" {clause.direction}")
-        if clause.nulls is None:
-            return
-        if self.dialect.name in {"mysql", "tidb"}:
+        if clause.nulls is not None and self.dialect.name in {"mysql", "tidb"}:
             msg = (
                 f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
                 "omit nulls= or use a dialect that supports NULLS FIRST/LAST"
             )
             raise ValueError(msg)
-        self.write(f" NULLS {clause.nulls}")
+        self.visit(clause.expr)
+        self.write(f" {clause.direction}")
+        if clause.nulls is not None:
+            self.write(f" NULLS {clause.nulls}")
 
     def build(self) -> tuple[str, list[Any]]:
         return "".join(self.buf), self.params
@@ -164,19 +163,37 @@ class SQLCompiler:
             self.write(node.sql)
             return
 
+        style = self.dialect.positional_style
+        expected = len(node.params)
+        if style == "dollar":
+            found = {int(match) for match in re.findall(r"\$(\d+)", node.sql)}
+            if found != set(range(1, expected + 1)):
+                msg = (
+                    "RawSQL dollar placeholders must be a contiguous $1..$N sequence "
+                    f"matching {expected} parameter(s); found {sorted(found)}"
+                )
+                raise ValueError(msg)
+        elif style == "qmark":
+            count = node.sql.count("?")
+            if count != expected:
+                msg = f"RawSQL has {count} '?' placeholder(s) but {expected} parameter(s)"
+                raise ValueError(msg)
+        elif style == "format":
+            count = node.sql.replace("%%", "").count("%s")
+            if count != expected:
+                msg = f"RawSQL has {count} '%s' placeholder(s) but {expected} parameter(s)"
+                raise ValueError(msg)
+        else:
+            msg = f"unsupported positional_style: {style!r}"
+            raise ValueError(msg)
+
         # Re-bind fragment parameters at the current compiler offset so composed
         # expressions do not reuse stale placeholder indexes (especially `$n`).
         rebound = [self.add_param(value) for value in node.params]
-        if self.dialect.positional_style == "dollar":
+        if style == "dollar":
 
             def _replace(match: re.Match[str]) -> str:
                 index = int(match.group(1)) - 1
-                if index < 0 or index >= len(rebound):
-                    msg = (
-                        f"RawSQL placeholder ${index + 1} is out of range for "
-                        f"{len(rebound)} parameter(s)"
-                    )
-                    raise ValueError(msg)
                 return rebound[index]
 
             self.write(re.sub(r"\$(\d+)", _replace, node.sql))
