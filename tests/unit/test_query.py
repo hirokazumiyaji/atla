@@ -227,7 +227,9 @@ def test_insert_skips_unset_and_builds_sql() -> None:
         name="alice",
     )
     sql, params = q.to_sql()
+    # Bare kwargs are quoted exactly once (not ""email"").
     assert sql == 'INSERT INTO "users" ("email", "name") VALUES ($1, $2)'
+    assert '""email""' not in sql
     assert params == ["alice@example.com", "alice"]
 
 
