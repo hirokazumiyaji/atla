@@ -301,11 +301,20 @@ class Column[T](Expr[T]):
         return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
 
     def like(self, pattern: str) -> BinaryOp[bool]:
-        """SQL ``LIKE``; callers must escape ``%`` / ``_`` (and dialect ESCAPE) themselves."""
+        """Raw SQL ``LIKE`` — ``%`` / ``_`` keep wildcard meaning.
+
+        For literal substring / prefix / suffix matching (with automatic
+        escaping and ``ESCAPE '!'``), use :meth:`contains`, :meth:`starts_with`,
+        or :meth:`ends_with` instead.
+        """
         return BinaryOp("LIKE", self, Literal(pattern))
 
     def ilike(self, pattern: str) -> BinaryOp[bool]:
-        """SQL ``ILIKE`` / lowercased ``LIKE``; same escape rules as :meth:`like`."""
+        """Raw SQL ``ILIKE`` / lowercased ``LIKE`` — wildcards stay active.
+
+        Prefer :meth:`icontains`, :meth:`istarts_with`, or :meth:`iends_with`
+        when the input should be matched literally.
+        """
         return BinaryOp("ILIKE", self, Literal(pattern))
 
     def contains(self, substring: str) -> LikeOp:
