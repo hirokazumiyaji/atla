@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import aiosqlite
 import pytest
@@ -25,11 +26,28 @@ class _AcquireCM:
 
 
 class FakeAsyncpgPool:
+    """Mirrors asyncpg.Pool: acquire() plus fetch* / execute proxies."""
+
     def __init__(self, conn: Any) -> None:
         self._conn = conn
 
     def acquire(self) -> _AcquireCM:
         return _AcquireCM(self._conn)
+
+    async def fetch(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
+        return cast(list[tuple[Any, ...]], await self._conn.fetch(sql, *params))
+
+    async def fetchrow(self, sql: str, *params: Any) -> tuple[Any, ...] | None:
+        return cast(tuple[Any, ...] | None, await self._conn.fetchrow(sql, *params))
+
+    async def fetchval(self, sql: str, *params: Any) -> Any:
+        return await self._conn.fetchval(sql, *params)
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        return cast(str, await self._conn.execute(sql, *params))
+
+    async def executemany(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
+        await self._conn.executemany(sql, params_seq)
 
 
 class FakeAsyncpgConnection:
@@ -202,6 +220,40 @@ async def test_asyncmy_adapter_with_mocks() -> None:
     assert conn.rolled_back >= 1
     assert any("SAVEPOINT" in sql for sql in conn.cursor_obj.statements)
     assert any("RELEASE SAVEPOINT" in sql for sql in conn.cursor_obj.statements)
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_rejects_reentrant_transaction_on_same_adapter() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        async with adapter.transaction():
+            with pytest.raises(RuntimeError, match="transaction already active"):
+                async with adapter.transaction():
+                    pass
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_autocommit_persists_without_transaction(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "autocommit.db"
+    conn = await aiosqlite.connect(db_path)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        await adapter.execute("INSERT INTO t(name) VALUES (?)", ("alice",))
+    finally:
+        await conn.close()
+
+    conn2 = await aiosqlite.connect(db_path)
+    try:
+        adapter2 = AiosqliteAdapter(conn2)
+        assert await adapter2.fetch_val("SELECT COUNT(*) FROM t") == 1
+    finally:
+        await conn2.close()
 
 
 @pytest.mark.asyncio
