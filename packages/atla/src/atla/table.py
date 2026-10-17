@@ -2,24 +2,10 @@
 
 from __future__ import annotations
 
-import keyword
 from collections.abc import Sequence
 from typing import Any, ClassVar, cast
 
 from atla.dialect import Dialect
-
-
-def sql_attr_name(column_name: str) -> str:
-    """Map a SQL column name to the generated Record attribute name."""
-    name = column_name
-    if not name.isidentifier():
-        cleaned = "".join(ch if ch.isalnum() else "_" for ch in name)
-        if not cleaned or cleaned[0].isdigit():
-            cleaned = f"col_{cleaned}"
-        name = cleaned
-    if keyword.iskeyword(name) or keyword.issoftkeyword(name):
-        return f"{name}_"
-    return name
 
 
 class TableRef[RecordT]:
