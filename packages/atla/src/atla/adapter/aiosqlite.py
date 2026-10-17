@@ -6,6 +6,8 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
+from atla.adapter.base import IsolationLevel
+from atla.adapter.translate import with_translated_errors
 from atla.dialect import Dialect, SQLiteDialect
 
 
@@ -55,6 +57,7 @@ class AiosqliteAdapter:
         if self._depth == 0 and not self._tx_active:
             await self._conn.commit()
 
+    @with_translated_errors
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         await self._ensure_configured()
         cursor = await self._conn.execute(sql, tuple(params))
@@ -64,6 +67,7 @@ class AiosqliteAdapter:
         finally:
             await cursor.close()
 
+    @with_translated_errors
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         await self._ensure_configured()
         cursor = await self._conn.execute(sql, tuple(params))
@@ -73,12 +77,14 @@ class AiosqliteAdapter:
         finally:
             await cursor.close()
 
+    @with_translated_errors
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         row = await self.fetch_one(sql, params)
         if row is None:
             return None
         return row[0]
 
+    @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         await self._ensure_configured()
         cursor = await self._conn.execute(sql, tuple(params))
@@ -89,6 +95,7 @@ class AiosqliteAdapter:
         await self._commit_if_autocommit()
         return rowcount
 
+    @with_translated_errors
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._ensure_configured()
         await self._conn.executemany(sql, [tuple(params) for params in params_seq])
@@ -99,7 +106,14 @@ class AiosqliteAdapter:
         await cursor.close()
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[AiosqliteAdapter]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[AiosqliteAdapter]:
+        _ = isolation, readonly, deferrable
         await self._ensure_configured()
         if self._depth == 0:
             if self._tx_active:

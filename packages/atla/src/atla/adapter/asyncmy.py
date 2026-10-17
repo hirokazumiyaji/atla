@@ -6,7 +6,10 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
+from atla.adapter.base import IsolationLevel
+from atla.adapter.translate import with_translated_errors
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
+from atla.transaction import begin_sql
 
 
 class AsyncmyAdapter:
@@ -56,6 +59,7 @@ class AsyncmyAdapter:
         if self._pool is not None and self._conn is None:
             await self._pool.release(conn)
 
+    @with_translated_errors
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         conn = await self._acquire()
         try:
@@ -66,6 +70,7 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         conn = await self._acquire()
         try:
@@ -75,12 +80,14 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         row = await self.fetch_one(sql, params)
         if row is None:
             return None
         return row[0]
 
+    @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         conn = await self._acquire()
         try:
@@ -89,6 +96,7 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         conn = await self._acquire()
         try:
@@ -97,8 +105,31 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    async def _apply_tx_options(
+        self,
+        conn: Any,
+        *,
+        isolation: IsolationLevel | None,
+        readonly: bool,
+        deferrable: bool,
+    ) -> None:
+        for statement in begin_sql(
+            self._dialect.name,
+            isolation=isolation,
+            readonly=readonly,
+            deferrable=deferrable,
+        ):
+            async with conn.cursor() as cursor:
+                await cursor.execute(statement)
+
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[AsyncmyAdapter]:
         if self._pool is not None and self._conn is None:
             self._tx_active = True
             try:
@@ -109,6 +140,12 @@ class AsyncmyAdapter:
             try:
                 try:
                     await active.begin()
+                    await self._apply_tx_options(
+                        active,
+                        isolation=isolation,
+                        readonly=readonly,
+                        deferrable=deferrable,
+                    )
                 except BaseException:
                     try:
                         await active.rollback()
@@ -140,6 +177,12 @@ class AsyncmyAdapter:
         assert self._conn is not None
         if self._depth == 0:
             await self._conn.begin()
+            await self._apply_tx_options(
+                self._conn,
+                isolation=isolation,
+                readonly=readonly,
+                deferrable=deferrable,
+            )
             pinned = AsyncmyAdapter(self._conn, dialect=self._dialect, _depth=1)
             try:
                 yield pinned

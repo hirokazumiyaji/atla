@@ -10,12 +10,23 @@ from atla.dialect import (
     SQLiteDialect,
     TiDBDialect,
 )
+from atla.adapter.routing import RoutingAdapter
 from atla.errors import (
     AtlaError,
+    CheckViolationError,
+    DataError,
+    DatabaseError,
+    ForeignKeyViolationError,
+    IntegrityError,
     MultipleResultsError,
     NotFoundError,
+    NotNullViolationError,
+    OperationalError,
+    SerializationError,
+    UniqueViolationError,
     UnsafeMutationError,
 )
+from atla.transaction import IsolationLevel, run_in_transaction
 from atla.expressions import (
     AliasedExpr,
     BetweenOp,
@@ -74,6 +85,18 @@ __all__ = [
     "UNSET",
     "AliasedExpr",
     "AtlaError",
+    "CheckViolationError",
+    "DataError",
+    "DatabaseError",
+    "ForeignKeyViolationError",
+    "IntegrityError",
+    "IsolationLevel",
+    "NotNullViolationError",
+    "OperationalError",
+    "RoutingAdapter",
+    "SerializationError",
+    "UniqueViolationError",
+    "run_in_transaction",
     "BaseDeleteQuery",
     "BaseInsertManyQuery",
     "BaseInsertQuery",
