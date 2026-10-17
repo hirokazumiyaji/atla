@@ -15,7 +15,9 @@ class AsyncmyAdapter:
 
     Pool-backed instances are safe to share across concurrent tasks. While a
     task holds ``async with adapter.transaction()``, that same task must use
-    the yielded adapter (not the outer pool adapter); other tasks are unaffected.
+    the yielded adapter (not the outer pool adapter). Peer tasks — including
+    children created with ``asyncio.create_task`` — may still acquire from the
+    pool.
     """
 
     __slots__ = ("_conn", "_depth", "_dialect", "_pool", "_savepoint")

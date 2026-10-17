@@ -429,6 +429,27 @@ async def test_asyncpg_pool_peer_task_not_blocked_by_transaction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_asyncpg_pool_child_task_can_use_outer_adapter() -> None:
+    """Child tasks must not inherit the parent's checkout restriction."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await adapter.fetch_all("SELECT 1")
+
+        child_result: list[Sequence[Sequence[Any]]] = []
+
+        async def child() -> None:
+            child_result.append(await adapter.fetch_all("SELECT 1"))
+
+        await asyncio.create_task(child())
+        assert child_result == [[(1, "alice")]]
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
 async def test_aiosqlite_serializes_concurrent_writes(tmp_path: Path) -> None:
     db_path = tmp_path / "concurrent.db"
     conn = await aiosqlite.connect(db_path)
