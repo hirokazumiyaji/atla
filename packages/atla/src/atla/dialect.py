@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 from uuid import UUID
 
 _REQUIRED_DIALECT_ATTRS = (
@@ -60,9 +60,28 @@ class Dialect:
             raise TypeError(msg)
 
     def quote(self, ident: str) -> str:
+        if not ident:
+            msg = "identifier must not be empty"
+            raise ValueError(msg)
+        if "\x00" in ident:
+            msg = "identifier must not contain NUL bytes"
+            raise ValueError(msg)
         q = self.quote_char
         escaped = ident.replace(q, q + q)
         return f"{q}{escaped}{q}"
+
+    def quote_string_literal(self, value: str) -> str:
+        """Quote a SQL string literal (e.g. ``ESCAPE`` character).
+
+        MySQL/TiDB treat ``\\`` as an escape inside string literals by default,
+        so a literal backslash must be emitted as ``\\\\``. Other dialects only
+        need ``'`` doubled.
+        """
+        if self.name in {"mysql", "tidb"}:
+            escaped = value.replace("\\", "\\\\").replace("'", "''")
+        else:
+            escaped = value.replace("'", "''")
+        return f"'{escaped}'"
 
     def placeholder(self, index: int) -> str:
         if self.positional_style == "dollar":
@@ -117,7 +136,7 @@ class Dialect:
             return value if self.native_datetime else value.isoformat()
         if isinstance(value, list):
             if self.native_array:
-                return value
+                return cast(list[Any], value)
             return json.dumps(value, separators=(",", ":"), default=str)
         if isinstance(value, dict):
             return json.dumps(value, separators=(",", ":"), default=str)

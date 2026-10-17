@@ -10,9 +10,11 @@ from atla.expressions import (
     BetweenOp,
     BinaryOp,
     Column,
+    ExcludedRef,
     Expr,
     FuncCall,
     InOp,
+    LikeOp,
     Literal,
     LogicalOp,
     OrderByClause,
@@ -48,6 +50,9 @@ class SQLCompiler:
         if isinstance(node, BinaryOp):
             self._visit_binary(node)
             return
+        if isinstance(node, LikeOp):
+            self._visit_like(node)
+            return
         if isinstance(node, UnaryOp):
             self._visit_unary(node)
             return
@@ -66,10 +71,14 @@ class SQLCompiler:
         if isinstance(node, RawSQL):
             self._visit_raw(node)
             return
+        if isinstance(node, ExcludedRef):
+            self._visit_excluded(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
 
     def visit_order_by(self, clause: OrderByClause) -> None:
+        # direction/nulls are validated once in ``OrderByClause.__init__``.
         if clause.nulls is not None and self.dialect.name in {"mysql", "tidb"}:
             msg = (
                 f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
@@ -110,13 +119,26 @@ class SQLCompiler:
         self.write(f" {node.op} ")
         self.visit(node.right)
 
+    def _visit_like(self, node: LikeOp) -> None:
+        if node.op == "ILIKE" and not self.dialect.supports_ilike:
+            self.write("LOWER(")
+            self.visit(node.left)
+            self.write(") LIKE LOWER(")
+            self.visit(node.right)
+            self.write(")")
+        else:
+            self.visit(node.left)
+            self.write(f" {node.op} ")
+            self.visit(node.right)
+        self.write(f" ESCAPE {self.dialect.quote_string_literal(node.escape)}")
+
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
         if node.postfix:
             self.visit(node.operand)
             self.write(f" {node.op}")
             return
         self.write(node.op)
-        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, BetweenOp, InOp))
+        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp))
         if needs_parens:
             self.write("(")
             self.visit(node.operand)
@@ -165,6 +187,13 @@ class SQLCompiler:
                     self.write(", ")
                 self.visit(arg)
         self.write(")")
+
+    def _visit_excluded(self, node: ExcludedRef[Any]) -> None:
+        quoted = self.dialect.quote(node.column.name)
+        if self.dialect.upsert_style == "duplicate":
+            self.write(f"VALUES({quoted})")
+            return
+        self.write(f"EXCLUDED.{quoted}")
 
     def _visit_raw(self, node: RawSQL[Any]) -> None:
         if not node.params:

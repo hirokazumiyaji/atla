@@ -6,13 +6,33 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
+from atla.adapter._checkout import (
+    checkout_scope,
+    ensure_not_checked_out,
+    new_checkout_owners,
+)
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
 
 
 class AsyncmyAdapter:
-    """Adapter over ``asyncmy`` pool or connection using tuple cursors."""
+    """Adapter over ``asyncmy`` pool or connection using tuple cursors.
 
-    __slots__ = ("_conn", "_depth", "_dialect", "_pool", "_savepoint", "_tx_active")
+    Pool-backed instances are safe to share across concurrent tasks. While a
+    task holds ``async with adapter.transaction()``, that same task must use
+    the yielded adapter (not the outer pool adapter). Peer tasks — including
+    children created with ``asyncio.create_task`` — may still acquire from the
+    pool.
+
+    .. warning::
+        With a small pool (e.g. ``maxsize=1``), a parent that holds a
+        transaction and awaits a child task which uses the *outer* adapter can
+        hang indefinitely waiting for a free connection. Previously this raised
+        ``RuntimeError``; now the child blocks in ``pool.acquire()`` until the
+        parent releases its connection. Size the pool for nested concurrency or
+        pass the yielded adapter to children instead.
+    """
+
+    __slots__ = ("_checkout_owners", "_conn", "_depth", "_dialect", "_pool", "_savepoint")
 
     def __init__(
         self,
@@ -27,8 +47,8 @@ class AsyncmyAdapter:
             msg = "AsyncmyAdapter requires MySQLDialect or TiDBDialect"
             raise TypeError(msg)
         self._depth = _depth
+        self._checkout_owners = new_checkout_owners()
         self._savepoint = _savepoint
-        self._tx_active = False
         if hasattr(pool_or_conn, "acquire") and not hasattr(pool_or_conn, "cursor"):
             self._pool = pool_or_conn
             self._conn: Any | None = None
@@ -41,12 +61,7 @@ class AsyncmyAdapter:
         return self._dialect
 
     async def _acquire(self) -> Any:
-        if self._tx_active:
-            msg = (
-                "connection is checked out for an active transaction; "
-                "use the adapter yielded by transaction()"
-            )
-            raise RuntimeError(msg)
+        ensure_not_checked_out(self._checkout_owners)
         if self._conn is not None:
             return self._conn
         assert self._pool is not None
@@ -103,42 +118,39 @@ class AsyncmyAdapter:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
+        # Match fetch_*/execute*: the outer pool adapter must not be reused
+        # while this task already holds a checkout (use the yielded adapter).
+        ensure_not_checked_out(self._checkout_owners)
         if self._pool is not None and self._conn is None:
-            self._tx_active = True
-            try:
+            # Per-task checkout: peers may still acquire from the same pool.
+            with checkout_scope(self._checkout_owners):
                 active: Any = await self._pool.acquire()
-            except BaseException:
-                self._tx_active = False
-                raise
-            try:
                 try:
-                    await active.begin()
-                except BaseException:
                     try:
-                        await active.rollback()
-                    except BaseException:
-                        pass
-                    raise
-                pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
-                try:
-                    yield pinned
-                except BaseException:
-                    await active.rollback()
-                    raise
-                else:
-                    try:
-                        await active.commit()
+                        await active.begin()
                     except BaseException:
                         try:
                             await active.rollback()
                         except BaseException:
                             pass
                         raise
-            finally:
-                try:
-                    await self._pool.release(active)
+                    pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
+                    try:
+                        yield pinned
+                    except BaseException:
+                        await active.rollback()
+                        raise
+                    else:
+                        try:
+                            await active.commit()
+                        except BaseException:
+                            try:
+                                await active.rollback()
+                            except BaseException:
+                                pass
+                            raise
                 finally:
-                    self._tx_active = False
+                    await self._pool.release(active)
             return
 
         assert self._conn is not None

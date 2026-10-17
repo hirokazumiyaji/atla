@@ -17,6 +17,7 @@ from atla import (
     compile_expr,
     compile_order_by,
     count,
+    excluded,
     or_,
     raw_sql,
 )
@@ -227,3 +228,13 @@ def test_mysql_nulls_rejection_does_not_mutate_compiler() -> None:
     with pytest.raises(ValueError, match="does not support NULLS"):
         compiler.visit_order_by(created.desc(nulls="LAST"))
     assert compiler.build() == ("", [])
+
+
+def test_excluded_compiles_per_upsert_style() -> None:
+    email = Column[str]("users", "email")
+    pg_sql, pg_params = compile_expr(PostgresDialect(), excluded(email))
+    assert pg_sql == 'EXCLUDED."email"'
+    assert pg_params == []
+    mysql_sql, mysql_params = compile_expr(MySQLDialect(), excluded(email))
+    assert mysql_sql == "VALUES(`email`)"
+    assert mysql_params == []
