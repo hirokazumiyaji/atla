@@ -90,9 +90,8 @@ def _row_expr(column: ColumnIR, index: int) -> str:
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
     slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
     column_names = ", ".join(repr(column.name) for column in table.columns)
-    pk_index: int | None = next(
-        (index for index, column in enumerate(table.columns) if column.is_primary_key),
-        None,
+    pk_indexes = tuple(
+        index for index, column in enumerate(table.columns) if column.is_primary_key
     )
     lines = [
         f"class {table_cls}(TableRef[{table.model_name}Record]):",
@@ -103,7 +102,7 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"
             "  # pyright: ignore[reportPrivateUsage]"
         ),
-        f"    _PK_INDEX = {pk_index!r}",
+        f"    _PK_INDEXES = {pk_indexes!r}",
         "",
         "    def __init__(self, alias: str | None = None) -> None:",
         "        super().__init__(alias)",

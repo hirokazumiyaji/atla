@@ -313,20 +313,28 @@ class BaseSelectQuery[RecordT]:
         return int(value)
 
     async def exists(self) -> bool:
-        """Return whether any matching row exists without hydrating records."""
-        if not self._where and not self._order_by and self._limit is None and self._offset is None:
-            sql = f"SELECT 1 FROM {type(self)._FROM_SQL} LIMIT 1"
-            params: list[Any] = []
-        else:
-            compiler = SQLCompiler(
-                self._adapter.dialect,
-                initial_sql=f"SELECT 1 FROM {type(self)._FROM_SQL}",
-            )
-            if self._where:
-                compiler.write(" WHERE ")
-                compiler.visit(and_(*self._where))
-            compiler.write(" LIMIT 1")
-            sql, params = compiler.build()
+        """Return whether any matching row exists without hydrating records.
+
+        Preserves the caller's LIMIT/OFFSET pagination (e.g. ``offset(100).exists()``
+        is false when fewer than 101 matching rows exist).
+        """
+        if self._limit == 0:
+            return False
+        compiler = SQLCompiler(
+            self._adapter.dialect,
+            initial_sql=f"SELECT 1 FROM {type(self)._FROM_SQL}",
+        )
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        # Cap to one probe row without raising an existing LIMIT of 1+.
+        exists_limit = 1 if self._limit is None else min(self._limit, 1)
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(exists_limit))
+        if self._offset is not None:
+            compiler.write(" OFFSET ")
+            compiler.write(compiler.add_param(self._offset))
+        sql, params = compiler.build()
         return (await self._adapter.fetch_val(sql, params)) is not None
 
 

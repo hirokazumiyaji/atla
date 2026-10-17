@@ -16,8 +16,9 @@ class TableRef[RecordT]:
     __table_name__: ClassVar[str]
     _COLUMNS: ClassVar[tuple[str, ...]]
     _ROW_MAPPER: ClassVar[Any]
-    # Index of the first primary-key column for O(1) LEFT JOIN null checks.
-    _PK_INDEX: ClassVar[int | None] = 0
+    # Primary-key column indexes for O(1) LEFT JOIN null checks.
+    # Empty tuple falls back to scanning the whole row slice.
+    _PK_INDEXES: ClassVar[tuple[int, ...]] = (0,)
 
     def __init__(self, alias: str | None = None) -> None:
         self._alias = alias
@@ -51,9 +52,10 @@ class TableRef[RecordT]:
         return cast(RecordT, self.get_row_mapper()(row))
 
     def map_row_optional(self, row: Sequence[Any]) -> RecordT | None:
-        pk_index = type(self)._PK_INDEX
-        if pk_index is not None:
-            if row[pk_index] is None:
+        pk_indexes = type(self)._PK_INDEXES
+        if pk_indexes:
+            # LEFT JOIN absent rows are NULL across every PK column.
+            if all(row[index] is None for index in pk_indexes):
                 return None
         elif all(value is None for value in row):
             return None
