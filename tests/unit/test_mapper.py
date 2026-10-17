@@ -74,7 +74,9 @@ def test_postgres_enum_and_nullable() -> None:
 def test_mysql_tinyint_bool_and_inline_enum() -> None:
     bool_mapping = resolve_sql_type("tinyint(1)", dialect="mysql")
     assert bool_mapping.base_python_type == "bool"
-    assert bool_mapping.row_codec == "bool({value})"
+    assert bool_mapping.row_codec is not None
+    assert "bool(int(" in bool_mapping.row_codec
+    assert "isinstance({value}, bool)" in bool_mapping.row_codec
 
     enums = {
         "users_status": EnumIR(

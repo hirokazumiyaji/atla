@@ -290,9 +290,17 @@ def _map_postgres_family(normalized: str, *, dialect: str) -> TypeMapping:
 
 def _map_mysql_family(normalized: str, *, dialect: str) -> TypeMapping:
     if normalized in {"tinyint(1)", "boolean", "bool"}:
+        # asyncmy may return 0/1 ints; string "0"/"1" must not use Python bool("0")==True.
         return TypeMapping(
             "bool",
-            row_codec=None if dialect in _NATIVE_BOOL_DIALECTS else "bool({value})",
+            row_codec=(
+                None
+                if dialect in _NATIVE_BOOL_DIALECTS
+                else (
+                    "{value} if isinstance({value}, bool) "
+                    "else bool(int({value}))"
+                )
+            ),
         )
     if normalized in {
         "tinyint",
