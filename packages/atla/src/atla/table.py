@@ -17,8 +17,8 @@ class TableRef[RecordT]:
     _COLUMNS: ClassVar[tuple[str, ...]]
     _ROW_MAPPER: ClassVar[Any]
     # Primary-key column indexes for O(1) LEFT JOIN null checks.
-    # Empty tuple falls back to scanning the whole row slice.
-    _PK_INDEXES: ClassVar[tuple[int, ...]] = (0,)
+    # Empty tuple falls back to scanning the whole row slice (custom descriptors).
+    _PK_INDEXES: ClassVar[tuple[int, ...]] = ()
 
     def __init__(self, alias: str | None = None) -> None:
         self._alias = alias
