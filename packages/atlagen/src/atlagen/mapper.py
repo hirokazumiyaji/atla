@@ -94,10 +94,14 @@ def resolve_sql_type(
             raw_type=raw_type,
         )
     if is_array:
+        array_codec: str | None = None
+        if mapping.row_codec is not None:
+            element_expr = mapping.row_codec.replace("{value}", "v")
+            array_codec = f"[({element_expr}) for v in ({{value}} or ())]"
         return TypeMapping(
             base_python_type=f"list[{mapping.base_python_type}]",
             import_symbol=mapping.import_symbol,
-            row_codec=None,
+            row_codec=array_codec,
         )
     return mapping
 
@@ -115,7 +119,8 @@ def normalize_sql_type(raw_type: str) -> tuple[str, bool, bool]:
         is_array = True
         text = text[:-2].rstrip()
 
-    # Preserve tinyint(1) before stripping parameters — MySQL boolean idiom.
+    # Preserve tinyint(1) before stripping parameters.
+    # Per generator-spec, MySQL/TiDB tinyint(1) maps to bool (boolean idiom).
     if text.startswith("tinyint(1)"):
         return "tinyint(1)", is_array, is_unsigned
 

@@ -147,6 +147,14 @@ def test_postgres_enum_array() -> None:
     assert mapping.import_symbol == (".enums", "Status")
 
 
+def test_sqlite_array_preserves_element_codec() -> None:
+    mapping = resolve_sql_type("uuid[]", dialect="sqlite")
+    assert mapping.base_python_type == "list[UUID]"
+    assert mapping.row_codec is not None
+    assert "UUID(v)" in mapping.row_codec
+    assert "for v in" in mapping.row_codec
+
+
 def test_cockroach_and_tidb_aliases() -> None:
     assert resolve_sql_type("int8", dialect="cockroach").base_python_type == "int"
     assert resolve_sql_type("varchar(64)", dialect="tidb").base_python_type == "str"
