@@ -1,4 +1,8 @@
-"""PostgreSQL / MySQL E2E tests (skipped unless DSNs are provided)."""
+"""PostgreSQL / MySQL E2E tests (skipped unless DSNs are provided).
+
+These tests DROP and recreate ``users`` / ``posts`` in the configured database.
+Only dedicated test database names are accepted (see ``_DEDICATED_TEST_DBS``).
+"""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -17,6 +21,21 @@ from atlagen.cli import main
 
 POSTGRES_DSN = os.environ.get("ATLA_TEST_POSTGRES_DSN")
 MYSQL_DSN = os.environ.get("ATLA_TEST_MYSQL_DSN")
+
+# Database names that are safe to wipe when running destructive E2E setup.
+_DEDICATED_TEST_DBS = frozenset({"atla", "atla_test"})
+
+
+def _require_dedicated_test_db(dsn: str, *, label: str) -> str:
+    """Return the DB name, or skip if the DSN does not target a dedicated test DB."""
+    parsed = urlparse(dsn)
+    database = unquote((parsed.path or "").lstrip("/")).split("?", 1)[0]
+    if database not in _DEDICATED_TEST_DBS:
+        pytest.skip(
+            f"{label} refuses database {database!r}; "
+            f"use a dedicated test DB named one of {sorted(_DEDICATED_TEST_DBS)}"
+        )
+    return database
 
 SCHEMA = """
 {
@@ -86,6 +105,7 @@ async def _postgres_adapter() -> AsyncGenerator[Any]:
     from atla.adapter.asyncpg import AsyncpgAdapter
 
     assert POSTGRES_DSN is not None
+    _require_dedicated_test_db(POSTGRES_DSN, label="ATLA_TEST_POSTGRES_DSN")
     conn = await asyncpg.connect(POSTGRES_DSN)
     try:
         await conn.execute("DROP TABLE IF EXISTS posts")
@@ -124,7 +144,7 @@ async def _mysql_adapter() -> AsyncGenerator[Any]:
     user = unquote(parsed.username or "")
     password = unquote(parsed.password or "")
     host = parsed.hostname
-    database = unquote((parsed.path or "").lstrip("/"))
+    database = _require_dedicated_test_db(MYSQL_DSN, label="ATLA_TEST_MYSQL_DSN")
     if not user or not host or not database:
         pytest.skip(f"invalid ATLA_TEST_MYSQL_DSN: {MYSQL_DSN!r}")
     conn = await asyncmy.connect(
