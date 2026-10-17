@@ -116,12 +116,6 @@ class BaseInsertManyQuery[RecordT]:
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
         return sql, compiler.params
 
-    def _single_row_insert_sql(self, columns: list[str]) -> str:
-        dialect = self._adapter.dialect
-        cols_sql = ", ".join(dialect.quote(name) for name in columns)
-        placeholders = ", ".join(dialect.placeholder(i + 1) for i in range(len(columns)))
-        return f"INSERT INTO {self._table_name} ({cols_sql}) VALUES ({placeholders})"
-
     def to_sql(self) -> tuple[str, list[Any]]:
         columns = self._validated_columns()
         return self._sql_for_rows(self._rows, columns)
@@ -129,24 +123,15 @@ class BaseInsertManyQuery[RecordT]:
     async def execute(self) -> int:
         """Insert all rows and return the number of rows submitted.
 
-        Atomicity: with more than one literal row (and no ``RETURNING``) rows are sent
-        through the driver's ``execute_many``. Drivers such as aiosqlite and asyncmy run
-        these one statement at a time under autocommit, so a failure on row N can leave
-        rows ``1..N-1`` committed. Call this inside ``adapter.transaction()`` when
-        all-or-nothing behavior is required. ``RETURNING`` or ``Expr`` values use
-        multi-VALUES statements, chunked to the bind-parameter limit (each chunk is one
-        atomic statement, but chunks are not atomic together outside a transaction).
+        Uses atomic multi-row ``INSERT ... VALUES (...), (...)`` statements, chunked
+        to the bind-parameter limit. Each chunk is one statement (all-or-nothing for
+        that chunk). Chunks are not atomic together outside a transaction — wrap
+        ``execute()`` in ``adapter.transaction()`` when the whole batch must commit
+        or roll back as a unit.
 
-        Return value: ``len(rows)`` on the ``execute_many`` path, otherwise the sum of
-        the driver rowcounts across chunks. For plain INSERTs the two are equal.
+        Return value: the sum of driver rowcounts across chunks.
         """
         columns = self._validated_columns()
-        if not self._returning and self._rows_are_literals(self._rows) and len(self._rows) > 1:
-            # Prefer driver executemany (prepared / pipelined) over giant multi-VALUES SQL.
-            sql = self._single_row_insert_sql(columns)
-            param_rows = [[value for _, value in row] for row in self._rows]
-            await self._adapter.execute_many(sql, param_rows)
-            return len(param_rows)
         total = 0
         for chunk in self._chunk_rows():
             sql, params = self._sql_for_rows(chunk, columns)
