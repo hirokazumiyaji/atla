@@ -127,6 +127,14 @@ def test_arithmetic_and_ordering() -> None:
     assert created.desc().direction == "DESC"
 
 
+def test_column_is_hashable_by_identity() -> None:
+    left = Column[int]("users", "age")
+    right = Column[int]("users", "age")
+    assert hash(left) == object.__hash__(left)
+    assert {left, right} == {left, right}
+    assert len({left, left}) == 1
+
+
 def test_logical_helpers_flatten() -> None:
     age = Column[int]("users", "age")
     active = Column[bool]("users", "is_active")
