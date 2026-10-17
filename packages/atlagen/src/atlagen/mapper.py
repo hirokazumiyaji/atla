@@ -130,17 +130,20 @@ def normalize_sql_type(raw_type: str) -> tuple[str, bool, bool]:
             return "timestamp", is_array, is_unsigned
         return "time", is_array, is_unsigned
 
+    # Match multi-word SQL types before stripping "(...)" modifiers.
+    for prefix, canonical in (
+        ("double precision", "double precision"),
+        ("character varying", "character varying"),
+        ("bit varying", "bit varying"),
+    ):
+        if text == prefix or text.startswith(f"{prefix}(") or text.startswith(f"{prefix} ("):
+            return canonical, is_array, is_unsigned
+
     if "(" in text:
         text = text.split("(", 1)[0].rstrip()
 
     aliases = {
-        "double precision": "double precision",
-        "character varying": "character varying",
         "character": "char",
-        "timestamp with time zone": "timestamptz",
-        "timestamp without time zone": "timestamp",
-        "time with time zone": "timetz",
-        "time without time zone": "time",
     }
     text = aliases.get(text, text)
     return text, is_array, is_unsigned

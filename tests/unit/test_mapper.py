@@ -28,11 +28,14 @@ def _col(
 
 def test_normalize_strips_params_and_unsigned() -> None:
     assert normalize_sql_type("character varying(255)") == ("character varying", False, False)
+    assert normalize_sql_type("double precision(53)") == ("double precision", False, False)
     assert normalize_sql_type("numeric(10, 2)") == ("numeric", False, False)
     assert normalize_sql_type("bigint(20) unsigned") == ("bigint", False, True)
     assert normalize_sql_type("timestamp(6) with time zone") == ("timestamptz", False, False)
     assert normalize_sql_type("text[]") == ("text", True, False)
     assert normalize_sql_type("tinyint(1)") == ("tinyint(1)", False, False)
+    assert resolve_sql_type("double precision(53)", dialect="postgres").base_python_type == "float"
+    assert resolve_sql_type("character varying(255)", dialect="postgres").base_python_type == "str"
 
 
 def test_postgres_core_types() -> None:
