@@ -116,7 +116,7 @@ def test_generate_and_check_roundtrip(tmp_path: Path) -> None:
     assert "AtlaClient" in content
     models = (out / "models.py").read_text(encoding="utf-8")
     assert "class UserRecord" in models
-    assert "class UsersTable" in models
+    assert "class UserTable" in models
 
     assert (
         main(

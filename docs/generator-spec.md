@@ -121,7 +121,8 @@ Raw SQL type strings are normalized (stripping length specifiers like `varchar(2
 | :--- | :--- | :--- | :--- | :--- |
 | **PostgreSQL / CockroachDB** | `smallint`, `integer`, `bigint`, `serial`, `bigserial`, `int2`, `int4`, `int8`, `rowid` | `int` | `Column[int]` | - |
 | | `real`, `double precision`, `float4`, `float8` | `float` | `Column[float]` | - |
-| | `numeric`, `decimal`, `money` | `Decimal` | `Column[Decimal]` | `from decimal import Decimal` |
+| | `numeric`, `decimal` | `Decimal` | `Column[Decimal]` | `from decimal import Decimal` |
+| | `money` | `str` | `Column[str]` | — (asyncpg returns formatted text) |
 | | `boolean`, `bool` | `bool` | `Column[bool]` | - |
 | | `varchar`, `character varying`, `char`, `text`, `citext`, `inet`, `cidr` | `str` | `Column[str]` | - |
 | | `bytea`, `bytes` | `bytes` | `Column[bytes]` | - |
@@ -203,7 +204,7 @@ class UserRecord:
         return cls(*row)
 
 
-class UsersTable:
+class UserTable:
     __slots__ = ("_alias", "id", "email", "name", "age", "is_active", "deleted_at", "created_at")
     __table_name__ = "users"
 
@@ -218,12 +219,12 @@ class UsersTable:
         self.deleted_at: Column[datetime | None] = Column(t, "deleted_at")
         self.created_at: Column[datetime] = Column(t, "created_at")
 
-    def as_(self, alias: str) -> UsersTable:
-        """Return a new UsersTable instance bound to the given SQL table alias for self-joins."""
-        return UsersTable(alias=alias)
+    def as_(self, alias: str) -> UserTable:
+        """Return a new UserTable instance bound to the given SQL table alias for self-joins."""
+        return UserTable(alias=alias)
 
 
-User = UsersTable()
+User = UserTable()
 ```
 
 ### 4.2 Example `query.py` Output (AOT Pre-computed SQL & Typed Builders)

@@ -84,6 +84,14 @@ class SQLCompiler:
     def build(self) -> tuple[str, list[Any]]:
         return "".join(self.buf), self.params
 
+    def compile_fragment(self, node: Expr[Any]) -> str:
+        """Visit *node* and return only the SQL appended for that visit."""
+        start = len(self.buf)
+        self.visit(node)
+        fragment = "".join(self.buf[start:])
+        del self.buf[start:]
+        return fragment
+
     def _visit_column(self, node: Column[Any]) -> None:
         qualifier = node.alias if node.alias is not None else node.table
         self.write(self.dialect.quote(qualifier))
@@ -165,7 +173,7 @@ class SQLCompiler:
 
         style = self.dialect.positional_style
         expected = len(node.params)
-        placeholders = _collect_raw_placeholders(node.sql, style)
+        placeholders = _collect_raw_placeholders(node.sql, self.dialect)
         if style == "dollar":
             found = set(placeholders)
             if found != set(range(1, expected + 1)):
@@ -186,56 +194,182 @@ class SQLCompiler:
         # expressions do not reuse stale placeholder indexes (especially `$n`).
         rebound = [self.add_param(value) for value in node.params]
         if style == "dollar":
-            self.write(_rebind_dollar_placeholders(node.sql, rebound))
+            self.write(_rebind_dollar_placeholders(node.sql, rebound, self.dialect))
             return
 
         self.write(node.sql)
 
 
-_STRING_OR_COMMENT = re.compile(
-    r"('(?:''|[^'])*')"  # single-quoted literal
-    r"|(\"(?:\"\"|[^\"])*\")"  # double-quoted identifier/literal
-    r"|(`(?:``|[^`])*`)"  # MySQL identifier
-    r"|(\$[A-Za-z_][A-Za-z0-9_]*\$).*?\1"  # PostgreSQL tagged dollar-quote
-    r"|(\$\$).*?\5"  # PostgreSQL $$ dollar-quote
-    r"|(--[^\n]*)"  # line comment
-    r"|(/\*.*?\*/)",  # block comment
-    re.DOTALL,
-)
+def _raw_scan_options(dialect: Dialect) -> tuple[bool, bool]:
+    """Return ``(mysql_backslash_strings, nested_block_comments)`` for *dialect*."""
+    name = dialect.name
+    mysql_backslash = name in {"mysql", "tidb"}
+    nested_comments = name in {"postgres", "cockroach"}
+    return mysql_backslash, nested_comments
 
 
-def _collect_raw_placeholders(sql: str, style: str) -> list[int]:
+def _iter_raw_code_spans(
+    sql: str,
+    *,
+    mysql_backslash: bool,
+    nested_block_comments: bool,
+) -> list[tuple[bool, str]]:
+    """Split SQL into ``(is_code, text)`` spans, skipping literals/comments."""
+    spans: list[tuple[bool, str]] = []
+    i = 0
+    n = len(sql)
+    code_start = 0
+
+    def flush_code(end: int) -> None:
+        nonlocal code_start
+        if end > code_start:
+            spans.append((True, sql[code_start:end]))
+        code_start = end
+
+    while i < n:
+        ch = sql[i]
+        # Line comment
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            flush_code(i)
+            end = sql.find("\n", i)
+            if end < 0:
+                spans.append((False, sql[i:]))
+                return spans
+            spans.append((False, sql[i : end + 1]))
+            i = end + 1
+            code_start = i
+            continue
+        # Block comment (Postgres allows nesting)
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            flush_code(i)
+            if nested_block_comments:
+                depth = 1
+                j = i + 2
+                while j < n and depth:
+                    if sql[j] == "/" and j + 1 < n and sql[j + 1] == "*":
+                        depth += 1
+                        j += 2
+                        continue
+                    if sql[j] == "*" and j + 1 < n and sql[j + 1] == "/":
+                        depth -= 1
+                        j += 2
+                        continue
+                    j += 1
+                spans.append((False, sql[i:j]))
+                i = j
+                code_start = i
+                continue
+            end = sql.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            spans.append((False, sql[i:end]))
+            i = end
+            code_start = i
+            continue
+        # Dollar-quoted string (Postgres)
+        if ch == "$":
+            tag_end = i + 1
+            while tag_end < n and (sql[tag_end].isalnum() or sql[tag_end] == "_"):
+                tag_end += 1
+            if tag_end < n and sql[tag_end] == "$":
+                tag = sql[i : tag_end + 1]
+                close = sql.find(tag, tag_end + 1)
+                if close >= 0:
+                    flush_code(i)
+                    end = close + len(tag)
+                    spans.append((False, sql[i:end]))
+                    i = end
+                    code_start = i
+                    continue
+        # Single-quoted literal
+        if ch == "'":
+            flush_code(i)
+            j = i + 1
+            while j < n:
+                if mysql_backslash and sql[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            spans.append((False, sql[i:j]))
+            i = j
+            code_start = i
+            continue
+        # Double-quoted identifier/literal
+        if ch == '"':
+            flush_code(i)
+            j = i + 1
+            while j < n:
+                if sql[j] == '"':
+                    if j + 1 < n and sql[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            spans.append((False, sql[i:j]))
+            i = j
+            code_start = i
+            continue
+        # MySQL backtick identifier
+        if ch == "`":
+            flush_code(i)
+            j = i + 1
+            while j < n:
+                if sql[j] == "`":
+                    if j + 1 < n and sql[j + 1] == "`":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            spans.append((False, sql[i:j]))
+            i = j
+            code_start = i
+            continue
+        i += 1
+
+    flush_code(n)
+    return spans
+
+
+def _collect_raw_placeholders(sql: str, dialect: Dialect) -> list[int]:
     """Collect placeholder indexes found outside literals/comments."""
+    mysql_backslash, nested_comments = _raw_scan_options(dialect)
     placeholders: list[int] = []
-    cursor = 0
-    for match in _STRING_OR_COMMENT.finditer(sql):
-        _scan_code_span(sql[cursor : match.start()], style, placeholders)
-        cursor = match.end()
-    _scan_code_span(sql[cursor:], style, placeholders)
+    for is_code, span in _iter_raw_code_spans(
+        sql,
+        mysql_backslash=mysql_backslash,
+        nested_block_comments=nested_comments,
+    ):
+        if is_code:
+            _scan_code_span(span, dialect.positional_style, placeholders)
     return placeholders
 
 
-def _rebind_dollar_placeholders(sql: str, rebound: list[str]) -> str:
+def _rebind_dollar_placeholders(sql: str, rebound: list[str], dialect: Dialect) -> str:
     """Rewrite `$n` placeholders outside literals/comments using rebound tokens."""
+    mysql_backslash, nested_comments = _raw_scan_options(dialect)
     out: list[str] = []
-    cursor = 0
-    for match in _STRING_OR_COMMENT.finditer(sql):
-        out.append(
-            re.sub(
-                r"\$(\d+)",
-                lambda m: rebound[int(m.group(1)) - 1],
-                sql[cursor : match.start()],
+    for is_code, span in _iter_raw_code_spans(
+        sql,
+        mysql_backslash=mysql_backslash,
+        nested_block_comments=nested_comments,
+    ):
+        if is_code:
+            out.append(
+                re.sub(
+                    r"\$(\d+)",
+                    lambda m: rebound[int(m.group(1)) - 1],
+                    span,
+                )
             )
-        )
-        out.append(match.group(0))
-        cursor = match.end()
-    out.append(
-        re.sub(
-            r"\$(\d+)",
-            lambda m: rebound[int(m.group(1)) - 1],
-            sql[cursor:],
-        )
-    )
+        else:
+            out.append(span)
     return "".join(out)
 
 

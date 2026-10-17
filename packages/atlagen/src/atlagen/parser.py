@@ -315,26 +315,39 @@ def _parse_mysql_enum_values(body: str) -> tuple[str, ...]:
     in_quote = False
     quote_char = ""
     escape = False
-    for char in body:
+    index = 0
+    length = len(body)
+    while index < length:
+        char = body[index]
         if in_quote:
             if escape:
                 current.append(char)
                 escape = False
+                index += 1
                 continue
             if char == "\\":
                 escape = True
+                index += 1
                 continue
             if char == quote_char:
+                # SQL standard: doubled quote inside a literal is an escaped quote.
+                if index + 1 < length and body[index + 1] == quote_char:
+                    current.append(quote_char)
+                    index += 2
+                    continue
                 values.append("".join(current))
                 current = []
                 in_quote = False
                 quote_char = ""
+                index += 1
                 continue
             current.append(char)
+            index += 1
             continue
         if char in {"'", '"'}:
             in_quote = True
             quote_char = char
+        index += 1
     return tuple(values)
 
 
