@@ -53,9 +53,10 @@ def test_extract_sql_meta_operations() -> None:
     assert extract_sql_meta("UPDATE users SET name = $1") == ("UPDATE", "users")
     assert extract_sql_meta("DELETE FROM `orders` WHERE id = %s") == ("DELETE", "orders")
     assert extract_sql_meta("BEGIN") == ("BEGIN", None)
-    assert extract_sql_meta(
-        "WITH cte AS (SELECT id FROM posts) SELECT id FROM users"
-    ) == ("SELECT", None)
+    assert extract_sql_meta("WITH cte AS (SELECT id FROM posts) SELECT id FROM users") == (
+        "SELECT",
+        None,
+    )
 
 
 @pytest.mark.asyncio
@@ -133,3 +134,111 @@ async def test_otel_adapter_records_errors() -> None:
 def test_extract_sql_meta_sqlite_quotes() -> None:
     assert extract_sql_meta('SELECT * FROM "public"."users"') == ("SELECT", "users")
     _ = SQLiteDialect()  # ensure dialect import stays available for adapters
+
+
+class _NoDialectAdapter:
+    """Driver-like adapter that does not expose ``dialect``."""
+
+    async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
+        return [(1,)]
+
+
+class _KwargsTxAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tx_kwargs: list[dict[str, Any]] = []
+
+    @asynccontextmanager
+    async def transaction(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        *,
+        isolation: str | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[FakeAdapter, None]:
+        self.tx_kwargs.append(
+            {"isolation": isolation, "readonly": readonly, "deferrable": deferrable}
+        )
+        yield self
+
+
+def _tracer_with_exporter() -> tuple[Any, Any]:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider.get_tracer("test"), exporter
+
+
+@pytest.mark.asyncio
+async def test_otel_error_span_does_not_leak_exception_message() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    tracer, exporter = _tracer_with_exporter()
+
+    class LeakyAdapter(FakeAdapter):
+        async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
+            msg = "Duplicate entry 'dup@example.com' for key 'email'"
+            raise RuntimeError(msg)
+
+    adapter = OTelAdapter(LeakyAdapter(), tracer=tracer)
+    with pytest.raises(RuntimeError):
+        await adapter.fetch_all("SELECT 1", ["dup@example.com"])
+    span = exporter.get_finished_spans()[0]
+    exception_events = [e for e in span.events if e.name == "exception"]
+    assert len(exception_events) == 1
+    assert exception_events[0].attributes is not None
+    assert exception_events[0].attributes["exception.type"] == "RuntimeError"
+    assert "dup@example.com" not in str(exception_events[0].attributes)
+    assert span.status.description == "RuntimeError"
+    assert "dup@example.com" not in repr(span.status)
+
+
+@pytest.mark.asyncio
+async def test_otel_wraps_adapter_without_dialect() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    tracer, exporter = _tracer_with_exporter()
+    adapter = OTelAdapter(_NoDialectAdapter(), tracer=tracer)  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+    assert await adapter.fetch_all("SELECT 1") == [(1,)]
+    attrs = dict(exporter.get_finished_spans()[0].attributes or {})
+    assert "db.system.name" not in attrs
+
+
+@pytest.mark.asyncio
+async def test_otel_transaction_shares_instruments_and_forwards_options() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    tracer, _ = _tracer_with_exporter()
+    inner = _KwargsTxAdapter()
+    adapter = OTelAdapter(inner, tracer=tracer)
+    async with adapter.transaction(isolation="serializable", readonly=True) as tx:
+        assert tx._duration is adapter._duration  # pyright: ignore[reportPrivateUsage]
+        assert tx._ops is adapter._ops  # pyright: ignore[reportPrivateUsage]
+        assert tx._tx_active is adapter._tx_active  # pyright: ignore[reportPrivateUsage]
+    assert inner.tx_kwargs == [{"isolation": "serializable", "readonly": True, "deferrable": False}]
+
+
+@pytest.mark.asyncio
+async def test_instrumented_transaction_default_call_omits_unset_options() -> None:
+    inner = FakeAdapter()  # transaction() accepts no options
+    adapter = InstrumentedAdapter(inner)
+    async with adapter.transaction() as tx:
+        assert await tx.fetch_val("SELECT 1") == 1
+    kwarg_inner = _KwargsTxAdapter()
+    async with InstrumentedAdapter(kwarg_inner).transaction(deferrable=True):
+        pass
+    assert kwarg_inner.tx_kwargs == [{"isolation": None, "readonly": False, "deferrable": True}]
+
+
+def test_asyncpg_adapter_exposes_dialect() -> None:
+    from atla.adapter.asyncpg import AsyncpgAdapter
+
+    class FakePool:
+        def acquire(self) -> None:  # marker for pool mode
+            raise NotImplementedError
+
+    adapter = AsyncpgAdapter(FakePool())
+    assert isinstance(adapter.dialect, PostgresDialect)
+    OTelAdapter(adapter)  # must not raise AttributeError
+    InstrumentedAdapter(adapter)

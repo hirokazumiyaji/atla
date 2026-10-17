@@ -41,6 +41,10 @@ class AsyncpgAdapter:
         # Connection does not. Prefer acquire() as the sole pool marker.
         self._pool_mode = hasattr(pool_or_conn, "acquire")
 
+    @property
+    def dialect(self) -> Dialect:
+        return self._dialect
+
     def _ensure_not_checked_out(self) -> None:
         if self._tx_active:
             msg = (

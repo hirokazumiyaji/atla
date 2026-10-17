@@ -5,10 +5,12 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from functools import cache
 from typing import Any
 
 from atla.adapter.base import DBAdapter
 from atla.dialect import Dialect
+from atla.observability.instrumented import transaction_kwargs
 from atla.observability.sql_meta import extract_sql_meta
 
 _DIALECT_SYSTEM: dict[str, str] = {
@@ -20,7 +22,9 @@ _DIALECT_SYSTEM: dict[str, str] = {
 }
 
 
+@cache
 def _require_otel() -> tuple[Any, Any, Any, Any, Any]:
+    """Import OpenTelemetry symbols once; the result is cached for the process."""
     try:
         from opentelemetry import metrics, trace
         from opentelemetry.trace import SpanKind, Status, StatusCode
@@ -28,6 +32,24 @@ def _require_otel() -> tuple[Any, Any, Any, Any, Any]:
         msg = "OpenTelemetry is required for OTelAdapter; install with `pip install atla[otel]`"
         raise ImportError(msg) from exc
     return metrics, trace, Status, StatusCode, SpanKind
+
+
+def _record_error(span: Any, exc: BaseException) -> None:
+    """Mark ``span`` failed without leaking driver error text.
+
+    Driver messages often embed bound values (e.g. ``Duplicate entry 'a@b.c'``), so
+    neither ``record_exception`` (message + stack trace) nor the status description
+    may carry ``str(exc)``. Only the exception type is exported.
+    """
+    _, _, Status, StatusCode, _ = _require_otel()
+    exc_type = type(exc)
+    qualified = (
+        exc_type.__qualname__
+        if exc_type.__module__ == "builtins"
+        else f"{exc_type.__module__}.{exc_type.__qualname__}"
+    )
+    span.add_event("exception", {"exception.type": qualified})
+    span.set_status(Status(StatusCode.ERROR, exc_type.__name__))
 
 
 def _sqlcomment_for_span(sql: str, span: Any) -> str:
@@ -40,7 +62,11 @@ def _sqlcomment_for_span(sql: str, span: Any) -> str:
 
 
 class OTelAdapter:
-    """Decorate a ``DBAdapter`` with OpenTelemetry spans, metrics, and SQLCommenter."""
+    """Decorate a ``DBAdapter`` with OpenTelemetry spans, metrics, and SQLCommenter.
+
+    Failed operations record only the exception *type* on the span (no message or
+    stack trace), because driver errors frequently echo bound parameter values.
+    """
 
     __slots__ = (
         "_capture_parameters",
@@ -97,18 +123,31 @@ class OTelAdapter:
             "db.client.transactions.active",
             description="Active database transactions",
         )
-        self._system = _DIALECT_SYSTEM.get(inner.dialect.name, inner.dialect.name)
+        # Tolerate adapters that do not expose ``dialect`` (omit db.system then).
+        dialect_name = getattr(getattr(inner, "dialect", None), "name", None)
+        self._system: str | None = (
+            _DIALECT_SYSTEM.get(dialect_name, dialect_name)
+            if isinstance(dialect_name, str)
+            else None
+        )
+
+    def _with_inner(self, inner: DBAdapter) -> OTelAdapter:
+        """Clone this wrapper around ``inner``, sharing tracer, meter, and instruments."""
+        clone = object.__new__(type(self))
+        for slot in OTelAdapter.__slots__:
+            setattr(clone, slot, getattr(self, slot))
+        clone._inner = inner
+        return clone
 
     @property
     def dialect(self) -> Dialect:
         return self._inner.dialect
 
     def _base_attrs(self, operation: str, collection: str | None) -> dict[str, Any]:
-        attrs: dict[str, Any] = {
-            "db.system.name": self._system,
-            "db.system": self._system,
-            "db.operation.name": operation,
-        }
+        attrs: dict[str, Any] = {"db.operation.name": operation}
+        if self._system is not None:
+            attrs["db.system.name"] = self._system
+            attrs["db.system"] = self._system
         if collection is not None:
             attrs["db.collection.name"] = collection
         if self._db_namespace is not None:
@@ -126,15 +165,15 @@ class OTelAdapter:
             return self._param_sanitizer(params)
         return params
 
-    async def _run(
+    async def _run[T](
         self,
         sql: str,
         params: Sequence[Any] | None,
-        coro_factory: Callable[[str], Awaitable[Any]],
+        coro_factory: Callable[[str], Awaitable[T]],
         *,
-        row_count: Callable[[Any], int | None] | None = None,
-    ) -> Any:
-        _, _, Status, StatusCode, SpanKind = _require_otel()
+        row_count: Callable[[T], int | None] | None = None,
+    ) -> T:
+        _, _, _, _, SpanKind = _require_otel()
         operation, collection = extract_sql_meta(sql)
         span_name = f"{operation} {collection}" if collection else operation
         attrs = self._base_attrs(operation, collection)
@@ -143,15 +182,19 @@ class OTelAdapter:
         if captured is not None:
             attrs["db.query.parameter"] = [repr(value) for value in captured]
         started = time.perf_counter()
-        with self._tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
+        with self._tracer.start_as_current_span(
+            span_name,
+            kind=SpanKind.CLIENT,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             for key, value in attrs.items():
                 span.set_attribute(key, value)
             annotated = _sqlcomment_for_span(sql, span) if self._sqlcommenter else sql
             try:
                 result = await coro_factory(annotated)
             except BaseException as exc:
-                span.record_exception(exc)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                _record_error(span, exc)
                 self._ops.add(1, {**attrs, "error.type": type(exc).__name__})
                 self._duration.record(time.perf_counter() - started, attrs)
                 raise
@@ -198,7 +241,7 @@ class OTelAdapter:
         )
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
-        return await self._run(
+        await self._run(
             sql,
             None,
             lambda annotated: self._inner.execute_many(annotated, params_seq),
@@ -206,31 +249,36 @@ class OTelAdapter:
         )
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[OTelAdapter, None]:
-        _, _, Status, StatusCode, SpanKind = _require_otel()
+    async def transaction(
+        self,
+        *,
+        isolation: str | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[OTelAdapter, None]:
+        """Begin a transaction span on the wrapped adapter.
+
+        Options are forwarded only when set, so adapters whose ``transaction()`` does
+        not yet accept them keep working; adapters that do (#53) receive them intact.
+        """
+        _, _, _, _, SpanKind = _require_otel()
         attrs = self._base_attrs("BEGIN", None)
         self._tx_active.add(1, attrs)
-        with self._tracer.start_as_current_span("BEGIN", kind=SpanKind.CLIENT) as span:
+        with self._tracer.start_as_current_span(
+            "BEGIN",
+            kind=SpanKind.CLIENT,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             for key, value in attrs.items():
                 span.set_attribute(key, value)
             try:
-                async with self._inner.transaction() as tx:
-                    wrapped = OTelAdapter(
-                        tx,
-                        db_namespace=self._db_namespace,
-                        server_address=self._server_address,
-                        server_port=self._server_port,
-                        sqlcommenter=self._sqlcommenter,
-                        slow_query_ms=self._slow_query_ms,
-                        capture_parameters=self._capture_parameters,
-                        param_sanitizer=self._param_sanitizer,
-                        tracer=self._tracer,
-                        meter=self._meter,
-                    )
-                    yield wrapped
+                async with self._inner.transaction(
+                    **transaction_kwargs(isolation, readonly, deferrable)
+                ) as tx:
+                    yield self._with_inner(tx)
             except BaseException as exc:
-                span.record_exception(exc)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                _record_error(span, exc)
                 raise
             finally:
                 self._tx_active.add(-1, attrs)

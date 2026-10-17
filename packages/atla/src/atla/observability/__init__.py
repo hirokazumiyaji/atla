@@ -1,7 +1,12 @@
 """Optional observability adapters (zero cost when unused)."""
 
+from typing import TYPE_CHECKING
+
 from atla.observability.instrumented import InstrumentedAdapter
 from atla.observability.sql_meta import extract_sql_meta
+
+if TYPE_CHECKING:
+    from atla.observability.otel import OTelAdapter
 
 __all__ = [
     "InstrumentedAdapter",

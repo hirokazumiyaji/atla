@@ -14,6 +14,19 @@ from atla.observability.sql_meta import extract_sql_meta
 
 logger = logging.getLogger("atla.observability")
 
+
+def transaction_kwargs(isolation: str | None, readonly: bool, deferrable: bool) -> dict[str, Any]:
+    """Collect only the transaction options the caller actually set."""
+    kwargs: dict[str, Any] = {}
+    if isolation is not None:
+        kwargs["isolation"] = isolation
+    if readonly:
+        kwargs["readonly"] = True
+    if deferrable:
+        kwargs["deferrable"] = True
+    return kwargs
+
+
 OnQueryEnd = Callable[[str, str | None, float, Sequence[Any] | None], None]
 OnSlowQuery = Callable[[str, str | None, float, Sequence[Any] | None], None]
 OnError = Callable[[str, BaseException, Sequence[Any] | None], None]
@@ -49,12 +62,12 @@ class InstrumentedAdapter:
     def dialect(self) -> Dialect:
         return self._inner.dialect
 
-    async def _timed(
+    async def _timed[T](
         self,
         sql: str,
         params: Sequence[Any] | None,
-        coro: Awaitable[Any],
-    ) -> Any:
+        coro: Awaitable[T],
+    ) -> T:
         operation, collection = extract_sql_meta(sql)
         started = time.perf_counter()
         try:
@@ -98,11 +111,24 @@ class InstrumentedAdapter:
         return await self._timed(sql, params, self._inner.execute(sql, params))
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
-        return await self._timed(sql, None, self._inner.execute_many(sql, params_seq))
+        await self._timed(sql, None, self._inner.execute_many(sql, params_seq))
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[InstrumentedAdapter, None]:
-        async with self._inner.transaction() as tx:
+    async def transaction(
+        self,
+        *,
+        isolation: str | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[InstrumentedAdapter, None]:
+        """Begin a transaction on the wrapped adapter.
+
+        Options are forwarded only when set, so adapters whose ``transaction()`` does
+        not yet accept them keep working; adapters that do (#53) receive them intact.
+        """
+        async with self._inner.transaction(
+            **transaction_kwargs(isolation, readonly, deferrable)
+        ) as tx:
             yield InstrumentedAdapter(
                 tx,
                 slow_query_ms=self._slow_query_ms,
