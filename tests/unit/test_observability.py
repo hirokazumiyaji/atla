@@ -110,6 +110,40 @@ async def test_otel_adapter_records_span_without_params() -> None:
 
 
 @pytest.mark.asyncio
+async def test_otel_metrics_omit_sql_and_params_from_labels() -> None:
+    """Metric attribute sets must stay low-cardinality (no SQL text / params)."""
+    pytest.importorskip("opentelemetry")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    tracer = TracerProvider().get_tracer("test")
+    recorded: list[dict[str, Any]] = []
+
+    class _RecordingHistogram:
+        def record(self, _amount: float, attributes: dict[str, Any] | None = None) -> None:
+            recorded.append(dict(attributes or {}))
+
+    class _RecordingCounter:
+        def add(self, _amount: int, attributes: dict[str, Any] | None = None) -> None:
+            recorded.append(dict(attributes or {}))
+
+    inner = FakeAdapter()
+    adapter = OTelAdapter(inner, tracer=tracer, capture_parameters=True)
+    adapter._duration = _RecordingHistogram()  # pyright: ignore[reportAttributeAccessIssue]
+    adapter._ops = _RecordingCounter()  # pyright: ignore[reportAttributeAccessIssue]
+
+    await adapter.fetch_all(
+        'SELECT id FROM "users" WHERE email = $1',
+        ["secret@example.com"],
+    )
+    assert recorded
+    for attrs in recorded:
+        assert "db.query.text" not in attrs
+        assert "db.query.parameter" not in attrs
+        assert "secret@example.com" not in str(attrs)
+        assert attrs.get("db.operation.name") == "SELECT"
+
+
+@pytest.mark.asyncio
 async def test_otel_adapter_records_errors() -> None:
     pytest.importorskip("opentelemetry")
     from opentelemetry.sdk.trace import TracerProvider

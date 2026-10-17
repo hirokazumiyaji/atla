@@ -185,11 +185,14 @@ class OTelAdapter:
         _, _, _, _, SpanKind = _require_otel()
         operation, collection = extract_sql_meta(sql)
         span_name = f"{operation} {collection}" if collection else operation
-        attrs = self._base_attrs(operation, collection)
-        attrs["db.query.text"] = sql
+        # Low-cardinality labels only — never put SQL text or parameter values on
+        # metric attribute sets (cardinality explosion + credential leakage).
+        metric_attrs = self._base_attrs(operation, collection)
+        span_attrs = dict(metric_attrs)
+        span_attrs["db.query.text"] = sql
         captured = self._maybe_params(params)
         if captured is not None:
-            attrs["db.query.parameter"] = [repr(value) for value in captured]
+            span_attrs["db.query.parameter"] = [repr(value) for value in captured]
         started = time.perf_counter()
         with self._tracer.start_as_current_span(
             span_name,
@@ -197,7 +200,7 @@ class OTelAdapter:
             record_exception=False,
             set_status_on_exception=False,
         ) as span:
-            for key, value in attrs.items():
+            for key, value in span_attrs.items():
                 span.set_attribute(key, value)
             annotated = (
                 _sqlcomment_for_span(sql, span, dialect_name=self._dialect_name)
@@ -208,8 +211,8 @@ class OTelAdapter:
                 result = await coro_factory(annotated)
             except BaseException as exc:
                 _record_error(span, exc)
-                self._ops.add(1, {**attrs, "error.type": type(exc).__name__})
-                self._duration.record(time.perf_counter() - started, attrs)
+                self._ops.add(1, {**metric_attrs, "error.type": type(exc).__name__})
+                self._duration.record(time.perf_counter() - started, metric_attrs)
                 raise
             elapsed = time.perf_counter() - started
             if row_count is not None:
@@ -218,8 +221,8 @@ class OTelAdapter:
                     span.set_attribute("db.response.returned_rows", count)
             if self._slow_query_ms is not None and elapsed * 1000.0 >= self._slow_query_ms:
                 span.set_attribute("atla.slow_query", True)
-            self._ops.add(1, attrs)
-            self._duration.record(elapsed, attrs)
+            self._ops.add(1, metric_attrs)
+            self._duration.record(elapsed, metric_attrs)
             return result
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
