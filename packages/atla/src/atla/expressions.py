@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn, overload
 from typing import Literal as TypingLiteral
+from typing import cast as typing_cast
 
 OrderDirection = TypingLiteral["ASC", "DESC"]
 NullsPosition = TypingLiteral["FIRST", "LAST"]
 
+_SQL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\([\d,\s]+\))?(\[\])?$")
 _FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 # Exact tokens emitted by the expression API / compiler (no free-form SQL).
@@ -24,17 +26,19 @@ _BINARY_OPS = frozenset(
         "+",
         "-",
         "*",
+        "/",
+        "%",
         "LIKE",
         "ILIKE",
     }
 )
-_UNARY_OPS = frozenset({"NOT ", "IS NULL", "IS NOT NULL"})
+_UNARY_OPS = frozenset({"NOT ", "IS NULL", "IS NOT NULL", "-"})
 _LOGICAL_OPS = frozenset({"AND", "OR"})
 
 
 def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
     if isinstance(value, Expr):
-        return cast(Expr[T], value)
+        return typing_cast(Expr[T], value)
     return Literal(value)
 
 
@@ -71,7 +75,7 @@ def _normalize_order_direction(direction: str) -> OrderDirection:
     if normalized not in {"ASC", "DESC"}:
         msg = f"ORDER BY direction must be ASC or DESC, got {direction!r}"
         raise ValueError(msg)
-    return cast(OrderDirection, normalized)
+    return typing_cast(OrderDirection, normalized)
 
 
 def _normalize_nulls(nulls: str | None) -> NullsPosition | None:
@@ -81,7 +85,7 @@ def _normalize_nulls(nulls: str | None) -> NullsPosition | None:
     if normalized not in {"FIRST", "LAST"}:
         msg = f"ORDER BY nulls must be FIRST or LAST, got {nulls!r}"
         raise ValueError(msg)
-    return cast(NullsPosition, normalized)
+    return typing_cast(NullsPosition, normalized)
 
 
 # Use ``!`` rather than ``\`` so ESCAPE literals stay portable on MySQL/TiDB
@@ -103,6 +107,11 @@ class Expr[T_co]:
 
     __slots__ = ()
 
+    # ``__eq__`` builds SQL predicates, not value equality. Identity hashing is
+    # intentional (``object.__hash__``): do not derive a value hash from SQL form.
+    # ``set`` / ``dict`` membership is therefore by object identity only.
+    __hash__ = object.__hash__  # type: ignore[assignment, unused-ignore]  # pyright: ignore[reportAssignmentType]
+
     def __bool__(self) -> NoReturn:
         raise TypeError(
             "SQL expression cannot be evaluated as a Python boolean. "
@@ -111,13 +120,186 @@ class Expr[T_co]:
         )
 
     def __and__(self: Expr[bool], other: Expr[bool]) -> LogicalOp:
-        return cast(LogicalOp, and_(self, other))
+        return typing_cast(LogicalOp, and_(self, other))
 
     def __or__(self: Expr[bool], other: Expr[bool]) -> LogicalOp:
-        return cast(LogicalOp, or_(self, other))
+        return typing_cast(LogicalOp, or_(self, other))
 
     def __invert__(self: Expr[bool]) -> UnaryOp[bool]:
         return UnaryOp("NOT ", self, postfix=False)
+
+    # --- Comparison ---
+
+    @overload  # type: ignore[override]
+    def __eq__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def __eq__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def __eq__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
+        self: Expr[T], other: T | Expr[T] | None
+    ) -> BinaryOp[bool] | UnaryOp[bool]:
+        if other is None:
+            return UnaryOp("IS NULL", self, postfix=True)
+        return BinaryOp("=", self, _coerce_literal(other))
+
+    @overload  # type: ignore[override]
+    def __ne__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def __ne__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def __ne__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
+        self: Expr[T], other: T | Expr[T] | None
+    ) -> BinaryOp[bool] | UnaryOp[bool]:
+        if other is None:
+            return UnaryOp("IS NOT NULL", self, postfix=True)
+        return BinaryOp("<>", self, _coerce_literal(other))
+
+    def __lt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(other))
+
+    def __le__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(other))
+
+    def __gt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(other))
+
+    def __ge__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(other))
+
+    @overload
+    def eq[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def eq[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def eq[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+        # Match ``__eq__``: ``None`` becomes ``IS NULL``, not ``= NULL``.
+        return self == other
+
+    @overload
+    def ne[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def ne[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def ne[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+        return self != other
+
+    def lt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(other))
+
+    def le[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(other))
+
+    def gt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(other))
+
+    def ge[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(other))
+
+    def is_null(self) -> UnaryOp[bool]:
+        return UnaryOp("IS NULL", self, postfix=True)
+
+    def is_not_null(self) -> UnaryOp[bool]:
+        return UnaryOp("IS NOT NULL", self, postfix=True)
+
+    def in_(self, values: Sequence[Any]) -> InOp[Any]:
+        return InOp(self, tuple(values), negated=False)
+
+    def not_in(self, values: Sequence[Any]) -> InOp[Any]:
+        return InOp(self, tuple(values), negated=True)
+
+    def between(self, low: Any, high: Any) -> BetweenOp[Any]:
+        return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
+
+    def like(self, pattern: str) -> BinaryOp[bool]:
+        """Raw SQL ``LIKE`` — ``%`` / ``_`` keep wildcard meaning.
+
+        For literal substring / prefix / suffix matching (with automatic
+        escaping and ``ESCAPE '!'``), use :meth:`contains`, :meth:`starts_with`,
+        or :meth:`ends_with` instead.
+        """
+        return BinaryOp("LIKE", self, Literal(pattern))
+
+    def ilike(self, pattern: str) -> BinaryOp[bool]:
+        """Raw SQL ``ILIKE`` / lowercased ``LIKE`` — wildcards stay active.
+
+        Prefer :meth:`icontains`, :meth:`istarts_with`, or :meth:`iends_with`
+        when the input should be matched literally.
+        """
+        return BinaryOp("ILIKE", self, Literal(pattern))
+
+    def contains(self, substring: str) -> LikeOp:
+        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"%{escape_like(substring)}%")
+
+    def starts_with(self, prefix: str) -> LikeOp:
+        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"{escape_like(prefix)}%")
+
+    def ends_with(self, suffix: str) -> LikeOp:
+        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"%{escape_like(suffix)}")
+
+    def icontains(self, substring: str) -> LikeOp:
+        """Case-insensitive substring match (``ILIKE`` / lowercased ``LIKE``)."""
+        return LikeOp("ILIKE", self, f"%{escape_like(substring)}%")
+
+    def istarts_with(self, prefix: str) -> LikeOp:
+        """Case-insensitive prefix match."""
+        return LikeOp("ILIKE", self, f"{escape_like(prefix)}%")
+
+    def iends_with(self, suffix: str) -> LikeOp:
+        """Case-insensitive suffix match."""
+        return LikeOp("ILIKE", self, f"%{escape_like(suffix)}")
+
+    # --- Arithmetic ---
+
+    def __add__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("+", self, _coerce_literal(other))
+
+    def __radd__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("+", _coerce_literal(other), self)
+
+    def __sub__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("-", self, _coerce_literal(other))
+
+    def __rsub__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("-", _coerce_literal(other), self)
+
+    def __mul__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("*", self, _coerce_literal(other))
+
+    def __rmul__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("*", _coerce_literal(other), self)
+
+    def __truediv__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("/", self, _coerce_literal(other))
+
+    def __rtruediv__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("/", _coerce_literal(other), self)
+
+    def __mod__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("%", self, _coerce_literal(other))
+
+    def __rmod__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
+        return BinaryOp("%", _coerce_literal(other), self)
+
+    def __neg__[T](self: Expr[T]) -> UnaryOp[T]:
+        return UnaryOp("-", self, postfix=False)
+
+    # --- Ordering / alias ---
+
+    def asc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
+        return OrderByClause(self, direction="ASC", nulls=nulls)
+
+    def desc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
+        return OrderByClause(self, direction="DESC", nulls=nulls)
+
+    def as_(self, alias: str) -> AliasedExpr[T_co]:
+        return AliasedExpr(self, alias)
 
 
 class Literal[T](Expr[T]):
@@ -235,6 +417,50 @@ class RawSQL[T](Expr[T]):
         self.params = params
 
 
+class AliasedExpr[T](Expr[T]):
+    """Expression projected under an SQL alias (``expr AS name``)."""
+
+    __slots__ = ("alias", "expr")
+
+    def __init__(self, expr: Expr[T], alias: str) -> None:
+        self.expr = expr
+        self.alias = alias
+
+
+class CastExpr[T](Expr[T]):
+    """SQL ``CAST(expr AS type)``."""
+
+    __slots__ = ("expr", "sql_type")
+
+    def __init__(self, expr: Expr[Any], sql_type: str) -> None:
+        self.expr = expr
+        self.sql_type = sql_type
+
+
+class WhenThen:
+    """One ``WHEN … THEN …`` arm of a ``CASE`` expression."""
+
+    __slots__ = ("result", "when")
+
+    def __init__(self, when: Expr[bool], result: Expr[Any]) -> None:
+        self.when = when
+        self.result = result
+
+
+class CaseExpr[T](Expr[T]):
+    """SQL ``CASE WHEN … THEN … ELSE … END``."""
+
+    __slots__ = ("else_", "whens")
+
+    def __init__(
+        self,
+        whens: tuple[WhenThen, ...],
+        else_: Expr[T] | None = None,
+    ) -> None:
+        self.whens = whens
+        self.else_ = else_
+
+
 class ExcludedRef[T](Expr[T]):
     """Upsert conflict-row reference (``EXCLUDED.col`` / ``VALUES(col)``)."""
 
@@ -288,134 +514,6 @@ class Column[T](Expr[T]):
         self.name = name
         self.alias = alias
         self.decoder = decoder
-
-    # Identity hash: ``__eq__`` builds SQL, so value-equality hashing is undefined.
-    __hash__ = object.__hash__
-
-    # --- Comparison operators ---
-
-    def __eq__(  # type: ignore[override]
-        self, other: T | Expr[T] | None
-    ) -> BinaryOp[bool] | UnaryOp[bool]:
-        if other is None:
-            return UnaryOp("IS NULL", self, postfix=True)
-        return BinaryOp("=", self, _coerce_literal(other))
-
-    def __ne__(  # type: ignore[override]
-        self, other: T | Expr[T] | None
-    ) -> BinaryOp[bool] | UnaryOp[bool]:
-        if other is None:
-            return UnaryOp("IS NOT NULL", self, postfix=True)
-        return BinaryOp("<>", self, _coerce_literal(other))
-
-    def __lt__(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<", self, _coerce_literal(other))
-
-    def __le__(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<=", self, _coerce_literal(other))
-
-    def __gt__(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">", self, _coerce_literal(other))
-
-    def __ge__(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">=", self, _coerce_literal(other))
-
-    # --- Explicit comparison methods (linter-friendly) ---
-
-    def eq(self, other: T | Expr[T]) -> Expr[bool]:
-        return self == other
-
-    def ne(self, other: T | Expr[T]) -> Expr[bool]:
-        return self != other
-
-    def lt(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return self < other
-
-    def le(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return self <= other
-
-    def gt(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return self > other
-
-    def ge(self, other: T | Expr[T]) -> BinaryOp[bool]:
-        return self >= other
-
-    def is_null(self) -> UnaryOp[bool]:
-        return UnaryOp("IS NULL", self, postfix=True)
-
-    def is_not_null(self) -> UnaryOp[bool]:
-        return UnaryOp("IS NOT NULL", self, postfix=True)
-
-    # --- Collection, range & pattern matching ---
-
-    def in_(self, values: Sequence[T]) -> InOp[T]:
-        return InOp(self, tuple(values), negated=False)
-
-    def not_in(self, values: Sequence[T]) -> InOp[T]:
-        return InOp(self, tuple(values), negated=True)
-
-    def between(self, low: T | Expr[T], high: T | Expr[T]) -> BetweenOp[T]:
-        return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
-
-    def like(self, pattern: str) -> BinaryOp[bool]:
-        """Raw SQL ``LIKE`` — ``%`` / ``_`` keep wildcard meaning.
-
-        For literal substring / prefix / suffix matching (with automatic
-        escaping and ``ESCAPE '!'``), use :meth:`contains`, :meth:`starts_with`,
-        or :meth:`ends_with` instead.
-        """
-        return BinaryOp("LIKE", self, Literal(pattern))
-
-    def ilike(self, pattern: str) -> BinaryOp[bool]:
-        """Raw SQL ``ILIKE`` / lowercased ``LIKE`` — wildcards stay active.
-
-        Prefer :meth:`icontains`, :meth:`istarts_with`, or :meth:`iends_with`
-        when the input should be matched literally.
-        """
-        return BinaryOp("ILIKE", self, Literal(pattern))
-
-    def contains(self, substring: str) -> LikeOp:
-        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return LikeOp("LIKE", self, f"%{escape_like(substring)}%")
-
-    def starts_with(self, prefix: str) -> LikeOp:
-        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return LikeOp("LIKE", self, f"{escape_like(prefix)}%")
-
-    def ends_with(self, suffix: str) -> LikeOp:
-        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return LikeOp("LIKE", self, f"%{escape_like(suffix)}")
-
-    def icontains(self, substring: str) -> LikeOp:
-        """Case-insensitive substring match (``ILIKE`` / lowercased ``LIKE``)."""
-        return LikeOp("ILIKE", self, f"%{escape_like(substring)}%")
-
-    def istarts_with(self, prefix: str) -> LikeOp:
-        """Case-insensitive prefix match."""
-        return LikeOp("ILIKE", self, f"{escape_like(prefix)}%")
-
-    def iends_with(self, suffix: str) -> LikeOp:
-        """Case-insensitive suffix match."""
-        return LikeOp("ILIKE", self, f"%{escape_like(suffix)}")
-
-    # --- Arithmetic (e.g. UPDATE User.age + 1) ---
-
-    def __add__(self, other: T | Expr[T]) -> BinaryOp[T]:
-        return BinaryOp("+", self, _coerce_literal(other))
-
-    def __sub__(self, other: T | Expr[T]) -> BinaryOp[T]:
-        return BinaryOp("-", self, _coerce_literal(other))
-
-    def __mul__(self, other: T | Expr[T]) -> BinaryOp[T]:
-        return BinaryOp("*", self, _coerce_literal(other))
-
-    # --- Ordering ---
-
-    def asc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
-        return OrderByClause(self, direction="ASC", nulls=nulls)
-
-    def desc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
-        return OrderByClause(self, direction="DESC", nulls=nulls)
 
 
 def _flatten_logical(op: str, clauses: tuple[Expr[bool], ...]) -> tuple[Expr[bool], ...]:
@@ -479,6 +577,84 @@ def min_[T](expr: Expr[T]) -> FuncCall[T | None]:
 def max_[T](expr: Expr[T]) -> FuncCall[T | None]:
     """SQL MAX aggregate."""
     return FuncCall("MAX", (expr,))
+
+
+def coalesce[T](*exprs: Expr[T] | T) -> FuncCall[T]:
+    """SQL ``COALESCE``."""
+    if not exprs:
+        msg = "coalesce() requires at least one argument"
+        raise ValueError(msg)
+    return FuncCall("COALESCE", tuple(_coerce_literal(expr) for expr in exprs))
+
+
+def nullif[T](left: Expr[T] | T, right: Expr[T] | T) -> FuncCall[T | None]:
+    """SQL ``NULLIF``."""
+    return FuncCall("NULLIF", (_coerce_literal(left), _coerce_literal(right)))
+
+
+def cast[T](
+    expr: Expr[Any] | Any,
+    sql_type: str,
+    python_type: type[T] | None = None,
+) -> CastExpr[T]:
+    """SQL ``CAST(expr AS sql_type)``.
+
+    Pass ``python_type`` to pin the result's static type, e.g.
+    ``cast(col, "text", str)``.
+
+    ``sql_type`` is concatenated into SQL as a trusted developer-supplied type
+    name (not user input). Only simple type tokens are accepted.
+    """
+    if not _SQL_TYPE_RE.fullmatch(sql_type):
+        msg = f"invalid SQL type: {sql_type!r}"
+        raise ValueError(msg)
+    _ = python_type
+    return CastExpr(_coerce_literal(expr), sql_type)
+
+
+def when(condition: Expr[bool], result: Expr[Any] | Any) -> WhenThen:
+    """Build a ``WHEN … THEN …`` arm for :func:`case`."""
+    return WhenThen(condition, _coerce_literal(result))
+
+
+def case[T](*whens: WhenThen, else_: Expr[T] | T | None = None) -> CaseExpr[T]:
+    """SQL searched ``CASE`` expression."""
+    if not whens:
+        msg = "case() requires at least one when(...)"
+        raise ValueError(msg)
+    else_expr = None if else_ is None else _coerce_literal(else_)
+    return CaseExpr(whens, else_expr)
+
+
+def lower(expr: Expr[str] | str) -> FuncCall[str]:
+    """SQL ``LOWER``."""
+    return FuncCall("LOWER", (_coerce_literal(expr),))
+
+
+def upper(expr: Expr[str] | str) -> FuncCall[str]:
+    """SQL ``UPPER``."""
+    return FuncCall("UPPER", (_coerce_literal(expr),))
+
+
+def concat(*exprs: Expr[Any] | Any) -> FuncCall[str]:
+    """SQL ``CONCAT``.
+
+    Requires SQLite 3.44+ (earlier versions have no ``CONCAT``; use ``||``).
+    Postgres / MySQL / TiDB / CockroachDB support ``CONCAT`` natively.
+    """
+    if not exprs:
+        msg = "concat() requires at least one argument"
+        raise ValueError(msg)
+    return FuncCall("CONCAT", tuple(_coerce_literal(expr) for expr in exprs))
+
+
+def now() -> FuncCall[Any]:
+    """SQL ``NOW()`` / current timestamp function.
+
+    Not available on SQLite — use ``raw_sql("CURRENT_TIMESTAMP")`` or
+    ``raw_sql("datetime('now')")`` instead.
+    """
+    return FuncCall("NOW", ())
 
 
 def raw_sql(sql: str, *params: Any) -> RawSQL[Any]:
