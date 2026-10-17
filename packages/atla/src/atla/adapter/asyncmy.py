@@ -114,6 +114,9 @@ class AsyncmyAdapter:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
+        # Match fetch_*/execute*: the outer pool adapter must not be reused
+        # while this task already holds a checkout (use the yielded adapter).
+        ensure_not_checked_out(self._checkout_owners)
         if self._pool is not None and self._conn is None:
             # Per-task checkout: peers may still acquire from the same pool.
             with checkout_scope(self._checkout_owners):

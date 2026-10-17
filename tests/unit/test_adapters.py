@@ -522,3 +522,17 @@ async def test_asyncpg_pool_checkout_is_per_adapter_instance() -> None:
         with pytest.raises(RuntimeError, match="active transaction"):
             await first.fetch_all("SELECT 1")
         assert await second.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_blocks_nested_outer_transaction() -> None:
+    """Outer ``transaction()`` must not re-enter while a checkout is held."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            async with adapter.transaction():
+                pass
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
