@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 import pytest
 
 from atla.adapter.base import DBAdapter
-from atla.advanced import BaseInsertManyQuery, insert_many_rows
+from atla.advanced import BaseInsertManyQuery, UpsertQuery, insert_many_rows
 from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect
-from atla.expressions import Column
+from atla.errors import MultipleResultsError
+from atla.expressions import Column, excluded
 from atla.query import BaseInsertQuery, BaseSelectQuery
 
 
@@ -106,7 +107,7 @@ async def test_upsert_on_conflict_do_update_postgres() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict("email")
-        .do_update(email="a@example.com")
+        ._do_update_values(email="a@example.com")
         .to_sql()
     )
     assert 'ON CONFLICT ("email") DO UPDATE SET "email" = $3' in sql
@@ -130,7 +131,7 @@ async def test_upsert_on_duplicate_key_mysql() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict()
-        .do_update(email="b@example.com")
+        ._do_update_values(email="b@example.com")
         .to_sql()
     )
     assert "ON DUPLICATE KEY UPDATE" in sql
@@ -175,3 +176,74 @@ async def test_projected_select_quotes_reserved_column_names() -> None:
     order_col: Column[str] = Column("users", "order")
     sql, _params = UserQuery(adapter).select(order_col).to_sql()
     assert sql.startswith('SELECT "users"."order" FROM "users"')
+
+
+def test_on_conflict_accepts_column_and_attr_mapping() -> None:
+    adapter = FakeAdapter(PostgresDialect())
+
+    class MappedUpsert(UpsertQuery[UserRecord]):
+        __slots__ = ()
+        _RETURNING_COLS = '"id", "email"'
+        _ROW_MAPPER = UserRecord.from_row
+        _ATTR_TO_SQL: ClassVar[dict[str, str]] = {"from_": "from"}
+
+    class MappedInsert(BaseInsertQuery[UserRecord]):
+        __slots__ = ()
+        _TABLE_NAME = '"users"'
+        _RETURNING_COLS = '"id", "email"'
+        _ROW_MAPPER = UserRecord.from_row
+        _ATTR_TO_SQL: ClassVar[dict[str, str]] = {"from_": "from"}
+        _UPSERT_CLS = MappedUpsert
+
+    sql, params = (
+        MappedInsert(adapter)
+        .values(**{"from": "x"})
+        .on_conflict(email_col)
+        .do_update_attrs(from_="y")
+        .to_sql()
+    )
+    assert 'ON CONFLICT ("email") DO UPDATE SET "from" = $2' in sql
+    assert params == ["x", "y"]
+
+
+def test_excluded_compiles_for_conflict_and_duplicate_dialects() -> None:
+    pg = FakeAdapter(PostgresDialect())
+    sql, params = (
+        UserInsert(pg)
+        .values(email="a@example.com")
+        .on_conflict("email")
+        ._do_update_values(email=excluded(email_col))
+        .to_sql()
+    )
+    assert 'DO UPDATE SET "email" = EXCLUDED."email"' in sql
+    assert params == ["a@example.com"]
+
+    mysql = FakeAdapter(MySQLDialect())
+    sql, params = (
+        UserInsert(mysql)
+        .values(email="a@example.com", id=1)
+        .on_conflict()
+        ._do_update_values(email=excluded(email_col))
+        .to_sql()
+    )
+    assert "ON DUPLICATE KEY UPDATE `email` = VALUES(`email`)" in sql
+    assert params == ["a@example.com", 1]
+
+
+@pytest.mark.asyncio
+async def test_upsert_returning_all_and_one() -> None:
+    adapter = FakeAdapter(PostgresDialect())
+    adapter.rows = [(1, "a@example.com"), (2, "b@example.com")]
+    q = (
+        UserInsert(adapter)
+        .values(email="a@example.com")
+        .on_conflict("email")
+        ._do_update_values(email="a@example.com")
+        .returning()
+    )
+    rows = await q.all()
+    assert len(rows) == 2
+    with pytest.raises(MultipleResultsError):
+        await q.one()
+    adapter.rows = [(1, "a@example.com")]
+    assert await q.one() == UserRecord(1, "a@example.com")

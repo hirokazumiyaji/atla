@@ -10,6 +10,7 @@ from atla.expressions import (
     BetweenOp,
     BinaryOp,
     Column,
+    ExcludedRef,
     Expr,
     FuncCall,
     InOp,
@@ -65,6 +66,9 @@ class SQLCompiler:
             return
         if isinstance(node, RawSQL):
             self._visit_raw(node)
+            return
+        if isinstance(node, ExcludedRef):
+            self._visit_excluded(node)  # pyright: ignore[reportUnknownArgumentType]
             return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
@@ -165,6 +169,13 @@ class SQLCompiler:
                     self.write(", ")
                 self.visit(arg)
         self.write(")")
+
+    def _visit_excluded(self, node: ExcludedRef[Any]) -> None:
+        quoted = self.dialect.quote(node.column.name)
+        if self.dialect.upsert_style == "duplicate":
+            self.write(f"VALUES({quoted})")
+            return
+        self.write(f"EXCLUDED.{quoted}")
 
     def _visit_raw(self, node: RawSQL[Any]) -> None:
         if not node.params:

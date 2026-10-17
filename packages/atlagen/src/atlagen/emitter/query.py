@@ -28,8 +28,8 @@ def emit_query(schema: SchemaIR) -> str:
         "from typing import Any",
         "",
         "from atla.adapter.base import DBAdapter",
-        "from atla.advanced import BaseInsertManyQuery, insert_many_rows",
-        "from atla.expressions import Expr",
+        "from atla.advanced import BaseInsertManyQuery, UpsertQuery, insert_many_rows",
+        "from atla.expressions import Column, Expr",
         "from atla.query import (",
         *[f"    {name}," for name in query_imports],
         ")",
@@ -70,6 +70,7 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"    _ROW_MAPPER = {table.model_name}Record._from_row"
         "  # pyright: ignore[reportPrivateUsage]"
     )
+    attr_map_items = ", ".join(f"{column.attr_name!r}: {column.name!r}" for column in table.columns)
     lines = [
         f"class {table.model_name}Query(BaseSelectQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
@@ -81,12 +82,33 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"    _COUNT_SQL = {('SELECT COUNT(*) FROM ' + quoted_table)!r}",
         row_mapper,
         "",
-        f"class {table.model_name}InsertBuilder(BaseInsertQuery[{table.model_name}Record]):",
+        f"class {table.model_name}UpsertBuilder(UpsertQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
-        f"    _TABLE_NAME = {quoted_table!r}",
         f"    _RETURNING_COLS = {returning_cols!r}",
         row_mapper,
+        f"    _ATTR_TO_SQL = {{{attr_map_items}}}",
+        "",
     ]
+    lines.extend(_emit_do_update_method(table))
+    if dialect in {"mysql", "tidb"}:
+        lines.extend(
+            [
+                "",
+                f"    def returning(self) -> {table.model_name}UpsertBuilder:",
+                f'        raise ValueError("{dialect} does not support RETURNING")',
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            f"class {table.model_name}InsertBuilder(BaseInsertQuery[{table.model_name}Record]):",
+            "    __slots__ = ()",
+            f"    _TABLE_NAME = {quoted_table!r}",
+            f"    _RETURNING_COLS = {returning_cols!r}",
+            row_mapper,
+            f"    _UPSERT_CLS = {table.model_name}UpsertBuilder",
+        ]
+    )
     if dialect in {"mysql", "tidb"}:
         lines.extend(
             [
@@ -98,6 +120,12 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
     lines.extend(
         [
             "",
+            "    def on_conflict(",
+            "        self,",
+            "        *columns: Column[Any] | str,",
+            f"    ) -> {table.model_name}UpsertBuilder:",
+            "        return super().on_conflict(*columns)  # type: ignore[return-value]",
+            "",
             f"class {table.model_name}UpdateBuilder(BaseUpdateQuery[{table.model_name}Record]):",
             "    __slots__ = ()",
             f"    _TABLE_NAME = {quoted_table!r}",
@@ -106,7 +134,8 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             "",
         ]
     )
-    set_columns = [column for column in table.columns if not column.is_primary_key]
+    # Include PK columns so natural/composite-key tables remain updatable.
+    set_columns = list(table.columns)
     if set_columns:
         lines.extend(
             [
@@ -137,6 +166,23 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             [
                 "",
                 f"    def returning(self) -> {table.model_name}UpdateBuilder:",
+                f'        raise ValueError("{dialect} does not support RETURNING")',
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            f"class {table.model_name}DeleteBuilder(BaseDeleteQuery[{table.model_name}Record]):",
+            "    __slots__ = ()",
+            f"    _RETURNING_COLS = {returning_cols!r}",
+            row_mapper,
+        ]
+    )
+    if dialect in {"mysql", "tidb"}:
+        lines.extend(
+            [
+                "",
+                f"    def returning(self) -> {table.model_name}DeleteBuilder:",
                 f'        raise ValueError("{dialect} does not support RETURNING")',
             ]
         )
@@ -177,7 +223,6 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             indent="        ",
         )
     )
-    attr_map_items = ", ".join(f"{column.attr_name!r}: {column.name!r}" for column in table.columns)
     lines.extend(
         [
             "",
@@ -196,8 +241,9 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             f"    def update(self) -> {table.model_name}UpdateBuilder:",
             f"        return {table.model_name}UpdateBuilder(self._adapter)",
             "",
-            "    def delete(self) -> BaseDeleteQuery:",
-            f"        return BaseDeleteQuery(self._adapter, table_name={quoted_table!r})",
+            f"    def delete(self) -> {table.model_name}DeleteBuilder:",
+            f"        return {table.model_name}DeleteBuilder("
+            f"self._adapter, table_name={quoted_table!r})",
         ]
     )
     lines.extend(_emit_with_methods(table, schema=schema))
@@ -273,6 +319,31 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
                 "        )",
             ]
         )
+    return lines
+
+
+def _emit_do_update_method(table: TableIR) -> list[str]:
+    """Emit typed ``do_update`` matching ``UpdateBuilder.set``."""
+    columns = list(table.columns)
+    if not columns:
+        return [
+            f"    def do_update(self) -> {table.model_name}UpsertBuilder:",
+            '        raise ValueError("table has no updatable columns")',
+        ]
+    lines = [
+        "    def do_update(",
+        "        self,",
+        "        *,",
+    ]
+    for column in columns:
+        value_type = column.python_type or column.base_python_type
+        lines.append(
+            f"        {column.attr_name}: {value_type} | Expr[{value_type}] | UnsetType = UNSET,"
+        )
+    lines.append(f"    ) -> {table.model_name}UpsertBuilder:")
+    lines.extend(
+        _emit_mapped_call("        return self._do_update_values", columns, indent="        ")
+    )
     return lines
 
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Self, cast, overload
+from typing import Any, ClassVar, Literal, Self, cast, overload
 
 from atla.adapter.base import DBAdapter
-from atla.advanced import ProjectedSelectQuery, UpsertQuery
+from atla.advanced import ProjectedSelectQuery, UpsertQuery, conflict_column_names
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, and_
@@ -310,6 +310,8 @@ class BaseInsertQuery[RecordT]:
     _TABLE_NAME: str
     _RETURNING_COLS: str
     _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {}
+    _UPSERT_CLS: ClassVar[type[UpsertQuery[Any]] | None] = None
 
     def __init__(
         self,
@@ -339,22 +341,30 @@ class BaseInsertQuery[RecordT]:
     def returning(self) -> Self:
         return type(self)(self._adapter, values=self._values, returning=True)
 
-    def on_conflict(self, *columns: str) -> UpsertQuery[RecordT]:
+    def on_conflict(self, *columns: Column[Any] | str) -> UpsertQuery[RecordT]:
         """Start a dialect-specific upsert (``ON CONFLICT`` / ``ON DUPLICATE KEY``)."""
-        if not columns and self._adapter.dialect.upsert_style == "conflict":
+        conflict_columns = conflict_column_names(*columns)
+        if not conflict_columns and self._adapter.dialect.upsert_style == "conflict":
             msg = "on_conflict() requires at least one conflict target column"
             raise ValueError(msg)
 
-        class _Upsert(UpsertQuery[RecordT]):
-            __slots__ = ()
-            _RETURNING_COLS = type(self)._RETURNING_COLS
-            _ROW_MAPPER = type(self)._ROW_MAPPER
+        upsert_cls = type(self)._UPSERT_CLS
+        if upsert_cls is None:
 
-        return _Upsert(
+            class _Upsert(UpsertQuery[RecordT]):
+                __slots__ = ()
+                _RETURNING_COLS = type(self)._RETURNING_COLS
+                _ROW_MAPPER = type(self)._ROW_MAPPER
+                _ATTR_TO_SQL = type(self)._ATTR_TO_SQL
+
+            upsert_cls = _Upsert
+
+        return upsert_cls(
             self._adapter,
             table_name=type(self)._TABLE_NAME,
             values=self._values,
-            conflict_columns=columns,
+            conflict_columns=conflict_columns,
+            returning=self._returning,
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
@@ -377,16 +387,6 @@ class BaseInsertQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
-    async def one(self) -> RecordT:
-        if not self._returning:
-            msg = "one() requires .returning()"
-            raise ValueError(msg)
-        sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
-            raise NotFoundError("insert ... returning produced no row")
-        return type(self)._ROW_MAPPER(row)
-
     async def all(self) -> list[RecordT]:
         if not self._returning:
             msg = "all() requires .returning()"
@@ -395,6 +395,18 @@ class BaseInsertQuery[RecordT]:
         rows = await self._adapter.fetch_all(sql, params)
         mapper = type(self)._ROW_MAPPER
         return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        rows = await self.all()
+        if not rows:
+            raise NotFoundError("insert ... returning produced no row")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
 
 
 class BaseUpdateQuery[RecordT]:
@@ -490,21 +502,35 @@ class BaseUpdateQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
-    async def one(self) -> RecordT:
+    async def all(self) -> list[RecordT]:
         if not self._returning:
-            msg = "one() requires .returning()"
+            msg = "all() requires .returning()"
             raise ValueError(msg)
         sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        rows = await self.all()
+        if not rows:
             raise NotFoundError("update ... returning produced no row")
-        return type(self)._ROW_MAPPER(row)
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
 
 
-class BaseDeleteQuery:
+class BaseDeleteQuery[RecordT]:
     """Immutable DELETE builder with full-table mutation guard."""
 
-    __slots__ = ("_adapter", "_allow_full", "_table_name", "_where")
+    __slots__ = ("_adapter", "_allow_full", "_returning", "_table_name", "_where")
+
+    _RETURNING_COLS: str = "*"
+    _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
 
     def __init__(
         self,
@@ -513,28 +539,41 @@ class BaseDeleteQuery:
         table_name: str,
         where: tuple[Expr[bool], ...] = (),
         allow_full: bool = False,
+        returning: bool = False,
     ) -> None:
         self._adapter = adapter
         self._table_name = table_name
         self._where = where
         self._allow_full = allow_full
+        self._returning = returning
 
-    def where(self, *predicates: Expr[bool]) -> BaseDeleteQuery:
+    def where(self, *predicates: Expr[bool]) -> Self:
         if not predicates:
             return self
-        return BaseDeleteQuery(
+        return type(self)(
             self._adapter,
             table_name=self._table_name,
             where=self._where + predicates,
             allow_full=self._allow_full,
+            returning=self._returning,
         )
 
-    def allow_full_table(self) -> BaseDeleteQuery:
-        return BaseDeleteQuery(
+    def allow_full_table(self) -> Self:
+        return type(self)(
             self._adapter,
             table_name=self._table_name,
             where=self._where,
             allow_full=True,
+            returning=self._returning,
+        )
+
+    def returning(self) -> Self:
+        return type(self)(
+            self._adapter,
+            table_name=self._table_name,
+            where=self._where,
+            allow_full=self._allow_full,
+            returning=True,
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
@@ -543,16 +582,44 @@ class BaseDeleteQuery:
                 "DELETE without WHERE is refused; call allow_full_table() to proceed"
             )
         sql = f"DELETE FROM {self._table_name}"
-        if not self._where:
-            return sql, []
-        compiler = SQLCompiler(self._adapter.dialect)
-        compiler.visit(and_(*self._where))
-        where_sql, params = compiler.build()
-        return f"{sql} WHERE {where_sql}", params
+        params: list[Any] = []
+        if self._where:
+            compiler = SQLCompiler(self._adapter.dialect)
+            compiler.visit(and_(*self._where))
+            where_sql, params = compiler.build()
+            sql = f"{sql} WHERE {where_sql}"
+        if self._returning:
+            dialect = self._adapter.dialect
+            if not dialect.supports_returning:
+                msg = f"{dialect.name} does not support RETURNING"
+                raise ValueError(msg)
+            sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
+        return sql, params
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
+
+    async def all(self) -> list[RecordT]:
+        if not self._returning:
+            msg = "all() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        rows = await self.all()
+        if not rows:
+            raise NotFoundError("delete ... returning produced no row")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
 
 
 class JoinedSelectQuery[*Ts]:

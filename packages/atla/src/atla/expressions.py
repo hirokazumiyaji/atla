@@ -124,6 +124,15 @@ class RawSQL[T](Expr[T]):
         self.params = params
 
 
+class ExcludedRef[T](Expr[T]):
+    """Upsert conflict-row reference (``EXCLUDED.col`` / ``VALUES(col)``)."""
+
+    __slots__ = ("column",)
+
+    def __init__(self, column: Column[T]) -> None:
+        self.column = column
+
+
 class OrderByClause:
     """ORDER BY clause fragment."""
 
@@ -334,3 +343,12 @@ def max_[T](expr: Expr[T]) -> FuncCall[T | None]:
 def raw_sql(sql: str, *params: Any) -> RawSQL[Any]:
     """Escape hatch for dialect-specific or unsupported SQL fragments."""
     return RawSQL(sql, params)
+
+
+def excluded[T](column: Column[T]) -> ExcludedRef[T]:
+    """Reference the proposed INSERT row in an upsert ``DO UPDATE`` assignment.
+
+    Compiles to ``EXCLUDED."col"`` (Postgres / CockroachDB / SQLite) or
+    ``VALUES(`col`)`` (MySQL / TiDB).
+    """
+    return ExcludedRef(column)

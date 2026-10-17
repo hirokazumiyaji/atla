@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self, cast
+from typing import Any, ClassVar, Self, cast
 
 from atla.adapter.base import DBAdapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import Column, Expr, OrderByClause, and_
+from atla.types import UNSET, UnsetType
 
 # Stay under common driver bind limits (SQLite ~32766).
 _MAX_BIND_PARAMS = 30_000
@@ -18,6 +19,21 @@ def _compile_value(compiler: SQLCompiler, value: Any) -> str:
     if isinstance(value, Expr):
         return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
     return compiler.add_param(value)
+
+
+def _is_unset(value: object) -> bool:
+    return value is UNSET or isinstance(value, UnsetType)
+
+
+def conflict_column_names(*columns: Column[Any] | str) -> tuple[str, ...]:
+    """Normalize ``on_conflict`` targets to bare SQL identifier names."""
+    names: list[str] = []
+    for column in columns:
+        if isinstance(column, Column):
+            names.append(column.name)
+        else:
+            names.append(column)
+    return tuple(names)
 
 
 class BaseInsertManyQuery[RecordT]:
@@ -130,7 +146,8 @@ class UpsertQuery[RecordT]:
     )
 
     _RETURNING_COLS: str
-    _ROW_MAPPER: Any
+    _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {}
 
     def __init__(
         self,
@@ -162,8 +179,15 @@ class UpsertQuery[RecordT]:
             returning=self._returning,
         )
 
-    def do_update(self, **columns: Any) -> Self:
-        pairs = tuple((name, value) for name, value in columns.items())
+    def _do_update_values(self, **columns: Any) -> Self:
+        """Accumulate DO UPDATE columns (bare SQL identifiers).
+
+        Generated ``*UpsertBuilder.do_update`` maps Python attribute names onto
+        SQL identifiers before calling this method. Hand-written callers may
+        invoke it directly with SQL names, or use :meth:`do_update_attrs` for
+        ``_ATTR_TO_SQL`` remapping.
+        """
+        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
         if not pairs:
             msg = "do_update() requires at least one column"
             raise ValueError(msg)
@@ -176,6 +200,16 @@ class UpsertQuery[RecordT]:
             do_nothing=False,
             returning=self._returning,
         )
+
+    def do_update_attrs(self, **columns: Any) -> Self:
+        """Like ``do_update``, remapping Python attr names via ``_ATTR_TO_SQL``."""
+        mapping = type(self)._ATTR_TO_SQL
+        pairs = {
+            mapping.get(name, name): value
+            for name, value in columns.items()
+            if not _is_unset(value)
+        }
+        return self._do_update_values(**pairs)
 
     def returning(self) -> Self:
         return type(self)(
@@ -236,15 +270,26 @@ class UpsertQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
-    async def one(self) -> RecordT:
+    async def all(self) -> list[RecordT]:
         if not self._returning:
-            msg = "one() requires .returning()"
+            msg = "all() requires .returning()"
             raise ValueError(msg)
         sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        rows = await self.all()
+        if not rows:
             raise NotFoundError("upsert ... returning produced no row")
-        return cast(RecordT, type(self)._ROW_MAPPER(row))
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
 
 
 class ProjectedSelectQuery[*Ts]:
