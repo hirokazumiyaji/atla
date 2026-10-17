@@ -251,13 +251,15 @@ def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, 
 
 def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
     """Emit ``with_<child>`` batch eager-load helpers from inbound foreign keys."""
+    from atlagen.naming import safe_attr_name
+
     lines: list[str] = []
     used_names: set[str] = set()
     for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):
         child_sql = child.name.rsplit(".", 1)[-1]
-        method = f"with_{child_sql}"
+        method = safe_attr_name(f"with_{child_sql}")
         if method in used_names:
-            method = f"with_{child_sql}_{fk_attr}"
+            method = safe_attr_name(f"with_{child_sql}_{fk_attr}")
         used_names.add(method)
         lines.extend(
             [

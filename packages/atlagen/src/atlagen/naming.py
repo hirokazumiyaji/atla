@@ -6,80 +6,75 @@ import keyword
 import re
 
 _SPLIT_RE = re.compile(r"[_\s-]+")
+_CAMEL_1 = re.compile(r"(.)([A-Z][a-z]+)")
+_CAMEL_2 = re.compile(r"([a-z0-9])([A-Z])")
 
 # Words that look plural but must not be singularized by the simple suffix rules.
-_SINGULAR_EXCEPTIONS = frozenset(
+_UNCHANGING = frozenset(
     {
-        "status",
-        "statuses",
         "series",
         "news",
         "data",
         "media",
         "species",
-        "analysis",
-        "basis",
-        "crisis",
         "meta",
         "info",
         "sms",
         "ops",
+        "status",
+        "analysis",
+        "basis",
+        "crisis",
     }
 )
 
+_IRREGULAR_SINGULAR: dict[str, str] = {
+    "people": "person",
+    "children": "child",
+    "men": "man",
+    "women": "woman",
+    "teeth": "tooth",
+    "feet": "foot",
+    "mice": "mouse",
+    "geese": "goose",
+    "criteria": "criterion",
+    "indices": "index",
+    "matrices": "matrix",
+    "vertices": "vertex",
+    "leaves": "leaf",
+    "lives": "life",
+    "knives": "knife",
+    "wolves": "wolf",
+    "shelves": "shelf",
+    "halves": "half",
+    "loaves": "loaf",
+    "quizzes": "quiz",
+    "statuses": "status",
+    # -ies that should become -ie (not -y)
+    "movies": "movie",
+    "cookies": "cookie",
+    "zombies": "zombie",
+    "smoothies": "smoothie",
+    "calories": "calorie",
+    # -ses / -uses / -ases that need careful handling
+    "buses": "bus",
+    "gases": "gas",
+    "aliases": "alias",
+    "campuses": "campus",
+    "viruses": "virus",
+    "bonuses": "bonus",
+    "atlases": "atlas",
+    "classes": "class",
+}
 
-def unqualified_table_name(table_name: str) -> str:
-    """Strip schema qualification: ``other.users`` -> ``users``."""
-    return table_name.rsplit(".", 1)[-1]
-
-
-def singularize(name: str) -> str:
-    """Best-effort English singularization for table names.
-
-    This is intentionally simple (suffix heuristics + a small exception list).
-    Irregular plurals and domain-specific names may need renaming at the DB
-    layer; known traps include ``status``/``series``/``news``/``data``.
-    """
-    if not name:
-        return name
-    lower = name.lower()
-    if lower in _SINGULAR_EXCEPTIONS:
-        # Keep mass/invariant nouns; map statuses -> status.
-        if lower == "statuses":
-            return name[:-2]
-        return name
-    if lower.endswith("ies") and len(lower) > 3:
-        return name[:-3] + ("Y" if name[-3].isupper() else "y")
-    if lower.endswith(("sses", "xes", "zes", "ches", "shes")):
-        return name[:-2]
-    if lower.endswith("ses") and len(lower) > 4:
-        # statuses already handled; avoid ``analyses`` -> ``analyse`` style cuts.
-        return name[:-1]
-    if lower.endswith("s") and not lower.endswith("ss"):
-        return name[:-1]
-    return name
-
-
-def to_pascal_case(name: str) -> str:
-    """Convert snake/kebab/space-separated name to PascalCase."""
-    parts = [part for part in _SPLIT_RE.split(name) if part]
-    if not parts:
-        return name
-    return "".join(part[:1].upper() + part[1:] for part in parts)
-
-
-def table_model_name(table_name: str) -> str:
-    """``users`` / ``other.users`` -> ``User``."""
-    return to_pascal_case(singularize(unqualified_table_name(table_name)))
-
-
-def table_accessor_name(table_name: str) -> str:
-    """``users`` / ``other.users`` -> ``user``."""
-    singular = singularize(unqualified_table_name(table_name))
-    if not singular:
-        return singular
-    return singular[:1].lower() + singular[1:]
-
+# AtlaClient members that must not be overwritten by table accessors.
+_CLIENT_RESERVED = frozenset(
+    {
+        "transaction",
+        "_adapter",
+        "adapter",
+    }
+)
 
 # Builtins / soft-keyword-adjacent names that should not become attributes as-is.
 # Note: ``id`` is intentionally allowed (common primary-key column).
@@ -115,18 +110,101 @@ _RESERVED_ATTRS = frozenset(
         "get_row_mapper",
         "map_row",
         "map_row_optional",
+        *_CLIENT_RESERVED,
     }
 )
 
 
+def unqualified_table_name(table_name: str) -> str:
+    """Strip schema qualification: ``other.users`` -> ``users``."""
+    return table_name.rsplit(".", 1)[-1]
+
+
+def to_snake_case(name: str) -> str:
+    """Convert CamelCase / kebab / spaced names to snake_case."""
+    text = name.replace("-", "_").replace(" ", "_")
+    text = _CAMEL_1.sub(r"\1_\2", text)
+    text = _CAMEL_2.sub(r"\1_\2", text)
+    parts = [part for part in _SPLIT_RE.split(text) if part]
+    return "_".join(part.lower() for part in parts)
+
+
+def singularize(name: str) -> str:
+    """Best-effort English singularization for table / token names."""
+    if not name:
+        return name
+    lower = name.lower()
+    if lower in _IRREGULAR_SINGULAR:
+        singular = _IRREGULAR_SINGULAR[lower]
+        return _match_case(name, singular)
+    if lower in _UNCHANGING:
+        return name
+    if lower.endswith("ies") and len(lower) > 3:
+        # babies -> baby; movies handled via irregular map
+        return _match_case(name, lower[:-3] + "y")
+    if lower.endswith(("sses", "xes", "zes", "ches", "shes")):
+        return name[:-2]
+    if lower.endswith(("uses", "ases", "oses", "eses")) and len(lower) > 4:
+        # buses/aliases/viruses/statuses-like: drop "es"
+        return name[:-2]
+    if lower.endswith("ves") and len(lower) > 3:
+        # default leaves-style already in irregular; generic: ves -> f
+        return _match_case(name, lower[:-3] + "f")
+    if lower.endswith("s") and not lower.endswith("ss"):
+        return name[:-1]
+    return name
+
+
+def singularize_identifier(name: str) -> str:
+    """Singularize the last snake_case segment (``user_accounts`` -> ``user_account``)."""
+    snake = to_snake_case(name)
+    if "_" not in snake:
+        return singularize(snake)
+    head, _, tail = snake.rpartition("_")
+    return f"{head}_{singularize(tail)}"
+
+
+def _match_case(original: str, singular: str) -> str:
+    if original.isupper():
+        return singular.upper()
+    if original[:1].isupper():
+        return singular[:1].upper() + singular[1:]
+    return singular
+
+
+def to_pascal_case(name: str) -> str:
+    """Convert snake/kebab/space-separated name to PascalCase."""
+    snake = to_snake_case(name)
+    parts = [part for part in snake.split("_") if part]
+    if not parts:
+        return name
+    return "".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def table_model_name(table_name: str) -> str:
+    """``users`` / ``other.users`` / ``UserAccounts`` -> ``User`` / ``UserAccount``."""
+    return to_pascal_case(singularize_identifier(unqualified_table_name(table_name)))
+
+
+def table_accessor_name(table_name: str) -> str:
+    """``users`` / ``transactions`` / ``classes`` -> ``user`` / ``transaction_`` / ``class_``."""
+    singular = singularize_identifier(unqualified_table_name(table_name))
+    if not singular:
+        return singular
+    return safe_attr_name(singular)
+
+
 def safe_attr_name(column_name: str) -> str:
     """Return a Python-safe attribute name (append ``_`` for keywords / reserved)."""
-    name = column_name
+    name = to_snake_case(column_name) if not column_name.isidentifier() else column_name
     if not name.isidentifier():
         cleaned = "".join(ch if ch.isalnum() else "_" for ch in name)
         if not cleaned or cleaned[0].isdigit():
             cleaned = f"col_{cleaned}"
         name = cleaned
+    # Prefer snake_case for CamelCase identifiers used as attrs.
+    if any(ch.isupper() for ch in name[1:]):
+        name = to_snake_case(name)
     while keyword.iskeyword(name) or keyword.issoftkeyword(name) or name in _RESERVED_ATTRS:
         name = f"{name}_"
     return name

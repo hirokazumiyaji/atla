@@ -71,6 +71,7 @@ def _render(config: AtlagenConfig) -> dict[str, str]:
         raw,
         dialect=config.dialect,
         schema_name=config.schema_name,
+        table_overrides=config.table_overrides,
     )
     mapped = map_schema(schema)
     return generate_files(mapped, frozen=config.frozen)

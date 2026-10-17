@@ -22,6 +22,8 @@ class AtlagenConfig:
     dev_url: str | None = None
     schema_name: str | None = None
     frozen: bool = True
+    # table name -> {model_name?, accessor_name?}
+    table_overrides: dict[str, dict[str, str]] | None = None
 
 
 class ConfigError(ValueError):
@@ -144,6 +146,8 @@ def resolve_config(
             file=sys.stderr,
         )
 
+    table_overrides = _parse_table_overrides(settings.get("tables"))
+
     return AtlagenConfig(
         dialect=dialect,
         out=out,
@@ -151,7 +155,36 @@ def resolve_config(
         dev_url=dev_url,
         schema_name=schema_name,
         frozen=frozen,
+        table_overrides=table_overrides,
     )
+
+
+def _parse_table_overrides(raw: object) -> dict[str, dict[str, str]] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("[tool.atlagen].tables must be a TOML table")
+    tables = cast(dict[str, Any], raw)
+    result: dict[str, dict[str, str]] = {}
+    for table_name, value in tables.items():
+        if not isinstance(value, dict):
+            raise ConfigError(
+                f"[tool.atlagen.tables.{table_name}] must be a TOML table "
+                "with optional model_name / accessor_name"
+            )
+        entry_raw = cast(dict[str, Any], value)
+        entry: dict[str, str] = {}
+        for key in ("model_name", "accessor_name"):
+            if key in entry_raw:
+                text = str(entry_raw[key]).strip()
+                if not text:
+                    raise ConfigError(
+                        f"[tool.atlagen.tables.{table_name}].{key} must be a non-empty string"
+                    )
+                entry[key] = text
+        if entry:
+            result[str(table_name)] = entry
+    return result or None
 
 
 def _coalesce_str(

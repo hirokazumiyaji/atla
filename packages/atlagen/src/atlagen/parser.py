@@ -48,6 +48,7 @@ def parse_atlas_json(
     *,
     dialect: str,
     schema_name: str | None = None,
+    table_overrides: Mapping[str, Mapping[str, str]] | None = None,
 ) -> SchemaIR:
     """Parse Atlas ``schema inspect --format '{{ json . }}'`` output into SchemaIR."""
     data = _load_json(source)
@@ -61,6 +62,7 @@ def parse_atlas_json(
         schema_name,
     )
     name = str(selected.get("name") or "public")
+    overrides = table_overrides or {}
 
     enums: list[EnumIR] = []
     enums.extend(_parse_schema_enums(selected.get("enums")))
@@ -70,9 +72,15 @@ def parse_atlas_json(
         table_obj = _as_dict(table_raw)
         if table_obj is None:
             continue
-        table, inline_enums = _parse_table(table_obj, dialect=dialect)
+        table, inline_enums = _parse_table(
+            table_obj,
+            dialect=dialect,
+            overrides=overrides,
+        )
         tables.append(table)
         enums.extend(inline_enums)
+
+    _assert_unique_table_names(tables)
 
     return SchemaIR(
         name=name,
@@ -80,6 +88,28 @@ def parse_atlas_json(
         enums=tuple(enums),
         tables=tuple(tables),
     )
+
+
+def _assert_unique_table_names(tables: list[TableIR]) -> None:
+    models: dict[str, str] = {}
+    accessors: dict[str, str] = {}
+    for table in tables:
+        prior = models.get(table.model_name)
+        if prior is not None:
+            msg = (
+                f"generated model name {table.model_name!r} collides between tables "
+                f"{prior!r} and {table.name!r}; set [tool.atlagen.tables.*] overrides"
+            )
+            raise AtlasParseError(msg)
+        models[table.model_name] = table.name
+        prior_acc = accessors.get(table.accessor_name)
+        if prior_acc is not None:
+            msg = (
+                f"generated accessor name {table.accessor_name!r} collides between tables "
+                f"{prior_acc!r} and {table.name!r}; set [tool.atlagen.tables.*] overrides"
+            )
+            raise AtlasParseError(msg)
+        accessors[table.accessor_name] = table.name
 
 
 def _load_json(source: str | bytes | Mapping[str, Any]) -> JsonDict:
@@ -130,7 +160,12 @@ def _parse_schema_enums(raw_enums: object) -> list[EnumIR]:
     return result
 
 
-def _parse_table(table_raw: JsonDict, *, dialect: str) -> tuple[TableIR, list[EnumIR]]:
+def _parse_table(
+    table_raw: JsonDict,
+    *,
+    dialect: str,
+    overrides: Mapping[str, Mapping[str, str]],
+) -> tuple[TableIR, list[EnumIR]]:
     table_name = str(table_raw.get("name") or "")
     if not table_name:
         msg = "table is missing a name"
@@ -138,6 +173,12 @@ def _parse_table(table_raw: JsonDict, *, dialect: str) -> tuple[TableIR, list[En
 
     model_name = table_model_name(table_name)
     accessor_name = table_accessor_name(table_name)
+    override = overrides.get(table_name) or overrides.get(table_name.rsplit(".", 1)[-1])
+    if override:
+        if override.get("model_name"):
+            model_name = str(override["model_name"])
+        if override.get("accessor_name"):
+            accessor_name = str(override["accessor_name"])
     primary_key = _parse_primary_key(table_raw.get("primary_key"))
     pk_set = set(primary_key)
 
