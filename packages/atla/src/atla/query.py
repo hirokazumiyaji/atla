@@ -165,7 +165,8 @@ class BaseSelectQuery[RecordT]:
     def distinct(self, *on: Expr[Any]) -> Self:
         if on:
             return self._clone(distinct=True, distinct_on=self._distinct_on + on)
-        return self._clone(distinct=True, distinct_on=())
+        # Keep any existing DISTINCT ON expressions; bare distinct() must not clear them.
+        return self._clone(distinct=True)
 
     def for_update(
         self,
@@ -831,7 +832,7 @@ class JoinedSelectQuery[*Ts]:
     def distinct(self, *on: Expr[Any]) -> JoinedSelectQuery[*Ts]:
         if on:
             return self._clone(distinct=True, distinct_on=self._distinct_on + on)
-        return self._clone(distinct=True, distinct_on=())
+        return self._clone(distinct=True)
 
     def for_update(
         self,

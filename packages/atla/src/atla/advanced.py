@@ -364,7 +364,7 @@ class ProjectedSelectQuery[*Ts]:
     def distinct(self, *on: Expr[Any]) -> ProjectedSelectQuery[*Ts]:
         if on:
             return self._clone(distinct=True, distinct_on=self._distinct_on + on)
-        return self._clone(distinct=True, distinct_on=())
+        return self._clone(distinct=True)
 
     def for_update(
         self,
