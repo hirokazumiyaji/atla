@@ -15,6 +15,7 @@ from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
 from atla.select_clauses import (
     LockClause,
+    fetch_one,
     lock_of_targets,
     write_distinct,
     write_group_having,
@@ -27,12 +28,6 @@ from atla.types import is_unset
 # Stay under common driver bind limits (SQLite ~32766, MySQL/Postgres similar).
 _IN_BATCH_SIZE = 500
 _LOCK_UNSET = object()
-
-
-def _compile_value(compiler: SQLCompiler, value: Any) -> str:
-    if isinstance(value, Expr):
-        return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
-    return compiler.add_param(value)
 
 
 @dataclass(slots=True, frozen=True)
@@ -604,12 +599,7 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         return type(self)._ROW_MAPPER(row)
 
     async def one(self) -> RecordT:
-        rows = await self._with_fetch_limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
     async def count(self) -> int:
         """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination).
@@ -737,7 +727,7 @@ class BaseInsertQuery[RecordT]:
         dialect = self._adapter.dialect
         cols = ", ".join(dialect.quote(name) for name, _ in self._values)
         compiler = SQLCompiler(dialect)
-        placeholders = [_compile_value(compiler, value) for _, value in self._values]
+        placeholders = [compiler.compile_value(value) for _, value in self._values]
         sql = f"INSERT INTO {self._TABLE_NAME} ({cols}) VALUES ({', '.join(placeholders)})"
         if self._returning:
             if not dialect.supports_returning:
@@ -852,8 +842,7 @@ class BaseUpdateQuery[RecordT]:
         dialect = self._adapter.dialect
         compiler = SQLCompiler(dialect)
         assignments = [
-            f"{dialect.quote(name)} = {_compile_value(compiler, value)}"
-            for name, value in self._set
+            f"{dialect.quote(name)} = {compiler.compile_value(value)}" for name, value in self._set
         ]
         sql = f"UPDATE {self._TABLE_NAME} SET {', '.join(assignments)}"
         if self._where:
@@ -1325,12 +1314,7 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         return self._hydrate(row)
 
     async def one(self) -> tuple[*Ts]:
-        rows = await self._with_fetch_limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
 
 @dataclass(slots=True, frozen=True)

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from atla.compiler import SQLCompiler
 from atla.dialect import Dialect
+from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import Expr, OrderByClause, and_
 from atla.table import TableRef
 
@@ -115,3 +116,19 @@ def write_locking(compiler: SQLCompiler, dialect: Dialect, locking: LockClause |
         compiler.write(" NOWAIT")
     elif locking.skip_locked:
         compiler.write(" SKIP LOCKED")
+
+
+async def fetch_first[T](fetch_limited: Callable[[], Awaitable[list[T]]]) -> T | None:
+    """Return the first row from a limit-1 fetch, or ``None``."""
+    rows = await fetch_limited()
+    return rows[0] if rows else None
+
+
+async def fetch_one[T](fetch_limited: Callable[[], Awaitable[list[T]]]) -> T:
+    """Return exactly one row from a limit-2 fetch, or raise."""
+    rows = await fetch_limited()
+    if not rows:
+        raise NotFoundError("expected exactly one row, found 0")
+    if len(rows) > 1:
+        raise MultipleResultsError("expected exactly one row, found multiple")
+    return rows[0]

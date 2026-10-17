@@ -166,6 +166,14 @@ def test_insert_many_rows_normalizes_key_order() -> None:
     )
 
 
+def test_insert_many_rows_rejects_unknown_attr() -> None:
+    with pytest.raises(ValueError, match="unknown column"):
+        insert_many_rows(
+            [{"email": "a", "emial": "typo"}],
+            attr_to_sql={"email": "email", "name": "name"},
+        )
+
+
 @pytest.mark.asyncio
 async def test_insert_many_chunks_large_batches() -> None:
     adapter = FakeAdapter(SQLiteDialect())
