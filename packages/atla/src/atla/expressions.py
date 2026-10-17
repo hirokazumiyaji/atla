@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from typing import Any, NoReturn, cast as typing_cast
+from typing import Any, NoReturn, overload
+from typing import cast as typing_cast
+
+_SQL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\([\d,\s]+\))?(\[\])?$")
 
 
 def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
@@ -35,49 +39,61 @@ class Expr[T_co]:
 
     # --- Comparison ---
 
-    def __eq__(  # type: ignore[override]
-        self, other: object
+    @overload  # type: ignore[override]
+    def __eq__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def __eq__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def __eq__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
+        self: Expr[T], other: T | Expr[T] | None
     ) -> BinaryOp[bool] | UnaryOp[bool]:
         if other is None:
             return UnaryOp("IS NULL", self, postfix=True)
-        return BinaryOp("=", self, _coerce_literal(typing_cast(Any, other)))
+        return BinaryOp("=", self, _coerce_literal(other))
 
-    def __ne__(  # type: ignore[override]
-        self, other: object
+    @overload  # type: ignore[override]
+    def __ne__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def __ne__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def __ne__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
+        self: Expr[T], other: T | Expr[T] | None
     ) -> BinaryOp[bool] | UnaryOp[bool]:
         if other is None:
             return UnaryOp("IS NOT NULL", self, postfix=True)
-        return BinaryOp("<>", self, _coerce_literal(typing_cast(Any, other)))
-
-    def __lt__(self, other: Any) -> BinaryOp[bool]:
-        return BinaryOp("<", self, _coerce_literal(other))
-
-    def __le__(self, other: Any) -> BinaryOp[bool]:
-        return BinaryOp("<=", self, _coerce_literal(other))
-
-    def __gt__(self, other: Any) -> BinaryOp[bool]:
-        return BinaryOp(">", self, _coerce_literal(other))
-
-    def __ge__(self, other: Any) -> BinaryOp[bool]:
-        return BinaryOp(">=", self, _coerce_literal(other))
-
-    def eq(self, other: Any) -> Expr[bool]:
-        return BinaryOp("=", self, _coerce_literal(other))
-
-    def ne(self, other: Any) -> Expr[bool]:
         return BinaryOp("<>", self, _coerce_literal(other))
 
-    def lt(self, other: Any) -> BinaryOp[bool]:
-        return self < other
+    def __lt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(other))
 
-    def le(self, other: Any) -> BinaryOp[bool]:
-        return self <= other
+    def __le__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(other))
 
-    def gt(self, other: Any) -> BinaryOp[bool]:
-        return self > other
+    def __gt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(other))
 
-    def ge(self, other: Any) -> BinaryOp[bool]:
-        return self >= other
+    def __ge__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(other))
+
+    def eq[T](self: Expr[T], other: T | Expr[T]) -> Expr[bool]:
+        return BinaryOp("=", self, _coerce_literal(other))
+
+    def ne[T](self: Expr[T], other: T | Expr[T]) -> Expr[bool]:
+        return BinaryOp("<>", self, _coerce_literal(other))
+
+    def lt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(other))
+
+    def le[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(other))
+
+    def gt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(other))
+
+    def ge[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(other))
 
     def is_null(self) -> UnaryOp[bool]:
         return UnaryOp("IS NULL", self, postfix=True)
@@ -323,7 +339,7 @@ class Column[T](Expr[T]):
         self.alias = alias
 
     # Identity hash: ``__eq__`` builds SQL, so value-equality hashing is undefined.
-    __hash__ = object.__hash__  # type: ignore[assignment]
+    __hash__ = object.__hash__  # type: ignore[assignment, unused-ignore]  # pyright: ignore[reportAssignmentType]
 
 
 def _flatten_logical(op: str, clauses: tuple[Expr[bool], ...]) -> tuple[Expr[bool], ...]:
@@ -411,7 +427,13 @@ def cast[T](
 
     Pass ``python_type`` to pin the result's static type, e.g.
     ``cast(col, "text", str)``.
+
+    ``sql_type`` is concatenated into SQL as a trusted developer-supplied type
+    name (not user input). Only simple type tokens are accepted.
     """
+    if not _SQL_TYPE_RE.fullmatch(sql_type):
+        msg = f"invalid SQL type: {sql_type!r}"
+        raise ValueError(msg)
     _ = python_type
     return CastExpr(_coerce_literal(expr), sql_type)
 
@@ -441,7 +463,11 @@ def upper(expr: Expr[str] | str) -> FuncCall[str]:
 
 
 def concat(*exprs: Expr[Any] | Any) -> FuncCall[str]:
-    """SQL ``CONCAT`` (portable across supported dialects)."""
+    """SQL ``CONCAT``.
+
+    Requires SQLite 3.44+ (earlier versions have no ``CONCAT``; use ``||``).
+    Postgres / MySQL / TiDB / CockroachDB support ``CONCAT`` natively.
+    """
     if not exprs:
         msg = "concat() requires at least one argument"
         raise ValueError(msg)
@@ -449,7 +475,11 @@ def concat(*exprs: Expr[Any] | Any) -> FuncCall[str]:
 
 
 def now() -> FuncCall[Any]:
-    """SQL ``NOW()`` / current timestamp function."""
+    """SQL ``NOW()`` / current timestamp function.
+
+    Not available on SQLite — use ``raw_sql("CURRENT_TIMESTAMP")`` or
+    ``raw_sql("datetime('now')")`` instead.
+    """
     return FuncCall("NOW", ())
 
 
