@@ -17,7 +17,7 @@ from atla.errors import (
     SerializationError,
     UniqueViolationError,
 )
-from atla.transaction import run_in_transaction
+from atla.transaction import begin_sql, map_asyncpg_isolation, run_in_transaction
 
 
 class _FakePgError(Exception):
@@ -107,6 +107,25 @@ async def test_routing_adapter_splits_read_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_routing_adapter_routes_all_locking_reads_to_primary() -> None:
+    primary = RecordingAdapter("primary")
+    replica = RecordingAdapter("replica")
+    router = RoutingAdapter(primary, [replica])
+    locking = (
+        "SELECT 1 FOR NO KEY UPDATE",
+        "SELECT 1 FOR KEY SHARE",
+        "SELECT 1 FOR SHARE",
+        "SELECT 1 LOCK IN SHARE MODE",
+        "select 1 for no key update",
+        "select 1 lock in share mode",
+    )
+    for sql in locking:
+        await router.fetch_all(sql)
+    assert [c[0] for c in primary.calls] == ["fetch_all"] * len(locking)
+    assert replica.calls == []
+
+
+@pytest.mark.asyncio
 async def test_routing_adapter_sends_returning_writes_to_primary() -> None:
     primary = RecordingAdapter("primary")
     replica = RecordingAdapter("replica")
@@ -168,3 +187,16 @@ async def test_run_in_transaction_retries_serialization() -> None:
     result = await run_in_transaction(adapter, work, max_retries=5, base_backoff=0.0)
     assert result == "ok"
     assert adapter.attempts == 3
+
+
+def test_begin_sql_rejects_unknown_isolation() -> None:
+    with pytest.raises(ValueError, match="unknown isolation level"):
+        begin_sql("postgres", isolation="snapshot", readonly=False, deferrable=False)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unknown isolation level"):
+        map_asyncpg_isolation("not_a_level")  # type: ignore[arg-type]
+    assert begin_sql(
+        "postgres",
+        isolation="serializable",
+        readonly=False,
+        deferrable=False,
+    ) == ["SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"]

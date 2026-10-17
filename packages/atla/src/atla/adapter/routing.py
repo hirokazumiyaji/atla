@@ -12,7 +12,15 @@ from typing import Any, Literal
 from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import Dialect
 
-_LOCK_CLAUSE = re.compile(r"\bFOR\s+(UPDATE|SHARE)\b", re.IGNORECASE)
+# Postgres/MySQL row locks that must hit primary (incl. weaker / MySQL variants).
+_LOCK_CLAUSE = re.compile(
+    r"(?:"
+    r"\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b|"
+    r"\bFOR\s+(?:KEY\s+)?SHARE\b|"
+    r"\bLOCK\s+IN\s+SHARE\s+MODE\b"
+    r")",
+    re.IGNORECASE,
+)
 _WRITE_PREFIX = re.compile(
     r"^(INSERT|UPDATE|DELETE|MERGE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b",
     re.IGNORECASE,
@@ -60,7 +68,8 @@ class RoutingAdapter:
 
     Non-transactional ``fetch_*`` calls go to a replica (round-robin by default)
     unless the SQL is a write (including ``INSERT … RETURNING`` via ``fetch_*``)
-    or contains ``FOR UPDATE`` / ``FOR SHARE``.
+    or contains a locking clause (``FOR UPDATE`` / ``FOR NO KEY UPDATE`` /
+    ``FOR SHARE`` / ``FOR KEY SHARE`` / MySQL ``LOCK IN SHARE MODE``).
 
     Replica selection is per-call, so multi-statement logical operations may see
     different replicas (and therefore replication lag). Prefer a single replica,

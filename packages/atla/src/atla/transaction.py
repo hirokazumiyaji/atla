@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, get_args
 
 from atla.adapter.base import DBAdapter
 from atla.errors import SerializationError
@@ -18,6 +18,8 @@ IsolationLevel = Literal[
     "repeatable_read",
     "serializable",
 ]
+
+_ALLOWED_ISOLATION: frozenset[str] = frozenset(get_args(IsolationLevel))
 
 
 async def run_in_transaction[T](
@@ -83,6 +85,9 @@ def begin_sql(
         msg = f"{dialect_name} does not support deferrable transactions"
         raise ValueError(msg)
     if isolation is not None:
+        if isolation not in _ALLOWED_ISOLATION:
+            msg = f"unknown isolation level {isolation!r}"
+            raise ValueError(msg)
         level = isolation.replace("_", " ").upper()
         if dialect_name in {"postgres", "cockroach", "mysql", "tidb"}:
             statements.append(f"SET TRANSACTION ISOLATION LEVEL {level}")
@@ -104,6 +109,9 @@ def map_asyncpg_isolation(isolation: IsolationLevel | None) -> Any | None:
     """Map atla isolation names to asyncpg transaction isolation constants."""
     if isolation is None:
         return None
+    if isolation not in _ALLOWED_ISOLATION:
+        msg = f"unknown isolation level {isolation!r}"
+        raise ValueError(msg)
     mapping = {
         "read_uncommitted": "read_uncommitted",
         "read_committed": "read_committed",
