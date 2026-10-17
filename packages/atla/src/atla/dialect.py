@@ -136,7 +136,7 @@ class Dialect:
             return value if self.native_datetime else value.isoformat()
         if isinstance(value, list):
             if self.native_array:
-                return cast(list[Any], value)
+                return cast("list[object]", value)
             return json.dumps(value, separators=(",", ":"), default=str)
         if isinstance(value, dict):
             return json.dumps(value, separators=(",", ":"), default=str)

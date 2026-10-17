@@ -42,7 +42,95 @@ class _JoinClause:
     segment: _JoinSegment
 
 
-class BaseSelectQuery[RecordT]:
+class _ProjectableSelect:
+    """Shared ``select()`` overloads for builders that can project columns.
+
+    Typed for 1-8 projected expressions (``ProjectedSelectQuery[T1, ..., T8]``);
+    pass more than 8 and the runtime still works but the result is untyped
+    (type checkers will report no matching overload).
+    Subclasses implement :meth:`_project`.
+    """
+
+    __slots__ = ()
+
+    @overload
+    def select[T](self, c0: Expr[T]) -> ProjectedSelectQuery[T]: ...
+
+    @overload
+    def select[T1, T2](self, c0: Expr[T1], c1: Expr[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+
+    @overload
+    def select[T1, T2, T3](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3]
+    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
+
+    @overload
+    def select[T1, T2, T3, T4](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4], c4: Expr[T5]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7, T8](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+        c7: Expr[T8],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7, T8]: ...
+
+    def select(self, *columns: Expr[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns/expressions as ``list[tuple[...]]``.
+
+        Supports up to 8 typed columns/expressions (overloads); more than 8 are
+        accepted at runtime but are not statically typed.
+
+        Row codecs (UUID/Decimal/datetime/...) are applied only for the generated
+        table column descriptors (e.g. ``users.id``), which carry a ``decoder``.
+        Hand-built ``Column("users", "id")`` objects and other expressions return
+        the adapter's raw values.
+        """
+        if not columns:
+            msg = "select() requires at least one column"
+            raise ValueError(msg)
+        return self._project(columns)
+
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        raise NotImplementedError
+
+
+class BaseSelectQuery[RecordT](_ProjectableSelect):
     """Immutable SELECT query builder backed by AOT SQL fragments."""
 
     __slots__ = ("_adapter", "_limit", "_offset", "_order_by", "_where")
@@ -205,28 +293,8 @@ class BaseSelectQuery[RecordT]:
             key_attr=key_attr,
         )
 
-    @overload
-    def select[T](self, c0: Column[T]) -> ProjectedSelectQuery[T]: ...
-
-    @overload
-    def select[T1, T2](self, c0: Column[T1], c1: Column[T2]) -> ProjectedSelectQuery[T1, T2]: ...
-
-    @overload
-    def select[T1, T2, T3](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3]
-    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
-
-    @overload
-    def select[T1, T2, T3, T4](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3], c3: Column[T4]
-    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
-
-    def select(self, *columns: Column[Any]) -> Any:  # type: ignore[misc]
-        """Project specific columns as ``list[tuple[...]]`` (TypeVarTuple overloads)."""
-        if not columns:
-            msg = "select() requires at least one column"
-            raise ValueError(msg)
-        query: ProjectedSelectQuery[Any] = ProjectedSelectQuery(
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        return ProjectedSelectQuery(
             self._adapter,
             from_sql=type(self)._FROM_SQL,
             columns=columns,
@@ -235,7 +303,6 @@ class BaseSelectQuery[RecordT]:
             limit=self._limit,
             offset=self._offset,
         )
-        return query
 
     def to_sql(self) -> tuple[str, list[Any]]:
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._SELECT_SQL)
@@ -635,7 +702,7 @@ class BaseDeleteQuery[RecordT]:
         return type(self)._ROW_MAPPER(rows[0])
 
 
-class JoinedSelectQuery[*Ts]:
+class JoinedSelectQuery[*Ts](_ProjectableSelect):
     """SELECT builder that hydrates each row into ``tuple[*Ts]`` via column slices."""
 
     __slots__ = (
@@ -708,6 +775,21 @@ class JoinedSelectQuery[*Ts]:
 
     def offset(self, n: int) -> JoinedSelectQuery[*Ts]:
         return self._clone(offset=n, replace_offset=True)
+
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        join_parts = tuple(
+            (f" {join.kind} JOIN {join.target_sql} ON ", join.on) for join in self._joins
+        )
+        return ProjectedSelectQuery(
+            self._adapter,
+            from_sql=self._from_sql,
+            columns=columns,
+            where=self._where,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+            join_parts=join_parts,
+        )
 
     def join[OtherT](
         self,
