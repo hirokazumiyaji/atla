@@ -75,22 +75,24 @@ def resolve_sql_type(
     normalized, is_array, is_unsigned = normalize_sql_type(raw_type)
     dialect_key = dialect.lower()
 
+    mapping: TypeMapping | None = None
     if _MYSQL_ENUM_RE.match(raw_type.strip()) and dialect_key in {"mysql", "tidb"}:
         if table_name and column_name:
             enum_name = mysql_inline_enum_name(table_name, column_name)
             enum = enums.get(enum_name)
             if enum is not None:
-                return _enum_mapping(enum, dialect=dialect_key)
+                mapping = _enum_mapping(enum, dialect=dialect_key)
 
-    if normalized in enums:
-        return _enum_mapping(enums[normalized], dialect=dialect_key)
+    if mapping is None and normalized in enums:
+        mapping = _enum_mapping(enums[normalized], dialect=dialect_key)
 
-    mapping = _map_normalized_type(
-        normalized,
-        dialect=dialect_key,
-        is_unsigned=is_unsigned,
-        raw_type=raw_type,
-    )
+    if mapping is None:
+        mapping = _map_normalized_type(
+            normalized,
+            dialect=dialect_key,
+            is_unsigned=is_unsigned,
+            raw_type=raw_type,
+        )
     if is_array:
         return TypeMapping(
             base_python_type=f"list[{mapping.base_python_type}]",

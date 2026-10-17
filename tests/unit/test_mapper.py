@@ -135,6 +135,15 @@ def test_map_schema_fills_columns() -> None:
     assert by_name["bio"].python_type == "str | None"
 
 
+def test_postgres_enum_array() -> None:
+    enums = {
+        "status": EnumIR(name="status", class_name="Status", values=("on", "off")),
+    }
+    mapping = resolve_sql_type("status[]", dialect="postgres", enums=enums)
+    assert mapping.base_python_type == "list[Status]"
+    assert mapping.import_symbol == (".enums", "Status")
+
+
 def test_cockroach_and_tidb_aliases() -> None:
     assert resolve_sql_type("int8", dialect="cockroach").base_python_type == "int"
     assert resolve_sql_type("varchar(64)", dialect="tidb").base_python_type == "str"
