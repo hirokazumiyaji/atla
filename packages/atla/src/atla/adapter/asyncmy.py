@@ -122,7 +122,14 @@ class AsyncmyAdapter:
                     await active.rollback()
                     raise
                 else:
-                    await active.commit()
+                    try:
+                        await active.commit()
+                    except BaseException:
+                        try:
+                            await active.rollback()
+                        except BaseException:
+                            pass
+                        raise
             finally:
                 try:
                     await self._pool.release(active)
@@ -140,7 +147,14 @@ class AsyncmyAdapter:
                 await self._conn.rollback()
                 raise
             else:
-                await self._conn.commit()
+                try:
+                    await self._conn.commit()
+                except BaseException:
+                    try:
+                        await self._conn.rollback()
+                    except BaseException:
+                        pass
+                    raise
             return
 
         savepoint = f"atla_sp_{self._depth}"
