@@ -116,7 +116,7 @@ def test_generate_and_check_roundtrip(tmp_path: Path) -> None:
     assert "AtlaClient" in content
     models = (out / "models.py").read_text(encoding="utf-8")
     assert "class UserRecord" in models
-    assert "class UsersTable" in models
+    assert "class UserTable" in models
 
     assert (
         main(
@@ -152,9 +152,7 @@ def test_generate_and_check_roundtrip(tmp_path: Path) -> None:
 
 def test_generate_keyword_columns_use_safe_python_names(tmp_path: Path) -> None:
     out = tmp_path / "generated"
-    schema = str(
-        Path(__file__).resolve().parents[1] / "fixtures" / "atlas" / "mysql_users.json"
-    )
+    schema = str(Path(__file__).resolve().parents[1] / "fixtures" / "atlas" / "mysql_users.json")
     assert (
         main(
             [

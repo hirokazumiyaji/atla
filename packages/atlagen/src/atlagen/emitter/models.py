@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from atlagen.ir import ColumnIR, SchemaIR, TableIR
-from atlagen.naming import to_pascal_case
 
 
 def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
@@ -30,6 +29,7 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
             "from dataclasses import dataclass",
             "from typing import Any, Sequence",
             "from atla.expressions import Column",
+            "from atla.table import TableRef",
         ]
     )
     for module, symbol in sorted(imports):
@@ -42,7 +42,7 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
         return "\n".join(lines)
 
     for table in schema.tables:
-        table_cls = f"{to_pascal_case(table.name)}Table"
+        table_cls = f"{table.model_name}Table"
         lines.extend(_emit_record(table, frozen=frozen))
         lines.append("")
         lines.extend(_emit_table(table, table_cls=table_cls))
@@ -86,14 +86,20 @@ def _row_expr(column: ColumnIR, index: int) -> str:
 
 
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
-    slot_names = ", ".join(["'_alias'", *[repr(column.attr_name) for column in table.columns]])
+    slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
+    column_names = ", ".join(repr(column.name) for column in table.columns)
     lines = [
-        f"class {table_cls}:",
+        f"class {table_cls}(TableRef[{table.model_name}Record]):",
         f"    __slots__ = ({slot_names})",
         f"    __table_name__ = {table.name!r}",
+        f"    _COLUMNS = ({column_names})",
+        (
+            f"    _ROW_MAPPER = {table.model_name}Record._from_row"
+            "  # pyright: ignore[reportPrivateUsage]"
+        ),
         "",
         "    def __init__(self, alias: str | None = None) -> None:",
-        "        self._alias = alias",
+        "        super().__init__(alias)",
         # Column() quotes a single table identifier; use the unqualified table name.
         f"        t = alias or {table.name.rsplit('.', 1)[-1]!r}",
     ]

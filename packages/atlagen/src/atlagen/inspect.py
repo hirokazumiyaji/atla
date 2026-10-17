@@ -57,7 +57,10 @@ def _inspect_with_atlas(schema: str, *, dev_url: str | None) -> str:
             check=False,
             capture_output=True,
             text=True,
+            timeout=120,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise InspectError("atlas schema inspect timed out after 120s") from exc
     except OSError as exc:
         raise InspectError(f"failed to execute atlas: {exc}") from exc
     if completed.returncode != 0:
