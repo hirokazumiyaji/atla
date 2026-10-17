@@ -12,19 +12,35 @@ def emit_query(schema: SchemaIR) -> str:
             if column.import_symbol is not None:
                 imports.add(column.import_symbol)
 
+    needs_preload = any(_inbound_relations(table, schema) for table in schema.tables)
+    query_imports = [
+        "BaseDeleteQuery",
+        "BaseInsertQuery",
+        "BaseSelectQuery",
+        "BaseUpdateQuery",
+    ]
+    if needs_preload:
+        query_imports.append("PreloadSelectQuery")
     lines = [
         "from __future__ import annotations",
         "",
         "from atla.adapter.base import DBAdapter",
         "from atla.expressions import Expr",
-        "from atla.query import BaseDeleteQuery, BaseInsertQuery, BaseSelectQuery, BaseUpdateQuery",
+        "from atla.query import (",
+        *[f"    {name}," for name in query_imports],
+        ")",
         "from atla.types import UNSET, UnsetType",
     ]
     for module, symbol in sorted(imports):
         lines.append(f"from {module} import {symbol}")
     if schema.tables:
-        record_imports = ", ".join(f"{table.model_name}Record" for table in schema.tables)
-        lines.append(f"from .models import {record_imports}")
+        if needs_preload:
+            model_imports = ", ".join(
+                f"{table.model_name}, {table.model_name}Record" for table in schema.tables
+            )
+        else:
+            model_imports = ", ".join(f"{table.model_name}Record" for table in schema.tables)
+        lines.append(f"from .models import {model_imports}")
     lines.append("")
 
     if not schema.tables:
@@ -33,12 +49,12 @@ def emit_query(schema: SchemaIR) -> str:
         return "\n".join(lines)
 
     for table in schema.tables:
-        lines.extend(_emit_table_builders(table, dialect=schema.dialect))
+        lines.extend(_emit_table_builders(table, schema=schema, dialect=schema.dialect))
         lines.append("")
     return "\n".join(lines)
 
 
-def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
+def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> list[str]:
     quoted_table = _quote_table(table.name, dialect=dialect)
     select_cols = ", ".join(
         f"{quoted_table}.{_quote_ident(column.name, dialect=dialect)}" for column in table.columns
@@ -54,6 +70,9 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
         f"class {table.model_name}Query(BaseSelectQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _TABLE_NAME = {quoted_table!r}",
+        f"    _SELECT_COLS = {select_cols!r}",
+        f"    _FROM_SQL = {quoted_table!r}",
+        f"    _COLUMN_COUNT = {len(table.columns)}",
         f"    _SELECT_SQL = {('SELECT ' + select_cols + ' FROM ' + quoted_table)!r}",
         f"    _COUNT_SQL = {('SELECT COUNT(*) FROM ' + quoted_table)!r}",
         row_mapper,
@@ -164,6 +183,60 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
             f"        return BaseDeleteQuery(self._adapter, table_name={quoted_table!r})",
         ]
     )
+    lines.extend(_emit_with_methods(table, schema=schema))
+    return lines
+
+
+def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, str, str]]:
+    """Return ``(child_table, fk_attr, parent_key_attr)`` for single-column inbound FKs."""
+    pk = table.primary_key[0] if table.primary_key else None
+    if pk is None:
+        return []
+    parent_key_attr = next(
+        (column.attr_name for column in table.columns if column.name == pk),
+        pk,
+    )
+    relations: list[tuple[TableIR, str, str]] = []
+    for child in schema.tables:
+        if child.name == table.name:
+            continue
+        for foreign_key in child.foreign_keys:
+            if foreign_key.ref_table.rsplit(".", 1)[-1] != table.name.rsplit(".", 1)[-1]:
+                continue
+            if len(foreign_key.columns) != 1 or len(foreign_key.ref_columns) != 1:
+                continue
+            if foreign_key.ref_columns[0] != pk:
+                continue
+            fk_name = foreign_key.columns[0]
+            fk_attr = next(
+                (column.attr_name for column in child.columns if column.name == fk_name),
+                fk_name,
+            )
+            relations.append((child, fk_attr, parent_key_attr))
+    return relations
+
+
+def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
+    """Emit ``with_<child>`` batch eager-load helpers from inbound foreign keys."""
+    lines: list[str] = []
+    used_names: set[str] = set()
+    for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):
+        method = f"with_{child.name}"
+        if method in used_names:
+            method = f"with_{child.name}_{fk_attr}"
+        used_names.add(method)
+        lines.extend(
+            [
+                "",
+                f"    def {method}(self) -> PreloadSelectQuery["
+                f"{table.model_name}Record, {child.model_name}Record]:",
+                f"        return {table.model_name}Query(self._adapter).preload(",
+                f"            {child.model_name},",
+                f"            fk={child.model_name}.{fk_attr},",
+                f"            key={table.model_name}.{parent_key_attr},",
+                "        )",
+            ]
+        )
     return lines
 
 

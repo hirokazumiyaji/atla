@@ -42,7 +42,10 @@ from atla.query import (
     BaseInsertQuery,
     BaseSelectQuery,
     BaseUpdateQuery,
+    JoinedSelectQuery,
+    PreloadSelectQuery,
 )
+from atla.table import TableRef
 from atla.types import UNSET, UnsetType
 
 __version__ = "0.1.0"
@@ -62,6 +65,7 @@ __all__ = [
     "Expr",
     "FuncCall",
     "InOp",
+    "JoinedSelectQuery",
     "Literal",
     "LogicalOp",
     "MultipleResultsError",
@@ -69,9 +73,11 @@ __all__ = [
     "NotFoundError",
     "OrderByClause",
     "PostgresDialect",
+    "PreloadSelectQuery",
     "RawSQL",
     "SQLCompiler",
     "SQLiteDialect",
+    "TableRef",
     "TiDBDialect",
     "UnaryOp",
     "UnsafeMutationError",

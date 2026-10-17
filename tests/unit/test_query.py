@@ -79,6 +79,9 @@ class FakeAdapter:
 class UserQuery(BaseSelectQuery[UserRecord]):
     __slots__ = ()
     _TABLE_NAME = '"users"'
+    _SELECT_COLS = '"users"."id", "users"."email"'
+    _FROM_SQL = '"users"'
+    _COLUMN_COUNT = 2
     _SELECT_SQL = 'SELECT "users"."id", "users"."email" FROM "users"'
     _COUNT_SQL = 'SELECT COUNT(*) FROM "users"'
     _ROW_MAPPER = UserRecord.from_row
