@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -63,6 +65,10 @@ async def test_sqlite_write_codec_round_trip(
         == 0
     )
     monkeypatch.syspath_prepend(str(tmp_path))
+    # Other generated-client tests also use the package name ``appdb``.
+    for name in [m for m in sys.modules if m == "appdb" or m.startswith("appdb.")]:
+        monkeypatch.delitem(sys.modules, name)
+    importlib.invalidate_caches()
     from appdb import AtlaClient, Item  # type: ignore[import-not-found]
 
     db_path = tmp_path / "codec.db"

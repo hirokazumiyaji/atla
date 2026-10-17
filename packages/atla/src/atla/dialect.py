@@ -39,6 +39,9 @@ class Dialect:
     native_uuid: ClassVar[bool] = False
     native_decimal: ClassVar[bool] = False
     native_datetime: ClassVar[bool] = False
+    # Driver maps Python ``list`` to native SQL arrays (Postgres/Cockroach).
+    # When False, lists are JSON-encoded. ``dict`` is always JSON-encoded.
+    native_array: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -76,7 +79,17 @@ class Dialect:
 
         Hot path: ``None`` and plain primitives are returned unchanged (no
         copies). Non-native types (``UUID``, ``Decimal``, ``datetime``, JSON
-        containers, ``Enum``) are converted to driver-safe forms.
+        containers, ``Enum``) are converted to driver-safe forms. ``list`` is
+        passed through unchanged when ``native_array`` is set (Postgres/CockroachDB
+        arrays) and JSON-encoded otherwise.
+
+        Encoding is idempotent and runs in two places on purpose: the compiler
+        encodes values as they are bound so compiled ``(sql, params)`` pairs are
+        driver-safe on their own (e.g. for inspection or ``RawSQL``-style reuse),
+        and adapters encode again at the execution boundary so params supplied
+        directly to ``fetch_*``/``execute*`` get the same treatment. A second pass
+        is a no-op because already-encoded values (``str``, numbers, native types)
+        are returned unchanged.
         """
         # Fast path — keep zero overhead for the common case.
         # Check Enum before ``str`` so StrEnum unwraps to ``.value``.
@@ -102,7 +115,11 @@ class Dialect:
             return value if self.native_datetime else value.isoformat()
         if isinstance(value, time):
             return value if self.native_datetime else value.isoformat()
-        if isinstance(value, (dict, list)):
+        if isinstance(value, list):
+            if self.native_array:
+                return value
+            return json.dumps(value, separators=(",", ":"), default=str)
+        if isinstance(value, dict):
             return json.dumps(value, separators=(",", ":"), default=str)
         return value
 
@@ -112,9 +129,7 @@ class Dialect:
             return ()
         return tuple(self.encode_param(value) for value in params)
 
-    def encode_params_seq(
-        self, params_seq: Sequence[Sequence[Any]]
-    ) -> list[tuple[Any, ...]]:
+    def encode_params_seq(self, params_seq: Sequence[Sequence[Any]]) -> list[tuple[Any, ...]]:
         """Encode each row for ``executemany``-style APIs."""
         return [self.encode_params(row) for row in params_seq]
 
@@ -131,6 +146,7 @@ class PostgresDialect(Dialect):
     native_uuid = True
     native_decimal = True
     native_datetime = True
+    native_array = True
 
 
 class CockroachDialect(PostgresDialect):
@@ -153,6 +169,7 @@ class MySQLDialect(Dialect):
     native_uuid = False
     native_decimal = False
     native_datetime = True
+    native_array = False
 
 
 class TiDBDialect(MySQLDialect):
@@ -174,3 +191,4 @@ class SQLiteDialect(Dialect):
     native_uuid = False
     native_decimal = False
     native_datetime = False
+    native_array = False

@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 
 from atla.compiler import SQLCompiler
-from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect
+from atla.dialect import CockroachDialect, MySQLDialect, PostgresDialect, SQLiteDialect
 from atla.expressions import Column, Literal
 
 
@@ -37,6 +37,9 @@ class Role(StrEnum):
         (SQLiteDialect(), time(3, 4, 5), str),
         (PostgresDialect(), {"a": 1}, str),
         (SQLiteDialect(), [1, 2], str),
+        (MySQLDialect(), [1, 2], str),
+        (PostgresDialect(), [1, 2], list),
+        (CockroachDialect(), ["a", "b"], list),
         (PostgresDialect(), Role.ADMIN, str),
         (SQLiteDialect(), 42, int),
         (SQLiteDialect(), "plain", str),
@@ -44,7 +47,7 @@ class Role(StrEnum):
     ],
 )
 def test_encode_param_types(
-    dialect: PostgresDialect | SQLiteDialect | MySQLDialect,
+    dialect: PostgresDialect | SQLiteDialect | MySQLDialect | CockroachDialect,
     value: object,
     expected: type,
 ) -> None:
@@ -54,7 +57,9 @@ def test_encode_param_types(
         assert encoded == str(value)
     if isinstance(value, Decimal) and expected is str:
         assert encoded == "1.25"
-    if isinstance(value, (dict, list)):
+    if isinstance(value, list) and dialect.native_array:
+        assert encoded is value
+    elif isinstance(value, (dict, list)):
         assert json.loads(str(encoded)) == value
     if isinstance(value, Role):
         assert encoded == "admin"
@@ -78,3 +83,17 @@ def test_literal_json_dict_is_serialized() -> None:
     compiler.visit(Literal({"role": "admin"}))
     _, params = compiler.build()
     assert params == ['{"role":"admin"}']
+
+
+def test_postgres_list_param_stays_native_array() -> None:
+    for dialect in (PostgresDialect(), CockroachDialect()):
+        compiler = SQLCompiler(dialect)
+        compiler.visit(Column[list[int]]("t", "tags") == [1, 2, 3])
+        _, params = compiler.build()
+        assert params == [[1, 2, 3]]
+        assert dialect.encode_params([[1, 2], {"a": 1}]) == ([1, 2], '{"a":1}')
+
+
+def test_non_array_dialects_json_encode_list_param() -> None:
+    for dialect in (SQLiteDialect(), MySQLDialect()):
+        assert dialect.encode_params([[1, 2]]) == ("[1,2]",)
