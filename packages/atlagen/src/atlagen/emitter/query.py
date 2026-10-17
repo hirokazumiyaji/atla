@@ -61,22 +61,34 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
         f"    _RETURNING_COLS = {returning_cols!r}",
         f"    _ROW_MAPPER = {table.model_name}Record._from_row",
         "",
-        "    def set(",
-        "        self,",
-        "        *,",
     ]
-    for column in table.columns:
-        if column.is_primary_key:
-            continue
-        lines.append(
-            f"        {column.attr_name}: {column.base_python_type} | "
-            f"Expr[{column.base_python_type}] | UnsetType = UNSET,"
-        )
     set_columns = [column for column in table.columns if not column.is_primary_key]
-    lines.append(f"    ) -> {table.model_name}UpdateBuilder:")
-    lines.extend(
-        _emit_mapped_call("        return self._set_values", set_columns, indent="        ")
-    )
+    if set_columns:
+        lines.extend(
+            [
+                "    def set(",
+                "        self,",
+                "        *,",
+            ]
+        )
+        for column in set_columns:
+            lines.append(
+                f"        {column.attr_name}: {column.base_python_type} | "
+                f"Expr[{column.base_python_type}] | UnsetType = UNSET,"
+            )
+        lines.append(f"    ) -> {table.model_name}UpdateBuilder:")
+        lines.extend(
+            _emit_mapped_call(
+                "        return self._set_values", set_columns, indent="        "
+            )
+        )
+    else:
+        lines.extend(
+            [
+                f"    def set(self) -> {table.model_name}UpdateBuilder:",
+                '        raise ValueError("table has no updatable columns")',
+            ]
+        )
     lines.extend(
         [
             "",

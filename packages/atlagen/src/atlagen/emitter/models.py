@@ -94,7 +94,8 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
         "",
         "    def __init__(self, alias: str | None = None) -> None:",
         "        self._alias = alias",
-        f"        t = alias or {table.name!r}",
+        # Column() quotes a single table identifier; use the unqualified table name.
+        f"        t = alias or {table.name.rsplit('.', 1)[-1]!r}",
     ]
     for column in table.columns:
         lines.append(
