@@ -335,6 +335,11 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
         if method in used_names:
             method = f"with_{parent.accessor_name}_{fk_attr}"
         used_names.add(method)
+        parent_type = (
+            f"{parent.model_name}Record | None"
+            if nullable
+            else f"{parent.model_name}Record"
+        )
         lines.extend(
             [
                 "",
@@ -342,7 +347,7 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
                 "        self,",
                 "        *predicates: Expr[bool],",
                 "        order_by: Sequence[OrderByClause] = (),",
-                f"    ) -> PreloadOneSelectQuery[{table.model_name}Record, {parent.model_name}Record]:",
+                f"    ) -> PreloadOneSelectQuery[{table.model_name}Record, {parent_type}]:",
                 f"        return {receiver}.preload_one(",
                 f"            {parent.model_name},",
                 "            *predicates,",

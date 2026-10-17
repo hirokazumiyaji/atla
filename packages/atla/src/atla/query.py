@@ -309,6 +309,32 @@ class BaseSelectQuery[RecordT]:
             order_by=order_by,
         )
 
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[False] = False,
+    ) -> PreloadOneSelectQuery[RecordT, OtherT]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[True],
+    ) -> PreloadOneSelectQuery[RecordT, OtherT | None]: ...
+
     def preload_one[OtherT](
         self,
         related: TableRef[OtherT],
@@ -319,7 +345,7 @@ class BaseSelectQuery[RecordT]:
         key_attr: str,
         order_by: Sequence[OrderByClause] = (),
         nullable: bool = False,
-    ) -> PreloadOneSelectQuery[RecordT, OtherT]:
+    ) -> PreloadOneSelectQuery[RecordT, OtherT] | PreloadOneSelectQuery[RecordT, OtherT | None]:
         """Batch-load a belongs-to parent via ``WHERE parent.pk IN (...)``.
 
         ``fk`` / ``fk_attr`` belong to *this* table; ``key`` / ``key_attr`` belong
@@ -1234,26 +1260,26 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
     def offset(self, n: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
         return self._clone(self._parent.offset(n))
 
-    async def all(self) -> list[tuple[ChildT, ParentT | None]]:
+    async def all(self) -> list[tuple[ChildT, ParentT]]:
         children = await self._parent.all()
         if not children:
             return []
         by_key = await _load_one(self._parent.adapter, children, self._spec)
         fk_attr = self._spec.fk_attr
-        results: list[tuple[ChildT, ParentT | None]] = []
+        results: list[tuple[ChildT, ParentT]] = []
         for child in children:
             fk_value = getattr(child, fk_attr)
             if fk_value is None:
-                results.append((child, None))
+                results.append((child, cast(ParentT, None)))
             else:
-                results.append((child, by_key.get(fk_value)))
+                results.append((child, cast(ParentT, by_key.get(fk_value))))
         return results
 
-    async def first(self) -> tuple[ChildT, ParentT | None] | None:
+    async def first(self) -> tuple[ChildT, ParentT] | None:
         rows = await self.limit(1).all()
         return rows[0] if rows else None
 
-    async def one(self) -> tuple[ChildT, ParentT | None]:
+    async def one(self) -> tuple[ChildT, ParentT]:
         rows = await self.limit(2).all()
         if not rows:
             raise NotFoundError("expected exactly one row, found 0")
