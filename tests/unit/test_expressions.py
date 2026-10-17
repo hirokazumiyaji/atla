@@ -75,6 +75,12 @@ def test_comparison_and_null_predicates() -> None:
     assert isinstance(age.eq(1), BinaryOp)
     assert isinstance(age.ge(18), BinaryOp)
 
+    # eq/ne must match __eq__/__ne__ None -> IS [NOT] NULL
+    assert isinstance(deleted_at.eq(None), UnaryOp)
+    assert deleted_at.eq(None).op == "IS NULL"
+    assert isinstance(deleted_at.ne(None), UnaryOp)
+    assert deleted_at.ne(None).op == "IS NOT NULL"
+
 
 def test_collection_range_and_string_methods() -> None:
     age = Column[int]("users", "age")

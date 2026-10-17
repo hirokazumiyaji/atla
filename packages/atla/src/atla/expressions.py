@@ -81,11 +81,24 @@ class Expr[T_co]:
     def __ge__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
         return BinaryOp(">=", self, _coerce_literal(other))
 
-    def eq[T](self: Expr[T], other: T | Expr[T]) -> Expr[bool]:
-        return BinaryOp("=", self, _coerce_literal(other))
+    @overload
+    def eq[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
 
-    def ne[T](self: Expr[T], other: T | Expr[T]) -> Expr[bool]:
-        return BinaryOp("<>", self, _coerce_literal(other))
+    @overload
+    def eq[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def eq[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+        # Match ``__eq__``: ``None`` becomes ``IS NULL``, not ``= NULL``.
+        return self == other
+
+    @overload
+    def ne[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
+
+    @overload
+    def ne[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+
+    def ne[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+        return self != other
 
     def lt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
         return BinaryOp("<", self, _coerce_literal(other))
@@ -131,37 +144,37 @@ class Expr[T_co]:
 
     # --- Arithmetic ---
 
-    def __add__(self, other: Any) -> BinaryOp[Any]:
+    def __add__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("+", self, _coerce_literal(other))
 
-    def __radd__(self, other: Any) -> BinaryOp[Any]:
+    def __radd__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("+", _coerce_literal(other), self)
 
-    def __sub__(self, other: Any) -> BinaryOp[Any]:
+    def __sub__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("-", self, _coerce_literal(other))
 
-    def __rsub__(self, other: Any) -> BinaryOp[Any]:
+    def __rsub__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("-", _coerce_literal(other), self)
 
-    def __mul__(self, other: Any) -> BinaryOp[Any]:
+    def __mul__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("*", self, _coerce_literal(other))
 
-    def __rmul__(self, other: Any) -> BinaryOp[Any]:
+    def __rmul__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("*", _coerce_literal(other), self)
 
-    def __truediv__(self, other: Any) -> BinaryOp[Any]:
+    def __truediv__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("/", self, _coerce_literal(other))
 
-    def __rtruediv__(self, other: Any) -> BinaryOp[Any]:
+    def __rtruediv__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("/", _coerce_literal(other), self)
 
-    def __mod__(self, other: Any) -> BinaryOp[Any]:
+    def __mod__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("%", self, _coerce_literal(other))
 
-    def __rmod__(self, other: Any) -> BinaryOp[Any]:
+    def __rmod__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("%", _coerce_literal(other), self)
 
-    def __neg__(self) -> UnaryOp[Any]:
+    def __neg__[T](self: Expr[T]) -> UnaryOp[T]:
         return UnaryOp("-", self, postfix=False)
 
     # --- Ordering / alias ---
