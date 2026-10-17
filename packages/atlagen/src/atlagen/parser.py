@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from collections.abc import Mapping
 from typing import Any, cast
 
+from atlagen.config import ConfigError
 from atlagen.ir import (
     ColumnIR,
     EnumIR,
@@ -19,6 +21,7 @@ from atlagen.naming import (
     enum_class_name,
     mysql_inline_enum_class_name,
     mysql_inline_enum_name,
+    safe_accessor_name,
     table_accessor_name,
     table_model_name,
     unique_attr_names,
@@ -48,6 +51,7 @@ def parse_atlas_json(
     *,
     dialect: str,
     schema_name: str | None = None,
+    table_overrides: Mapping[str, Mapping[str, str]] | None = None,
 ) -> SchemaIR:
     """Parse Atlas ``schema inspect --format '{{ json . }}'`` output into SchemaIR."""
     data = _load_json(source)
@@ -61,6 +65,7 @@ def parse_atlas_json(
         schema_name,
     )
     name = str(selected.get("name") or "public")
+    overrides = table_overrides or {}
 
     enums: list[EnumIR] = []
     enums.extend(_parse_schema_enums(selected.get("enums")))
@@ -70,9 +75,17 @@ def parse_atlas_json(
         table_obj = _as_dict(table_raw)
         if table_obj is None:
             continue
-        table, inline_enums = _parse_table(table_obj, dialect=dialect)
+        table, inline_enums = _parse_table(
+            table_obj,
+            dialect=dialect,
+            overrides=overrides,
+        )
         tables.append(table)
         enums.extend(inline_enums)
+
+    _assert_no_unused_overrides(tables, overrides)
+    _assert_unique_table_names(tables)
+    _assert_no_symbol_collisions(tables, enums)
 
     return SchemaIR(
         name=name,
@@ -80,6 +93,131 @@ def parse_atlas_json(
         enums=tuple(enums),
         tables=tuple(tables),
     )
+
+
+# Symbols imported or emitted at module scope in generated packages. A table
+# whose model_name collides (e.g. ``columns`` -> ``Column``) would shadow the
+# import used by every generated ``__init__`` / ``*Table.__init__``.
+_RESERVED_MODEL_NAMES = frozenset(
+    {
+        "AtlaClient",
+        "UNSET",
+        "UnsetType",
+        # models.py imports / bases
+        "Column",
+        "TableRef",
+        "Any",
+        "Sequence",
+        # query.py / client.py imports
+        "Expr",
+        "Mapping",
+        "DBAdapter",
+        "AsyncGenerator",
+        "BaseSelectQuery",
+        "BaseInsertQuery",
+        "BaseUpdateQuery",
+        "BaseDeleteQuery",
+        "BaseInsertManyQuery",
+        "PreloadSelectQuery",
+        # common column-type imports from atlagen.mapper
+        "Decimal",
+        "UUID",
+        "date",
+        "time",
+        "datetime",
+        "timedelta",
+        # enums.py imports
+        "StrEnum",
+    }
+)
+
+
+def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
+    text = value.strip()
+    if not text.isidentifier() or keyword.iskeyword(text):
+        msg = (
+            f"override {kind} {value!r} for table {table_name!r} "
+            "must be a valid non-keyword Python identifier"
+        )
+        raise AtlasParseError(msg)
+    if kind == "model_name" and (
+        text in _RESERVED_MODEL_NAMES
+        or text.endswith(("Record", "Repository", "Query", "Table", "Builder"))
+    ):
+        msg = (
+            f"override model_name {value!r} for table {table_name!r} "
+            "collides with a generated export suffix or reserved symbol"
+        )
+        raise AtlasParseError(msg)
+    return text
+
+
+def _assert_no_unused_overrides(
+    tables: list[TableIR],
+    overrides: Mapping[str, Mapping[str, str]],
+) -> None:
+    known = {table.name for table in tables}
+    unused = sorted(key for key in overrides if key not in known)
+    if unused:
+        msg = (
+            "[tool.atlagen.tables] override keys do not match any table in the schema: "
+            + ", ".join(repr(key) for key in unused)
+        )
+        raise ConfigError(msg)
+
+
+def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> None:
+    # Seed reserved exports so default-derived names (e.g. table ``atla_clients``
+    # -> ``AtlaClient``) are caught, not only explicit overrides.
+    occupied: dict[str, str] = {name: "reserved symbol" for name in _RESERVED_MODEL_NAMES}
+    for enum in enums:
+        prior = occupied.get(enum.class_name)
+        if prior is not None:
+            msg = (
+                f"generated enum class {enum.class_name!r} collides between "
+                f"{prior} and enum {enum.name!r}"
+            )
+            raise AtlasParseError(msg)
+        occupied[enum.class_name] = f"enum {enum.name!r}"
+    for table in tables:
+        owners = {
+            table.model_name: f"table {table.name!r} model",
+            f"{table.model_name}Record": f"table {table.name!r} record",
+            f"{table.model_name}Repository": f"table {table.name!r} repository",
+            f"{table.model_name}Query": f"table {table.name!r} query",
+            f"{table.model_name}Table": f"table {table.name!r} table",
+            f"{table.model_name}InsertBuilder": f"table {table.name!r} insert builder",
+            f"{table.model_name}UpdateBuilder": f"table {table.name!r} update builder",
+            f"{table.model_name}InsertManyBuilder": f"table {table.name!r} insert-many builder",
+        }
+        for symbol, owner in owners.items():
+            prior = occupied.get(symbol)
+            if prior is not None:
+                msg = f"generated symbol {symbol!r} collides between {prior} and {owner}"
+                raise AtlasParseError(msg)
+            occupied[symbol] = owner
+
+
+def _assert_unique_table_names(tables: list[TableIR]) -> None:
+    models: dict[str, str] = {}
+    accessors: dict[str, str] = {}
+    for table in tables:
+        prior = models.get(table.model_name)
+        if prior is not None:
+            msg = (
+                f"generated model name {table.model_name!r} collides between tables "
+                f"{prior!r} and {table.name!r}; set [tool.atlagen.tables.*] overrides"
+            )
+            raise AtlasParseError(msg)
+        models[table.model_name] = table.name
+        prior_acc = accessors.get(table.accessor_name)
+        if prior_acc is not None:
+            msg = (
+                f"generated accessor name {table.accessor_name!r} collides between tables "
+                f"{prior_acc!r} and {table.name!r}; set [tool.atlagen.tables.*] overrides"
+            )
+            raise AtlasParseError(msg)
+        accessors[table.accessor_name] = table.name
 
 
 def _load_json(source: str | bytes | Mapping[str, Any]) -> JsonDict:
@@ -130,7 +268,12 @@ def _parse_schema_enums(raw_enums: object) -> list[EnumIR]:
     return result
 
 
-def _parse_table(table_raw: JsonDict, *, dialect: str) -> tuple[TableIR, list[EnumIR]]:
+def _parse_table(
+    table_raw: JsonDict,
+    *,
+    dialect: str,
+    overrides: Mapping[str, Mapping[str, str]],
+) -> tuple[TableIR, list[EnumIR]]:
     table_name = str(table_raw.get("name") or "")
     if not table_name:
         msg = "table is missing a name"
@@ -138,6 +281,23 @@ def _parse_table(table_raw: JsonDict, *, dialect: str) -> tuple[TableIR, list[En
 
     model_name = table_model_name(table_name)
     accessor_name = table_accessor_name(table_name)
+    # Exact key only: a ``users`` override must not apply to ``other.users``.
+    override = overrides.get(table_name)
+    if override:
+        if override.get("model_name"):
+            model_name = _validate_override_ident(
+                str(override["model_name"]),
+                kind="model_name",
+                table_name=table_name,
+            )
+        if override.get("accessor_name"):
+            accessor_name = _validate_override_ident(
+                str(override["accessor_name"]),
+                kind="accessor_name",
+                table_name=table_name,
+            )
+            # Still escape AtlaClient-reserved names (e.g. transaction -> transaction_).
+            accessor_name = safe_accessor_name(accessor_name)
     primary_key = _parse_primary_key(table_raw.get("primary_key"))
     pk_set = set(primary_key)
 
@@ -211,8 +371,10 @@ def _parse_column(
         raise AtlasParseError(msg)
 
     raw_type = _extract_raw_type(column_raw.get("type"))
-    # Primary-key columns are non-nullable even if Atlas marks null=true.
-    nullable = bool(column_raw.get("null", False)) and name not in primary_key_names
+    # Atlas nullability before PK override (SQLite may allow NULL in non-INTEGER PKs).
+    schema_nullable = bool(column_raw.get("null", False))
+    # Primary-key columns are non-nullable for typing even if Atlas marks null=true.
+    nullable = schema_nullable and name not in primary_key_names
     has_default = _column_has_default(column_raw, raw_type=raw_type)
 
     inline_enum: EnumIR | None = None
@@ -237,6 +399,7 @@ def _parse_column(
             base_python_type="",
             import_symbol=None,
             nullable=nullable,
+            schema_nullable=schema_nullable,
             has_default=has_default,
             is_primary_key=name in primary_key_names,
             row_codec=None,

@@ -20,6 +20,7 @@ def _col(
         base_python_type="",
         import_symbol=None,
         nullable=nullable,
+        schema_nullable=nullable,
         has_default=False,
         is_primary_key=False,
         row_codec=None,
