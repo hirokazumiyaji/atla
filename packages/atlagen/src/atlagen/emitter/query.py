@@ -164,16 +164,13 @@ def _emit_mapped_call(
     *,
     indent: str,
 ) -> list[str]:
-    """Emit a call that maps Python attr names onto SQL column kwargs safely."""
+    """Emit a call mapping Python attr names onto SQL column names via a dict.
+
+    Always use ``**{sql_name: attr}`` so SQL identifiers that are keywords or
+    otherwise invalid as Python kwargs remain correct.
+    """
     if not columns:
         return [f"{prefix}()"]
-    needs_dict = any(column.attr_name != column.name for column in columns)
-    if not needs_dict:
-        lines = [f"{prefix}("]
-        for column in columns:
-            lines.append(f"{indent}    {column.name}={column.attr_name},")
-        lines.append(f"{indent})")
-        return lines
     lines = [f"{prefix}(**{{"]
     for column in columns:
         lines.append(f"{indent}    {column.name!r}: {column.attr_name},")
