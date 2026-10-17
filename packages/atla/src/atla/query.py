@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, Self, cast, overload
 
 from atla.adapter.base import DBAdapter
+from atla.advanced import ProjectedSelectQuery, UpsertQuery
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, and_
@@ -193,6 +194,38 @@ class BaseSelectQuery[RecordT]:
         """Alias for :meth:`preload` (batch eager loading without N+1 queries)."""
         return self.preload(related, fk=fk, key=key)
 
+    @overload
+    def select[T](self, c0: Column[T]) -> ProjectedSelectQuery[T]: ...
+
+    @overload
+    def select[T1, T2](self, c0: Column[T1], c1: Column[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+
+    @overload
+    def select[T1, T2, T3](
+        self, c0: Column[T1], c1: Column[T2], c2: Column[T3]
+    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
+
+    @overload
+    def select[T1, T2, T3, T4](
+        self, c0: Column[T1], c1: Column[T2], c2: Column[T3], c3: Column[T4]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
+
+    def select(self, *columns: Column[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns as ``list[tuple[...]]`` (TypeVarTuple overloads)."""
+        if not columns:
+            msg = "select() requires at least one column"
+            raise ValueError(msg)
+        query: ProjectedSelectQuery[Any] = ProjectedSelectQuery(
+            self._adapter,
+            from_sql=type(self)._FROM_SQL,
+            columns=columns,
+            where=self._where,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+        )
+        return query
+
     def to_sql(self) -> tuple[str, list[Any]]:
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._SELECT_SQL)
         if self._where:
@@ -213,7 +246,16 @@ class BaseSelectQuery[RecordT]:
         return compiler.build()
 
     async def all(self) -> list[RecordT]:
-        sql, params = self.to_sql()
+        if (
+            not self._where
+            and not self._order_by
+            and self._limit is None
+            and self._offset is None
+        ):
+            sql = type(self)._SELECT_SQL
+            params: list[Any] = []
+        else:
+            sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
         mapper = type(self)._ROW_MAPPER
         return [mapper(row) for row in rows]
@@ -286,6 +328,24 @@ class BaseInsertQuery[RecordT]:
 
     def returning(self) -> Self:
         return type(self)(self._adapter, values=self._values, returning=True)
+
+    def on_conflict(self, *columns: str) -> UpsertQuery[RecordT]:
+        """Start a dialect-specific upsert (``ON CONFLICT`` / ``ON DUPLICATE KEY``)."""
+        if not columns and self._adapter.dialect.upsert_style == "conflict":
+            msg = "on_conflict() requires at least one conflict target column"
+            raise ValueError(msg)
+
+        class _Upsert(UpsertQuery[RecordT]):
+            __slots__ = ()
+            _RETURNING_COLS = type(self)._RETURNING_COLS
+            _ROW_MAPPER = type(self)._ROW_MAPPER
+
+        return _Upsert(
+            self._adapter,
+            table_name=type(self)._TABLE_NAME,
+            values=self._values,
+            conflict_columns=columns,
+        )
 
     def to_sql(self) -> tuple[str, list[Any]]:
         if not self._values:

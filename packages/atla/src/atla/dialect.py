@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 
 class Dialect:
     """Base dialect describing engine-specific SQL surface syntax."""
@@ -13,6 +15,7 @@ class Dialect:
     supports_returning: bool
     supports_ilike: bool
     positional_style: str  # "dollar" | "format" | "qmark"
+    upsert_style: Literal["conflict", "duplicate"] = "conflict"
 
     def quote(self, ident: str) -> str:
         q = self.quote_char
@@ -57,6 +60,7 @@ class MySQLDialect(Dialect):
     supports_returning = False
     supports_ilike = False
     positional_style = "format"
+    upsert_style = "duplicate"
 
 
 class TiDBDialect(MySQLDialect):

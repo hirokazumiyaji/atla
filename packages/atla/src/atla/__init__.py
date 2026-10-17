@@ -1,5 +1,6 @@
 """atla: zero-overhead, compile-time type-safe SQL runtime core."""
 
+from atla.advanced import BaseInsertManyQuery, ProjectedSelectQuery, UpsertQuery
 from atla.compiler import SQLCompiler, compile_expr, compile_order_by
 from atla.dialect import (
     CockroachDialect,
@@ -54,6 +55,7 @@ __all__ = [
     "UNSET",
     "AtlaError",
     "BaseDeleteQuery",
+    "BaseInsertManyQuery",
     "BaseInsertQuery",
     "BaseSelectQuery",
     "BaseUpdateQuery",
@@ -74,6 +76,7 @@ __all__ = [
     "OrderByClause",
     "PostgresDialect",
     "PreloadSelectQuery",
+    "ProjectedSelectQuery",
     "RawSQL",
     "SQLCompiler",
     "SQLiteDialect",
@@ -82,6 +85,7 @@ __all__ = [
     "UnaryOp",
     "UnsafeMutationError",
     "UnsetType",
+    "UpsertQuery",
     "__version__",
     "and_",
     "avg",

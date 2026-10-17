@@ -11,11 +11,14 @@ dev = [
     "atla",
     "atlagen",
     "aiosqlite>=0.20.0",
+    "asyncmy>=0.2.9",
+    "asyncpg>=0.30.0",
     "mypy>=1.15.0",
     "pyright>=1.1.400",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "ruff>=0.11.0",
+    "sqlalchemy[asyncio]>=2.0.0",
 ]
 
 [tool.uv.workspace]
@@ -29,8 +32,8 @@ atlagen = { workspace = true }
 target-version = "py312"
 line-length = 100
 src = ["packages/atla/src", "packages/atlagen/src", "tests"]
-extend-exclude = ["docs", "README.md"]
-include = ["packages/**/*.py", "tests/**/*.py"]
+extend-exclude = ["docs", "README.md", "tests/benchmarks"]
+include = ["packages/**/*.py", "tests/unit/**/*.py", "tests/typecheck/**/*.py", "tests/fixtures/**/*.py"]
 
 [tool.ruff.lint]
 select = [
@@ -53,8 +56,8 @@ indent-style = "space"
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["packages/atla/src", "packages/atlagen/src", "tests"]
-exclude = ["**/__pycache__", ".venv"]
+include = ["packages/atla/src", "packages/atlagen/src", "tests/unit", "tests/typecheck"]
+exclude = ["**/__pycache__", ".venv", "tests/benchmarks", "tests/integration"]
 venvPath = "."
 venv = ".venv"
 
@@ -65,7 +68,8 @@ mypy_path = ["packages/atla/src", "packages/atlagen/src"]
 files = [
     "packages/atla/src",
     "packages/atlagen/src",
-    "tests",
+    "tests/unit",
+    "tests/typecheck",
 ]
 
 [tool.pytest.ini_options]
