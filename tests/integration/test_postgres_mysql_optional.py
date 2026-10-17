@@ -37,6 +37,7 @@ def _require_dedicated_test_db(dsn: str, *, label: str) -> str:
         )
     return database
 
+
 SCHEMA = """
 {
   "schemas": [{
