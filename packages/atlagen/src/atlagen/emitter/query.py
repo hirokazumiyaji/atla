@@ -288,7 +288,6 @@ def _outbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR,
             continue
         parent_pk = parent.primary_key[0] if parent.primary_key else None
         if parent_pk is None or ref_col != parent_pk:
-            # Non-PK / alternate-key FKs: no with_* helper (silent skip, documented here).
             continue
         fk_column = next((column for column in table.columns if column.name == fk_name), None)
         fk_attr = fk_column.attr_name if fk_column is not None else fk_name
@@ -299,6 +298,40 @@ def _outbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR,
         )
         relations.append((parent, fk_attr, parent_key_attr, nullable))
     return relations
+
+
+def _outbound_non_pk_fk_comments(table: TableIR, schema: SchemaIR) -> list[str]:
+    """Emit generated comments for FKs that do not get ``with_*`` helpers."""
+    comments: list[str] = []
+    for foreign_key in table.foreign_keys:
+        if len(foreign_key.columns) != 1 or len(foreign_key.ref_columns) != 1:
+            continue
+        fk_name = foreign_key.columns[0]
+        ref_col = foreign_key.ref_columns[0]
+        ref_table = foreign_key.ref_table
+        ref_leaf = ref_table.rsplit(".", 1)[-1]
+        parent = next(
+            (candidate for candidate in schema.tables if candidate.name == ref_table),
+            None,
+        )
+        if parent is None:
+            parent = next(
+                (
+                    candidate
+                    for candidate in schema.tables
+                    if candidate.name.rsplit(".", 1)[-1] == ref_leaf
+                ),
+                None,
+            )
+        if parent is None:
+            continue
+        parent_pk = parent.primary_key[0] if parent.primary_key else None
+        if parent_pk is None or ref_col != parent_pk:
+            comments.append(
+                f"    # FK to non-PK column: {fk_name} -> {ref_table}({ref_col}); "
+                "no eager-load helper"
+            )
+    return comments
 
 
 def _with_name_from_fk(fk_attr: str, parent_accessor: str) -> str:
@@ -344,6 +377,11 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
                 "        )",
             ]
         )
+
+    non_pk_comments = _outbound_non_pk_fk_comments(table, schema)
+    if non_pk_comments:
+        lines.append("")
+        lines.extend(non_pk_comments)
 
     for parent, fk_attr, parent_key_attr, nullable in _outbound_relations(table, schema):
         # Prefer FK-derived names (``manager_id`` → ``with_manager``) over parent accessor.
