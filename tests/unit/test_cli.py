@@ -70,6 +70,13 @@ def test_resolve_config_requires_dialect_and_out() -> None:
         resolve_config(args, pyproject_settings={})
 
 
+def test_resolve_config_rejects_non_boolean_frozen() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", "--dialect", "sqlite", "--out", "out"])
+    with pytest.raises(ConfigError, match="frozen"):
+        resolve_config(args, pyproject_settings={"frozen": "false"})
+
+
 def test_load_schema_json_from_file() -> None:
     text = load_schema_json(str(FIXTURE))
     assert '"users"' in text

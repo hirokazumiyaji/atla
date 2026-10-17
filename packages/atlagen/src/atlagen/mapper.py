@@ -298,10 +298,7 @@ def _map_mysql_family(normalized: str, *, dialect: str) -> TypeMapping:
             row_codec=(
                 None
                 if dialect in _NATIVE_BOOL_DIALECTS
-                else (
-                    "{value} if isinstance({value}, bool) "
-                    "else bool(int({value}))"
-                )
+                else ("{value} if isinstance({value}, bool) else bool(int({value}))")
             ),
         )
     if normalized in {

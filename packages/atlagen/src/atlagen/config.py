@@ -118,7 +118,12 @@ def resolve_config(
     elif getattr(args, "frozen", None) is True:
         frozen = True
     elif "frozen" in settings:
-        frozen = bool(settings["frozen"])
+        frozen_setting = settings["frozen"]
+        if not isinstance(frozen_setting, bool):
+            raise ConfigError(
+                "[tool.atlagen].frozen must be a TOML boolean (true/false)"
+            )
+        frozen = frozen_setting
 
     if not dialect:
         raise ConfigError("--dialect is required (CLI or [tool.atlagen] in pyproject.toml)")
