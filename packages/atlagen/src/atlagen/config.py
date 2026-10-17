@@ -176,7 +176,12 @@ def _parse_table_overrides(raw: object) -> dict[str, dict[str, str]] | None:
         entry: dict[str, str] = {}
         for key in ("model_name", "accessor_name"):
             if key in entry_raw:
-                text = str(entry_raw[key]).strip()
+                raw_value = entry_raw[key]
+                if not isinstance(raw_value, str):
+                    raise ConfigError(
+                        f"[tool.atlagen.tables.{table_name}].{key} must be a string"
+                    )
+                text = raw_value.strip()
                 if not text:
                     raise ConfigError(
                         f"[tool.atlagen.tables.{table_name}].{key} must be a non-empty string"

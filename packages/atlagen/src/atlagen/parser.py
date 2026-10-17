@@ -83,6 +83,7 @@ def parse_atlas_json(
         enums.extend(inline_enums)
 
     _assert_unique_table_names(tables)
+    _assert_no_symbol_collisions(tables, enums)
 
     return SchemaIR(
         name=name,
@@ -118,6 +119,26 @@ def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
         )
         raise AtlasParseError(msg)
     return text
+
+
+def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> None:
+    occupied: dict[str, str] = {}
+    for enum in enums:
+        occupied[enum.class_name] = f"enum {enum.name!r}"
+    for table in tables:
+        owners = {
+            table.model_name: f"table {table.name!r} model",
+            f"{table.model_name}Record": f"table {table.name!r} record",
+            f"{table.model_name}Repository": f"table {table.name!r} repository",
+            f"{table.model_name}Query": f"table {table.name!r} query",
+            f"{table.model_name}Table": f"table {table.name!r} table",
+        }
+        for symbol, owner in owners.items():
+            prior = occupied.get(symbol)
+            if prior is not None:
+                msg = f"generated symbol {symbol!r} collides between {prior} and {owner}"
+                raise AtlasParseError(msg)
+            occupied[symbol] = owner
 
 
 def _assert_unique_table_names(tables: list[TableIR]) -> None:
