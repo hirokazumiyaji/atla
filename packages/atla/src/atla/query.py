@@ -686,6 +686,47 @@ class JoinedSelectQuery[*Ts]:
         self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4]
     ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
 
+    @overload
+    def select[T1, T2, T3, T4, T5](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4], c4: Expr[T5]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7, T8](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+        c7: Expr[T8],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7, T8]: ...
+
     def select(self, *columns: Expr[Any]) -> Any:  # type: ignore[misc]
         """Project specific columns/expressions from a joined query."""
         if not columns:
