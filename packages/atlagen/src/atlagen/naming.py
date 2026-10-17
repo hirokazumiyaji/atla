@@ -56,6 +56,10 @@ _IRREGULAR_SINGULAR: dict[str, str] = {
     "zombies": "zombie",
     "smoothies": "smoothie",
     "calories": "calorie",
+    "ties": "tie",
+    "pies": "pie",
+    "lies": "lie",
+    "dies": "die",
     # -ses / -uses / -ases that need careful handling
     "buses": "bus",
     "gases": "gas",

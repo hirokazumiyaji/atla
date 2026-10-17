@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from atlagen.ir import ColumnIR, SchemaIR, TableIR
+from atlagen.naming import safe_attr_name
 
 
 def emit_query(schema: SchemaIR) -> str:
@@ -251,8 +252,6 @@ def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, 
 
 def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
     """Emit ``with_<child>`` batch eager-load helpers from inbound foreign keys."""
-    from atlagen.naming import safe_attr_name
-
     lines: list[str] = []
     used_names: set[str] = set()
     for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):

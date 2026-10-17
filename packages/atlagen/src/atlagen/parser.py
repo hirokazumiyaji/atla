@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, cast
 
+from atlagen.config import ConfigError
 from atlagen.ir import (
     ColumnIR,
     EnumIR,
@@ -82,6 +83,7 @@ def parse_atlas_json(
         tables.append(table)
         enums.extend(inline_enums)
 
+    _assert_no_unused_overrides(tables, overrides)
     _assert_unique_table_names(tables)
     _assert_no_symbol_collisions(tables, enums)
 
@@ -121,8 +123,24 @@ def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
     return text
 
 
+def _assert_no_unused_overrides(
+    tables: list[TableIR],
+    overrides: Mapping[str, Mapping[str, str]],
+) -> None:
+    known = {table.name for table in tables}
+    unused = sorted(key for key in overrides if key not in known)
+    if unused:
+        msg = (
+            "[tool.atlagen.tables] override keys do not match any table in the schema: "
+            + ", ".join(repr(key) for key in unused)
+        )
+        raise ConfigError(msg)
+
+
 def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> None:
-    occupied: dict[str, str] = {}
+    # Seed reserved exports so default-derived names (e.g. table ``atla_clients``
+    # -> ``AtlaClient``) are caught, not only explicit overrides.
+    occupied: dict[str, str] = {name: "reserved symbol" for name in _RESERVED_MODEL_NAMES}
     for enum in enums:
         prior = occupied.get(enum.class_name)
         if prior is not None:
@@ -231,15 +249,8 @@ def _parse_table(
 
     model_name = table_model_name(table_name)
     accessor_name = table_accessor_name(table_name)
-    unqualified = table_name.rsplit(".", 1)[-1]
-    # Prefer an exact key. Fall back to the unqualified name only when the table
-    # itself is unqualified (avoid applying ``users`` overrides to ``other.users``).
-    if table_name in overrides:
-        override: Mapping[str, str] | None = overrides[table_name]
-    elif "." not in table_name:
-        override = overrides.get(unqualified)
-    else:
-        override = None
+    # Exact key only: a ``users`` override must not apply to ``other.users``.
+    override = overrides.get(table_name)
     if override:
         if override.get("model_name"):
             model_name = _validate_override_ident(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from atlagen.config import ConfigError, _parse_table_overrides
 from atlagen.naming import (
     singularize,
     singularize_identifier,
@@ -18,6 +19,10 @@ from atlagen.parser import AtlasParseError, parse_atlas_json
     ("plural", "singular"),
     [
         ("movies", "movie"),
+        ("ties", "tie"),
+        ("pies", "pie"),
+        ("lies", "lie"),
+        ("dies", "die"),
         ("cookies", "cookie"),
         ("zombies", "zombie"),
         ("buses", "bus"),
@@ -140,3 +145,40 @@ def test_table_override_resolves_collision() -> None:
     names = {(t.name, t.model_name, t.accessor_name) for t in ir.tables}
     assert ("user", "User", "user") in names
     assert ("users", "Users", "users") in names
+
+
+def test_default_name_colliding_with_reserved_symbol_is_rejected() -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "tables": [
+                    {"name": "atla_clients", "columns": [{"name": "id", "type": "INTEGER"}]}
+                ],
+            }
+        ]
+    }
+    with pytest.raises(AtlasParseError, match="AtlaClient"):
+        parse_atlas_json(schema, dialect="sqlite")
+
+
+def test_unused_table_override_key_is_config_error() -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "tables": [{"name": "users", "columns": [{"name": "id", "type": "INTEGER"}]}],
+            }
+        ]
+    }
+    with pytest.raises(ConfigError, match="nope"):
+        parse_atlas_json(
+            schema,
+            dialect="sqlite",
+            table_overrides={"users": {"model_name": "Person"}, "nope": {"model_name": "X"}},
+        )
+
+
+def test_unknown_override_keys_are_config_error() -> None:
+    with pytest.raises(ConfigError, match="modle_name"):
+        _parse_table_overrides({"users": {"modle_name": "Person"}})

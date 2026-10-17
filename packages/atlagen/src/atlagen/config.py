@@ -26,6 +26,9 @@ class AtlagenConfig:
     table_overrides: dict[str, dict[str, str]] | None = None
 
 
+_OVERRIDE_KEYS = ("model_name", "accessor_name")
+
+
 class ConfigError(ValueError):
     """Raised when configuration is incomplete or invalid."""
 
@@ -173,14 +176,19 @@ def _parse_table_overrides(raw: object) -> dict[str, dict[str, str]] | None:
                 "with optional model_name / accessor_name"
             )
         entry_raw = cast(dict[str, Any], value)
+        unknown = sorted(str(key) for key in entry_raw if key not in _OVERRIDE_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"[tool.atlagen.tables.{table_name}] has unknown keys: "
+                + ", ".join(repr(key) for key in unknown)
+                + " (allowed: model_name, accessor_name)"
+            )
         entry: dict[str, str] = {}
-        for key in ("model_name", "accessor_name"):
+        for key in _OVERRIDE_KEYS:
             if key in entry_raw:
                 raw_value = entry_raw[key]
                 if not isinstance(raw_value, str):
-                    raise ConfigError(
-                        f"[tool.atlagen.tables.{table_name}].{key} must be a string"
-                    )
+                    raise ConfigError(f"[tool.atlagen.tables.{table_name}].{key} must be a string")
                 text = raw_value.strip()
                 if not text:
                     raise ConfigError(
