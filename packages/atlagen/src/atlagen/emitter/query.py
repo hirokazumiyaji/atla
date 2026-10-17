@@ -370,12 +370,18 @@ def _emit_pk_lookup_methods(
                 "        if not keys:",
                 "            return []",
                 "        dialect = self._adapter.dialect",
-                '        placeholders = ", ".join('
-                "dialect.placeholder(i) for i in range(1, len(keys) + 1))",
-                '        sql = f"{self._GET_MANY_PREFIX}{placeholders})"',
-                "        rows = await self._adapter.fetch_all(sql, list(keys))",
-                f"        return [{mapper}(row) for row in rows]"
+                "        batch_size = 500",
+                f"        results: list[{record}] = []",
+                "        key_list = list(keys)",
+                "        for start in range(0, len(key_list), batch_size):",
+                "            batch = key_list[start : start + batch_size]",
+                '            placeholders = ", ".join('
+                "dialect.placeholder(i) for i in range(1, len(batch) + 1))",
+                '            sql = f"{self._GET_MANY_PREFIX}{placeholders})"',
+                "            rows = await self._adapter.fetch_all(sql, batch)",
+                f"            results.extend({mapper}(row) for row in rows)"
                 "  # pyright: ignore[reportPrivateUsage]",
+                "        return results",
             ]
         )
         return lines
