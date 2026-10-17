@@ -154,6 +154,6 @@ def _quote_table(name: str, *, dialect: str) -> str:
 
 
 def _quote_ident(name: str, *, dialect: str) -> str:
-    if dialect in {"mysql", "tidb"}:
-        return f"`{name}`"
-    return f'"{name}"'
+    quote = "`" if dialect in {"mysql", "tidb"} else '"'
+    escaped = name.replace(quote, quote * 2)
+    return f"{quote}{escaped}{quote}"
