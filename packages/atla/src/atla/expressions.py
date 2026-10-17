@@ -52,9 +52,18 @@ def _normalize_nulls(nulls: str | None) -> NullsPosition | None:
     return cast(NullsPosition, normalized)
 
 
+# Use ``!`` rather than ``\`` so ESCAPE literals stay portable on MySQL/TiDB
+# (where ``\`` is a string-literal escape by default).
+_LIKE_ESCAPE = "!"
+
+
 def escape_like(value: str) -> str:
-    """Escape ``\\``, ``%``, and ``_`` for use inside a LIKE pattern with ESCAPE '\\'."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    """Escape ``!``, ``%``, and ``_`` for LIKE patterns using ``ESCAPE '!'``."""
+    return (
+        value.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", f"{_LIKE_ESCAPE}%")
+        .replace("_", f"{_LIKE_ESCAPE}_")
+    )
 
 
 class Expr[T_co]:
@@ -289,30 +298,30 @@ class Column[T](Expr[T]):
         return BinaryOp("ILIKE", self, Literal(pattern))
 
     def contains(self, substring: str) -> BinaryOp[bool]:
-        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
         return BinaryOp(
             "LIKE",
             self,
             Literal(f"%{escape_like(substring)}%"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     def starts_with(self, prefix: str) -> BinaryOp[bool]:
-        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
         return BinaryOp(
             "LIKE",
             self,
             Literal(f"{escape_like(prefix)}%"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     def ends_with(self, suffix: str) -> BinaryOp[bool]:
-        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
         return BinaryOp(
             "LIKE",
             self,
             Literal(f"%{escape_like(suffix)}"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     def icontains(self, substring: str) -> BinaryOp[bool]:
@@ -321,7 +330,7 @@ class Column[T](Expr[T]):
             "ILIKE",
             self,
             Literal(f"%{escape_like(substring)}%"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     def istarts_with(self, prefix: str) -> BinaryOp[bool]:
@@ -330,7 +339,7 @@ class Column[T](Expr[T]):
             "ILIKE",
             self,
             Literal(f"{escape_like(prefix)}%"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     def iends_with(self, suffix: str) -> BinaryOp[bool]:
@@ -339,7 +348,7 @@ class Column[T](Expr[T]):
             "ILIKE",
             self,
             Literal(f"%{escape_like(suffix)}"),
-            escape="\\",
+            escape=_LIKE_ESCAPE,
         )
 
     # --- Arithmetic (e.g. UPDATE User.age + 1) ---

@@ -24,17 +24,17 @@ def test_order_by_rejects_injected_direction_and_nulls() -> None:
 
 def test_contains_escapes_like_wildcards() -> None:
     name = Column[str]("users", "name")
-    expr = name.contains("100%_real\\x")
+    expr = name.contains("100%_real!x")
     assert isinstance(expr.right, Literal)
-    assert expr.right.value == f"%{escape_like('100%_real\\x')}%"
-    assert expr.escape == "\\"
+    assert expr.right.value == f"%{escape_like('100%_real!x')}%"
+    assert expr.escape == "!"
 
     dialect = PostgresDialect()
     compiler = SQLCompiler(dialect)
     compiler.visit(expr)
     sql, params = compiler.build()
-    assert " ESCAPE '\\'" in sql
-    assert params == ["%100\\%\\_real\\\\x%"]
+    assert " ESCAPE '!'" in sql
+    assert params == ["%100!%!_real!!x%"]
 
 
 def test_icontains_compiles_with_escape() -> None:
@@ -44,8 +44,20 @@ def test_icontains_compiles_with_escape() -> None:
     compiler.visit(name.icontains("A_B"))
     sql, params = compiler.build()
     assert "LOWER(" in sql
-    assert " ESCAPE '\\'" in sql
-    assert params == ["%A\\_B%"]
+    assert " ESCAPE '!'" in sql
+    assert params == ["%A!_B%"]
+
+
+def test_contains_escape_clause_portable_on_mysql() -> None:
+    from atla.dialect import MySQLDialect
+
+    name = Column[str]("users", "name")
+    compiler = SQLCompiler(MySQLDialect())
+    compiler.visit(name.contains("a%b"))
+    sql, params = compiler.build()
+    assert " ESCAPE '!'" in sql
+    assert "\\" not in sql.split("ESCAPE", 1)[1]
+    assert params == ["%a!%b%"]
 
 
 def test_quote_rejects_empty_and_nul() -> None:
