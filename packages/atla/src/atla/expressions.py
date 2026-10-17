@@ -25,16 +25,10 @@ class Expr[T_co]:
         )
 
     def __and__(self: Expr[bool], other: Expr[bool]) -> LogicalOp:
-        result = and_(self, other)
-        if isinstance(result, LogicalOp):
-            return result
-        return LogicalOp("AND", (result,))
+        return cast(LogicalOp, and_(self, other))
 
     def __or__(self: Expr[bool], other: Expr[bool]) -> LogicalOp:
-        result = or_(self, other)
-        if isinstance(result, LogicalOp):
-            return result
-        return LogicalOp("OR", (result,))
+        return cast(LogicalOp, or_(self, other))
 
     def __invert__(self: Expr[bool]) -> UnaryOp[bool]:
         return UnaryOp("NOT ", self, postfix=False)
@@ -148,7 +142,12 @@ class OrderByClause:
 
 
 class Column[T](Expr[T]):
-    """Typed column descriptor used in generated table models."""
+    """Typed column descriptor used in generated table models.
+
+    ``__eq__`` / ``__ne__`` return SQL predicates, so equality is not
+    identity-based. Hashing uses object identity (``__hash__ = object.__hash__``)
+    so columns remain usable as ``set`` / ``dict`` keys by descriptor identity.
+    """
 
     __slots__ = ("alias", "name", "table")
 
@@ -156,6 +155,9 @@ class Column[T](Expr[T]):
         self.table = table
         self.name = name
         self.alias = alias
+
+    # Identity hash: ``__eq__`` builds SQL, so value-equality hashing is undefined.
+    __hash__ = object.__hash__
 
     # --- Comparison operators ---
 
@@ -223,18 +225,27 @@ class Column[T](Expr[T]):
         return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
 
     def like(self, pattern: str) -> BinaryOp[bool]:
+        """SQL ``LIKE``; callers must escape ``%`` / ``_`` (and dialect ESCAPE) themselves."""
         return BinaryOp("LIKE", self, Literal(pattern))
 
     def ilike(self, pattern: str) -> BinaryOp[bool]:
+        """SQL ``ILIKE`` / lowercased ``LIKE``; same escape rules as :meth:`like`."""
         return BinaryOp("ILIKE", self, Literal(pattern))
 
     def contains(self, substring: str) -> BinaryOp[bool]:
+        """Substring match via ``LIKE '%…%'``.
+
+        ``%`` and ``_`` in *substring* keep SQL LIKE wildcard meaning; escape
+        them (or use :meth:`like` with an ``ESCAPE`` clause) before calling.
+        """
         return self.like(f"%{substring}%")
 
     def starts_with(self, prefix: str) -> BinaryOp[bool]:
+        """Prefix match via ``LIKE '…%'``; see :meth:`contains` for wildcard escaping."""
         return self.like(f"{prefix}%")
 
     def ends_with(self, suffix: str) -> BinaryOp[bool]:
+        """Suffix match via ``LIKE '%…'``; see :meth:`contains` for wildcard escaping."""
         return self.like(f"%{suffix}")
 
     # --- Arithmetic (e.g. UPDATE User.age + 1) ---

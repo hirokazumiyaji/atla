@@ -14,6 +14,10 @@ def test_table_model_name_singular_pascal() -> None:
     assert table_model_name("users") == "User"
     assert table_model_name("categories") == "Category"
     assert table_model_name("post_tags") == "PostTag"
+    assert table_model_name("other.users") == "User"
+    assert table_model_name("status") == "Status"
+    assert table_model_name("statuses") == "Status"
+    assert table_model_name("series") == "Series"
 
 
 def test_safe_attr_name_keywords() -> None:
@@ -21,9 +25,15 @@ def test_safe_attr_name_keywords() -> None:
     assert safe_attr_name("from") == "from_"
     assert safe_attr_name("class") == "class_"
     assert safe_attr_name("type") == "type_"
+    assert safe_attr_name("as") == "as__"  # as_ is reserved for Table.as_
+    assert safe_attr_name("as_") == "as__"
+    assert safe_attr_name("_alias") == "_alias_"
+    assert safe_attr_name("_from_row") == "_from_row_"
+    assert safe_attr_name("list") == "list_"
     assert safe_attr_name("user-name") == "user_name"
     assert safe_attr_name("1st") == "col_1st"
     assert unique_attr_names(["user-name", "user_name"]) == ["user_name", "user_name_2"]
+    assert unique_attr_names(["as", "as_"]) == ["as__", "as___2"]
 
 
 def test_parse_postgres_fixture() -> None:
@@ -88,6 +98,34 @@ def test_parse_mysql_fixture() -> None:
     categories = next(table for table in schema.tables if table.name == "categories")
     assert categories.model_name == "Category"
     assert categories.columns[0].has_default is True
+
+
+def test_parse_mysql_enum_doubled_quotes() -> None:
+    schema = parse_atlas_json(
+        {
+            "schemas": [
+                {
+                    "name": "app",
+                    "tables": [
+                        {
+                            "name": "items",
+                            "columns": [
+                                {"name": "id", "type": "int", "null": False},
+                                {
+                                    "name": "label",
+                                    "type": "enum('it''s','x')",
+                                    "null": False,
+                                },
+                            ],
+                            "primary_key": {"columns": [{"name": "id"}]},
+                        }
+                    ],
+                }
+            ]
+        },
+        dialect="mysql",
+    )
+    assert schema.enums[0].values == ("it's", "x")
 
 
 def test_primary_key_forces_non_nullable() -> None:

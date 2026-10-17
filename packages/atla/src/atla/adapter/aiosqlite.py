@@ -10,9 +10,15 @@ from atla.dialect import Dialect, SQLiteDialect
 
 
 class AiosqliteAdapter:
-    """Adapter over an ``aiosqlite.Connection`` with SAVEPOINT nesting."""
+    """Adapter over an ``aiosqlite.Connection`` with SAVEPOINT nesting.
 
-    __slots__ = ("_conn", "_depth", "_dialect", "_foreign_keys", "_needs_configure")
+    Outside ``transaction()``, writes are committed immediately so persistence
+    matches asyncpg-style autocommit. Nested calls on the same adapter instance
+    while a transaction is active raise ``RuntimeError``; use the yielded
+    adapter to nest via SAVEPOINT.
+    """
+
+    __slots__ = ("_conn", "_depth", "_dialect", "_foreign_keys", "_needs_configure", "_tx_active")
 
     def __init__(
         self,
@@ -22,6 +28,7 @@ class AiosqliteAdapter:
         foreign_keys: bool = True,
         _depth: int = 0,
         _configure: bool = True,
+        _tx_active: bool = False,
     ) -> None:
         self._conn = connection
         self._dialect = dialect or SQLiteDialect()
@@ -31,6 +38,7 @@ class AiosqliteAdapter:
         self._depth = _depth
         self._foreign_keys = foreign_keys
         self._needs_configure = _configure
+        self._tx_active = _tx_active
 
     @property
     def dialect(self) -> Dialect:
@@ -42,6 +50,10 @@ class AiosqliteAdapter:
         if self._foreign_keys:
             await self._conn.execute("PRAGMA foreign_keys = ON")
         self._needs_configure = False
+
+    async def _commit_if_autocommit(self) -> None:
+        if self._depth == 0 and not self._tx_active:
+            await self._conn.commit()
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         await self._ensure_configured()
@@ -71,13 +83,16 @@ class AiosqliteAdapter:
         await self._ensure_configured()
         cursor = await self._conn.execute(sql, tuple(params))
         try:
-            return int(cursor.rowcount)
+            rowcount = int(cursor.rowcount)
         finally:
             await cursor.close()
+        await self._commit_if_autocommit()
+        return rowcount
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._ensure_configured()
         await self._conn.executemany(sql, [tuple(params) for params in params_seq])
+        await self._commit_if_autocommit()
 
     async def _exec_control(self, sql: str) -> None:
         cursor = await self._conn.execute(sql)
@@ -87,6 +102,13 @@ class AiosqliteAdapter:
     async def transaction(self) -> AsyncGenerator[AiosqliteAdapter]:
         await self._ensure_configured()
         if self._depth == 0:
+            if self._tx_active:
+                msg = (
+                    "transaction already active on this adapter; "
+                    "use the adapter yielded by transaction() for nesting"
+                )
+                raise RuntimeError(msg)
+            self._tx_active = True
             await self._exec_control("BEGIN")
             pinned = AiosqliteAdapter(
                 self._conn,
@@ -102,6 +124,8 @@ class AiosqliteAdapter:
                 raise
             else:
                 await self._exec_control("COMMIT")
+            finally:
+                self._tx_active = False
             return
 
         savepoint = f"atla_sp_{self._depth}"
