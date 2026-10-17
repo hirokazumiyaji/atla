@@ -83,3 +83,45 @@ bad(AtlaClient(cast(DBAdapter, object())))
 """
     _package, app = _setup(tmp_path, source, filename="neg_update.py")
     assert_typechecks_fail(tmp_path, app, must_mention=("age", "str"))
+
+
+def test_insert_many_wrong_value_type_is_rejected(tmp_path: Path) -> None:
+    source = """\
+from __future__ import annotations
+
+from typing import cast
+
+from atla.adapter.base import DBAdapter
+
+from appdb import AtlaClient
+
+
+def bad(db: AtlaClient) -> None:
+    _ = db.user.insert_many([{"email": 123, "name": "Alice", "age": 1}])
+
+
+bad(AtlaClient(cast(DBAdapter, object())))
+"""
+    _package, app = _setup(tmp_path, source, filename="neg_insert_many_type.py")
+    assert_typechecks_fail(tmp_path, app, must_mention=("str", "insert_many"))
+
+
+def test_insert_many_unknown_key_is_rejected(tmp_path: Path) -> None:
+    source = """\
+from __future__ import annotations
+
+from typing import cast
+
+from atla.adapter.base import DBAdapter
+
+from appdb import AtlaClient
+
+
+def bad(db: AtlaClient) -> None:
+    _ = db.user.insert_many([{"emial": "a@example.com", "name": "Alice", "age": 1}])
+
+
+bad(AtlaClient(cast(DBAdapter, object())))
+"""
+    _package, app = _setup(tmp_path, source, filename="neg_insert_many_key.py")
+    assert_typechecks_fail(tmp_path, app, must_mention=("emial", "insert_many"))

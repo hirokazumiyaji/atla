@@ -19,7 +19,7 @@ def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
 def _try_subquery(value: object) -> SubqueryExpr[Any] | None:
     """Convert a compiled query (``to_sql()``) or :class:`SubqueryExpr` into a subquery."""
     if isinstance(value, SubqueryExpr):
-        return typing_cast(SubqueryExpr[Any], value)
+        return typing_cast(SubqueryExpr[Any], value)  # type: ignore[redundant-cast]
     to_sql = getattr(value, "to_sql", None)
     if callable(to_sql) and not isinstance(value, (str, bytes, bytearray)):
         result = typing_cast(tuple[str, Sequence[Any]], to_sql())
@@ -35,7 +35,7 @@ def _coerce_in_values(values: object) -> Sequence[Any] | SubqueryExpr[Any]:
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Iterable):
         msg = "in_() expects an iterable of values or a subquery with to_sql()"
         raise TypeError(msg)
-    return tuple(values)
+    return tuple(values)  # type: ignore[arg-type, unused-ignore]  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]
 
 
 class Expr[T_co]:
@@ -65,52 +65,64 @@ class Expr[T_co]:
         return UnaryOp("NOT ", self, postfix=False)
 
     # --- Comparison ---
+    # Method TypeVars (not T_co) keep Expr covariant under PEP 695 variance
+    # inference. ``Expr[Any]`` overloads allow nullable FK ↔ PK comparisons
+    # (``Column[int | None] == Column[int]``) without accepting bare wrong types.
 
     @overload  # type: ignore[override]
     def __eq__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
 
     @overload
-    def __eq__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+    def __eq__[T](self: Expr[T], other: T) -> BinaryOp[bool]: ...
 
-    def __eq__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
-        self: Expr[T], other: T | Expr[T] | None
+    @overload
+    def __eq__(self, other: Expr[Any]) -> BinaryOp[bool]: ...
+
+    def __eq__(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, other: object
     ) -> BinaryOp[bool] | UnaryOp[bool]:
         if other is None:
             return UnaryOp("IS NULL", self, postfix=True)
-        return BinaryOp("=", self, _coerce_literal(other))
+        return BinaryOp("=", self, _coerce_literal(typing_cast(Any, other)))
 
     @overload  # type: ignore[override]
     def __ne__[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
 
     @overload
-    def __ne__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+    def __ne__[T](self: Expr[T], other: T) -> BinaryOp[bool]: ...
 
-    def __ne__[T](  # pyright: ignore[reportIncompatibleMethodOverride]
-        self: Expr[T], other: T | Expr[T] | None
+    @overload
+    def __ne__(self, other: Expr[Any]) -> BinaryOp[bool]: ...
+
+    def __ne__(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, other: object
     ) -> BinaryOp[bool] | UnaryOp[bool]:
         if other is None:
             return UnaryOp("IS NOT NULL", self, postfix=True)
-        return BinaryOp("<>", self, _coerce_literal(other))
+        return BinaryOp("<>", self, _coerce_literal(typing_cast(Any, other)))
 
-    def __lt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<", self, _coerce_literal(other))
+    def __lt__[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(typing_cast(Any, other)))
 
-    def __le__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<=", self, _coerce_literal(other))
+    def __le__[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(typing_cast(Any, other)))
 
-    def __gt__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">", self, _coerce_literal(other))
+    def __gt__[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(typing_cast(Any, other)))
 
-    def __ge__[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">=", self, _coerce_literal(other))
+    def __ge__[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(typing_cast(Any, other)))
 
     @overload
     def eq[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
 
     @overload
-    def eq[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+    def eq[T](self: Expr[T], other: T) -> BinaryOp[bool]: ...
 
-    def eq[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+    @overload
+    def eq(self, other: Expr[Any]) -> BinaryOp[bool]: ...
+
+    def eq(self, other: object) -> BinaryOp[bool] | UnaryOp[bool]:
         # Match ``__eq__``: ``None`` becomes ``IS NULL``, not ``= NULL``.
         return self == other
 
@@ -118,22 +130,25 @@ class Expr[T_co]:
     def ne[T](self: Expr[T], other: None) -> UnaryOp[bool]: ...
 
     @overload
-    def ne[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]: ...
+    def ne[T](self: Expr[T], other: T) -> BinaryOp[bool]: ...
 
-    def ne[T](self: Expr[T], other: T | Expr[T] | None) -> BinaryOp[bool] | UnaryOp[bool]:
+    @overload
+    def ne(self, other: Expr[Any]) -> BinaryOp[bool]: ...
+
+    def ne(self, other: object) -> BinaryOp[bool] | UnaryOp[bool]:
         return self != other
 
-    def lt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<", self, _coerce_literal(other))
+    def lt[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp("<", self, _coerce_literal(typing_cast(Any, other)))
 
-    def le[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp("<=", self, _coerce_literal(other))
+    def le[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp("<=", self, _coerce_literal(typing_cast(Any, other)))
 
-    def gt[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">", self, _coerce_literal(other))
+    def gt[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp(">", self, _coerce_literal(typing_cast(Any, other)))
 
-    def ge[T](self: Expr[T], other: T | Expr[T]) -> BinaryOp[bool]:
-        return BinaryOp(">=", self, _coerce_literal(other))
+    def ge[T](self: Expr[T], other: T | Expr[Any]) -> BinaryOp[bool]:
+        return BinaryOp(">=", self, _coerce_literal(typing_cast(Any, other)))
 
     def is_null(self) -> UnaryOp[bool]:
         return UnaryOp("IS NULL", self, postfix=True)
@@ -288,7 +303,7 @@ class InOp[T](Expr[bool]):
         self.expr = expr
         self.negated = negated
         if isinstance(values, SubqueryExpr):
-            self.subquery = values
+            self.subquery: SubqueryExpr[Any] | None = values
             self.values: tuple[Any, ...] = ()
         else:
             self.subquery = None

@@ -24,10 +24,23 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
     if needs_json:
         lines.append("import json")
         lines.append("")
+    needs_required = False
+    needs_not_required = False
+    for table in schema.tables:
+        for column in table.columns:
+            if not column.nullable and not column.has_default:
+                needs_required = True
+            else:
+                needs_not_required = True
+    typing_imports = ["Any", "Sequence", "TypedDict"]
+    if needs_not_required:
+        typing_imports.insert(1, "NotRequired")
+    if needs_required:
+        typing_imports.insert(1, "Required")
     lines.extend(
         [
             "from dataclasses import dataclass",
-            "from typing import Any, Sequence",
+            f"from typing import {', '.join(typing_imports)}",
             "from atla.expressions import Column",
             "from atla.table import TableRef",
         ]
@@ -45,11 +58,38 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
         table_cls = f"{table.model_name}Table"
         lines.extend(_emit_record(table, frozen=frozen))
         lines.append("")
+        lines.extend(_emit_insert_param(table))
+        lines.append("")
         lines.extend(_emit_table(table, table_cls=table_cls))
         lines.append("")
         lines.append(f"{table.model_name} = {table_cls}()")
         lines.append("")
     return "\n".join(lines)
+
+
+def _emit_insert_param(table: TableIR) -> list[str]:
+    """Emit ``{Model}InsertParam`` TypedDict for typed ``insert_many`` rows.
+
+    Runtime ``insert_many`` still requires every row to use the same column set
+    (omitting a NotRequired key on some rows raises ValueError).
+    """
+    lines = [
+        f"class {table.model_name}InsertParam(TypedDict):",
+        "    \"\"\"Row shape for ``insert_many``.",
+        "",
+        "    All rows must share the same column set; omitting a NotRequired key",
+        "    on only some rows raises ValueError at runtime.",
+        '    """',
+    ]
+    if not table.columns:
+        lines.append("    pass")
+        return lines
+    for column in table.columns:
+        value_type = (column.python_type or column.base_python_type or "Any").strip() or "Any"
+        required = not column.nullable and not column.has_default
+        wrapper = "Required" if required else "NotRequired"
+        lines.append(f"    {column.attr_name}: {wrapper}[{value_type}]")
+    return lines
 
 
 def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:

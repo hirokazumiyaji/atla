@@ -40,6 +40,12 @@ class SQLCompiler:
         self.params.append(value)
         return self.dialect.placeholder(len(self.params))
 
+    def compile_value(self, value: Any) -> str:
+        """Compile an expression fragment or bind a literal parameter."""
+        if isinstance(value, Expr):
+            return self.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
+        return self.add_param(value)
+
     def write(self, fragment: str) -> None:
         self.buf.append(fragment)
 

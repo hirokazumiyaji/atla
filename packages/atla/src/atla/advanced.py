@@ -7,10 +7,12 @@ from typing import Any, Self, cast
 
 from atla.adapter.base import DBAdapter
 from atla.compiler import SQLCompiler
-from atla.errors import MultipleResultsError, NotFoundError
+from atla.errors import NotFoundError
 from atla.expressions import Expr, OrderByClause, SubqueryExpr, and_
 from atla.select_clauses import (
     LockClause,
+    fetch_first,
+    fetch_one,
     lock_of_targets,
     write_distinct,
     write_group_having,
@@ -23,12 +25,6 @@ _LOCK_UNSET = object()
 
 # Stay under common driver bind limits (SQLite ~32766).
 _MAX_BIND_PARAMS = 30_000
-
-
-def _compile_value(compiler: SQLCompiler, value: Any) -> str:
-    if isinstance(value, Expr):
-        return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
-    return compiler.add_param(value)
 
 
 class BaseInsertManyQuery[RecordT]:
@@ -91,7 +87,7 @@ class BaseInsertManyQuery[RecordT]:
         compiler = SQLCompiler(dialect)
         value_groups: list[str] = []
         for row in rows:
-            placeholders = [_compile_value(compiler, value) for _, value in row]
+            placeholders = [compiler.compile_value(value) for _, value in row]
             value_groups.append(f"({', '.join(placeholders)})")
         sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
         if self._returning:
@@ -212,7 +208,7 @@ class UpsertQuery[RecordT]:
         dialect = self._adapter.dialect
         cols = ", ".join(dialect.quote(name) for name, _ in self._values)
         compiler = SQLCompiler(dialect)
-        placeholders = [_compile_value(compiler, value) for _, value in self._values]
+        placeholders = [compiler.compile_value(value) for _, value in self._values]
         sql = f"INSERT INTO {self._table_name} ({cols}) VALUES ({', '.join(placeholders)})"
         if dialect.upsert_style == "duplicate":
             if self._do_nothing:
@@ -222,7 +218,7 @@ class UpsertQuery[RecordT]:
                 sql = f"{sql} ON DUPLICATE KEY UPDATE {quoted} = {quoted}"
             else:
                 assignments = [
-                    f"{dialect.quote(name)} = {_compile_value(compiler, value)}"
+                    f"{dialect.quote(name)} = {compiler.compile_value(value)}"
                     for name, value in self._set_values
                 ]
                 sql = f"{sql} ON DUPLICATE KEY UPDATE {', '.join(assignments)}"
@@ -232,7 +228,7 @@ class UpsertQuery[RecordT]:
         else:
             targets = ", ".join(dialect.quote(name) for name in self._conflict_columns)
             assignments = [
-                f"{dialect.quote(name)} = {_compile_value(compiler, value)}"
+                f"{dialect.quote(name)} = {compiler.compile_value(value)}"
                 for name, value in self._set_values
             ]
             sql = f"{sql} ON CONFLICT ({targets}) DO UPDATE SET {', '.join(assignments)}"
@@ -471,16 +467,10 @@ class ProjectedSelectQuery[*Ts]:
         return self.limit(maximum)
 
     async def first(self) -> tuple[*Ts] | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> tuple[*Ts]:
-        rows = await self._with_fetch_limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
 
 def insert_many_rows(
@@ -492,14 +482,23 @@ def insert_many_rows(
 
     Column *set* must match across rows; key order is normalized to the first
     row's order so ordinary ``dict`` insertion-order differences are accepted.
+    Unknown attribute keys raise ``ValueError`` when ``attr_to_sql`` is non-empty.
     """
     if not rows:
         return ()
+    known_attrs = set(attr_to_sql) if attr_to_sql else None
     normalized: list[tuple[tuple[str, Any], ...]] = []
     column_order: list[str] | None = None
     column_set: set[str] | None = None
     for row in rows:
-        by_sql = {attr_to_sql.get(attr, attr): value for attr, value in row.items()}
+        if known_attrs is not None:
+            unknown = [key for key in row if key not in known_attrs]
+            if unknown:
+                msg = f"insert_many() got unknown column(s): {', '.join(sorted(map(str, unknown)))}"
+                raise ValueError(msg)
+        by_sql = {attr_to_sql[attr]: value for attr, value in row.items()} if attr_to_sql else {
+            attr: value for attr, value in row.items()
+        }
         names = set(by_sql)
         if column_order is None:
             column_order = list(by_sql)

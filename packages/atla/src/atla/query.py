@@ -14,6 +14,8 @@ from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
 from atla.select_clauses import (
     LockClause,
     lock_of_targets,
+    fetch_first,
+    fetch_one,
     write_distinct,
     write_group_having,
     write_locking,
@@ -29,12 +31,6 @@ _LOCK_UNSET = object()
 
 def _is_unset(value: object) -> bool:
     return value is UNSET or isinstance(value, UnsetType)
-
-
-def _compile_value(compiler: SQLCompiler, value: Any) -> str:
-    if isinstance(value, Expr):
-        return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
-    return compiler.add_param(value)
 
 
 @dataclass(slots=True, frozen=True)
@@ -513,16 +509,10 @@ class BaseSelectQuery[RecordT]:
         return self.limit(maximum)
 
     async def first(self) -> RecordT | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> RecordT:
-        rows = await self._with_fetch_limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
     async def count(self) -> int:
         """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination).
@@ -611,7 +601,7 @@ class BaseInsertQuery[RecordT]:
         dialect = self._adapter.dialect
         cols = ", ".join(dialect.quote(name) for name, _ in self._values)
         compiler = SQLCompiler(dialect)
-        placeholders = [_compile_value(compiler, value) for _, value in self._values]
+        placeholders = [compiler.compile_value(value) for _, value in self._values]
         sql = f"INSERT INTO {self._TABLE_NAME} ({cols}) VALUES ({', '.join(placeholders)})"
         if self._returning:
             if not dialect.supports_returning:
@@ -719,7 +709,7 @@ class BaseUpdateQuery[RecordT]:
         dialect = self._adapter.dialect
         compiler = SQLCompiler(dialect)
         assignments = [
-            f"{dialect.quote(name)} = {_compile_value(compiler, value)}"
+            f"{dialect.quote(name)} = {compiler.compile_value(value)}"
             for name, value in self._set
         ]
         sql = f"UPDATE {self._TABLE_NAME} SET {', '.join(assignments)}"
@@ -1087,16 +1077,10 @@ class JoinedSelectQuery[*Ts]:
         return self.limit(maximum)
 
     async def first(self) -> tuple[*Ts] | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> tuple[*Ts]:
-        rows = await self._with_fetch_limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1312,7 +1296,7 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
                     msg = f"missing related row for non-nullable belongs-to {fk_attr}={fk_value!r}"
                     raise NotFoundError(msg)
             else:
-                results.append((child, cast(ParentT, related)))
+                results.append((child, related))
         return results
 
     async def first(self) -> tuple[ChildT, ParentT] | None:

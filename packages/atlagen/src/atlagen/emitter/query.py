@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from atla.dialect import (
+    CockroachDialect,
+    Dialect,
+    MySQLDialect,
+    PostgresDialect,
+    SQLiteDialect,
+    TiDBDialect,
+)
 from atlagen.ir import ColumnIR, SchemaIR, TableIR
 
 
@@ -31,8 +39,7 @@ def emit_query(schema: SchemaIR) -> str:
     lines = [
         "from __future__ import annotations",
         "",
-        "from collections.abc import Mapping, Sequence",
-        "from typing import Any",
+        "from collections.abc import Sequence",
         "",
         "from atla.adapter.base import DBAdapter",
         "from atla.advanced import BaseInsertManyQuery, insert_many_rows",
@@ -45,13 +52,13 @@ def emit_query(schema: SchemaIR) -> str:
     for module, symbol in sorted(imports):
         lines.append(f"from {module} import {symbol}")
     if schema.tables:
-        if needs_preload:
-            model_imports = ", ".join(
-                f"{table.model_name}, {table.model_name}Record" for table in schema.tables
-            )
-        else:
-            model_imports = ", ".join(f"{table.model_name}Record" for table in schema.tables)
-        lines.append(f"from .models import {model_imports}")
+        model_parts: list[str] = []
+        for table in schema.tables:
+            if needs_preload:
+                model_parts.append(table.model_name)
+            model_parts.append(f"{table.model_name}Record")
+            model_parts.append(f"{table.model_name}InsertParam")
+        lines.append(f"from .models import {', '.join(model_parts)}")
     lines.append("")
 
     if not schema.tables:
@@ -197,7 +204,7 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             "",
             "    def insert_many(",
             "        self,",
-            "        rows: Sequence[Mapping[str, Any]],",
+            f"        rows: Sequence[{table.model_name}InsertParam],",
             f"    ) -> {table.model_name}InsertManyBuilder:",
             f"        return {table.model_name}InsertManyBuilder(",
             "            self._adapter,",
@@ -435,12 +442,26 @@ def _emit_mapped_call(
     return lines
 
 
+def _dialect_for(name: str) -> Dialect:
+    mapping: dict[str, type[Dialect]] = {
+        "postgres": PostgresDialect,
+        "cockroach": CockroachDialect,
+        "mysql": MySQLDialect,
+        "tidb": TiDBDialect,
+        "sqlite": SQLiteDialect,
+    }
+    try:
+        return mapping[name]()
+    except KeyError as exc:
+        msg = f"unsupported dialect for quoting: {name!r}"
+        raise ValueError(msg) from exc
+
+
 def _quote_table(name: str, *, dialect: str) -> str:
     # Schema-qualified names (public.users) must quote each component.
-    return ".".join(_quote_ident(part, dialect=dialect) for part in name.split("."))
+    d = _dialect_for(dialect)
+    return ".".join(d.quote(part) for part in name.split("."))
 
 
 def _quote_ident(name: str, *, dialect: str) -> str:
-    quote = "`" if dialect in {"mysql", "tidb"} else '"'
-    escaped = name.replace(quote, quote * 2)
-    return f"{quote}{escaped}{quote}"
+    return _dialect_for(dialect).quote(name)
