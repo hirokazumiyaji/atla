@@ -52,7 +52,14 @@ def _record_error(span: Any, exc: BaseException) -> None:
     span.set_status(Status(StatusCode.ERROR, exc_type.__name__))
 
 
-def _sqlcomment_for_span(sql: str, span: Any) -> str:
+def _sqlcomment_for_span(sql: str, span: Any, *, dialect_name: str | None) -> str:
+    """Append OpenTelemetry SQLCommenter ``traceparent`` as a trailing block comment.
+
+    Supported on Postgres / MySQL / TiDB / Cockroach. Skipped for SQLite, where
+    trailing ``/* … */`` comments are not reliably accepted by all prepared paths.
+    """
+    if dialect_name == "sqlite":
+        return sql
     ctx = span.get_span_context()
     if not ctx.is_valid:
         return sql
@@ -71,6 +78,7 @@ class OTelAdapter:
     __slots__ = (
         "_capture_parameters",
         "_db_namespace",
+        "_dialect_name",
         "_duration",
         "_inner",
         "_meter",
@@ -125,9 +133,10 @@ class OTelAdapter:
         )
         # Tolerate adapters that do not expose ``dialect`` (omit db.system then).
         dialect_name = getattr(getattr(inner, "dialect", None), "name", None)
+        self._dialect_name: str | None = dialect_name if isinstance(dialect_name, str) else None
         self._system: str | None = (
-            _DIALECT_SYSTEM.get(dialect_name, dialect_name)
-            if isinstance(dialect_name, str)
+            _DIALECT_SYSTEM.get(self._dialect_name, self._dialect_name)
+            if self._dialect_name is not None
             else None
         )
 
@@ -190,7 +199,11 @@ class OTelAdapter:
         ) as span:
             for key, value in attrs.items():
                 span.set_attribute(key, value)
-            annotated = _sqlcomment_for_span(sql, span) if self._sqlcommenter else sql
+            annotated = (
+                _sqlcomment_for_span(sql, span, dialect_name=self._dialect_name)
+                if self._sqlcommenter
+                else sql
+            )
             try:
                 result = await coro_factory(annotated)
             except BaseException as exc:
