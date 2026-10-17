@@ -16,6 +16,11 @@ _REQUIRED_DIALECT_ATTRS = (
     "supports_returning",
     "supports_ilike",
     "positional_style",
+    "supports_for_update",
+    "supports_for_share",
+    "supports_skip_locked",
+    "supports_lock_of",
+    "supports_distinct_on",
 )
 
 
@@ -34,6 +39,11 @@ class Dialect:
     supports_returning: ClassVar[bool]
     supports_ilike: ClassVar[bool]
     positional_style: ClassVar[str]  # "dollar" | "format" | "qmark"
+    supports_for_update: ClassVar[bool]
+    supports_for_share: ClassVar[bool]
+    supports_skip_locked: ClassVar[bool]
+    supports_lock_of: ClassVar[bool]
+    supports_distinct_on: ClassVar[bool]
     upsert_style: ClassVar[Literal["conflict", "duplicate"]] = "conflict"
     # Driver natively accepts these Python types as bind parameters.
     native_uuid: ClassVar[bool] = False
@@ -162,6 +172,11 @@ class PostgresDialect(Dialect):
     supports_returning = True
     supports_ilike = True
     positional_style = "dollar"
+    supports_for_update = True
+    supports_for_share = True
+    supports_skip_locked = True
+    supports_lock_of = True
+    supports_distinct_on = True
     native_uuid = True
     native_decimal = True
     native_datetime = True
@@ -185,6 +200,11 @@ class MySQLDialect(Dialect):
     supports_ilike = False
     positional_style = "format"
     upsert_style = "duplicate"
+    supports_for_update = True
+    supports_for_share = True
+    supports_skip_locked = True
+    supports_lock_of = True
+    supports_distinct_on = False
     native_uuid = False
     native_decimal = False
     native_datetime = True
@@ -192,10 +212,17 @@ class MySQLDialect(Dialect):
 
 
 class TiDBDialect(MySQLDialect):
-    """TiDB dialect (MySQL-compatible)."""
+    """TiDB dialect (MySQL-compatible).
+
+    TiDB accepts ``FOR UPDATE`` / ``LOCK IN SHARE MODE`` but not ``FOR SHARE``
+    or ``SKIP LOCKED``; ``OF`` table lists are supported on recent versions.
+    """
 
     __slots__ = ()
     name = "tidb"
+    supports_for_share = False
+    supports_skip_locked = False
+    supports_lock_of = True
 
 
 class SQLiteDialect(Dialect):
@@ -207,6 +234,11 @@ class SQLiteDialect(Dialect):
     supports_returning = True
     supports_ilike = False
     positional_style = "qmark"
+    supports_for_update = False
+    supports_for_share = False
+    supports_skip_locked = False
+    supports_lock_of = False
+    supports_distinct_on = False
     native_uuid = False
     native_decimal = False
     native_datetime = False

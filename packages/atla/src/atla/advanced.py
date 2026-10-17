@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Self, cast
 
 from atla.adapter.base import DBAdapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
-from atla.expressions import Column, Expr, OrderByClause, and_
+from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
+from atla.select_clauses import (
+    LockClause,
+    lock_of_targets,
+    write_distinct,
+    write_group_having,
+    write_locking,
+    write_order_limit_offset,
+)
+from atla.table import TableRef
 from atla.types import is_unset
+
+_LOCK_UNSET = object()
 
 # Stay under common driver bind limits (SQLite ~32766).
 _MAX_BIND_PARAMS = 30_000
@@ -342,9 +353,14 @@ class ProjectedSelectQuery[*Ts]:
         "_adapter",
         "_columns",
         "_decoders",
+        "_distinct",
+        "_distinct_on",
         "_from_sql",
+        "_group_by",
+        "_having",
         "_join_parts",
         "_limit",
+        "_locking",
         "_needs_decode",
         "_offset",
         "_order_by",
@@ -361,6 +377,11 @@ class ProjectedSelectQuery[*Ts]:
         order_by: tuple[OrderByClause, ...] = (),
         limit: int | None = None,
         offset: int | None = None,
+        group_by: tuple[Expr[Any], ...] = (),
+        having: tuple[Expr[bool], ...] = (),
+        distinct: bool = False,
+        distinct_on: tuple[Expr[Any], ...] = (),
+        locking: LockClause | None = None,
         join_parts: tuple[tuple[str, tuple[Expr[bool], ...]], ...] = (),
     ) -> None:
         self._adapter = adapter
@@ -370,6 +391,11 @@ class ProjectedSelectQuery[*Ts]:
         self._order_by = order_by
         self._limit = limit
         self._offset = offset
+        self._group_by = group_by
+        self._having = having
+        self._distinct = distinct
+        self._distinct_on = distinct_on
+        self._locking = locking
         self._join_parts = join_parts
         decoders = tuple(expr.decoder if isinstance(expr, Column) else None for expr in columns)
         self._decoders = decoders
@@ -384,6 +410,11 @@ class ProjectedSelectQuery[*Ts]:
         offset: int | None = None,
         replace_limit: bool = False,
         replace_offset: bool = False,
+        group_by: tuple[Expr[Any], ...] | None = None,
+        having: tuple[Expr[bool], ...] | None = None,
+        distinct: bool | None = None,
+        distinct_on: tuple[Expr[Any], ...] | None = None,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> ProjectedSelectQuery[*Ts]:
         return ProjectedSelectQuery(
             self._adapter,
@@ -393,6 +424,11 @@ class ProjectedSelectQuery[*Ts]:
             order_by=self._order_by if order_by is None else order_by,
             limit=limit if replace_limit else self._limit,
             offset=offset if replace_offset else self._offset,
+            group_by=self._group_by if group_by is None else group_by,
+            having=self._having if having is None else having,
+            distinct=self._distinct if distinct is None else distinct,
+            distinct_on=self._distinct_on if distinct_on is None else distinct_on,
+            locking=self._locking if locking is _LOCK_UNSET else cast(LockClause | None, locking),
             join_parts=self._join_parts,
         )
 
@@ -412,9 +448,63 @@ class ProjectedSelectQuery[*Ts]:
     def offset(self, n: int) -> ProjectedSelectQuery[*Ts]:
         return self._clone(offset=n, replace_offset=True)
 
+    def group_by(self, *exprs: Expr[Any]) -> ProjectedSelectQuery[*Ts]:
+        if not exprs:
+            return self
+        return self._clone(group_by=self._group_by + exprs)
+
+    def having(self, *predicates: Expr[bool]) -> ProjectedSelectQuery[*Ts]:
+        if not predicates:
+            return self
+        return self._clone(having=self._having + predicates)
+
+    def distinct(self, *on: Expr[Any]) -> ProjectedSelectQuery[*Ts]:
+        if on:
+            return self._clone(distinct=True, distinct_on=self._distinct_on + on)
+        return self._clone(distinct=True)
+
+    def for_update(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> ProjectedSelectQuery[*Ts]:
+        return self._clone(
+            locking=LockClause(
+                mode="UPDATE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
+
+    def for_share(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> ProjectedSelectQuery[*Ts]:
+        return self._clone(
+            locking=LockClause(
+                mode="SHARE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
+
     def to_sql(self) -> tuple[str, list[Any]]:
-        compiler = SQLCompiler(self._adapter.dialect)
+        dialect = self._adapter.dialect
+        compiler = SQLCompiler(dialect)
         compiler.write("SELECT ")
+        write_distinct(
+            compiler,
+            dialect,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+        )
         for index, expr in enumerate(self._columns):
             if index:
                 compiler.write(", ")
@@ -426,19 +516,19 @@ class ProjectedSelectQuery[*Ts]:
         if self._where:
             compiler.write(" WHERE ")
             compiler.visit(and_(*self._where))
-        if self._order_by:
-            compiler.write(" ORDER BY ")
-            for index, clause in enumerate(self._order_by):
-                if index:
-                    compiler.write(", ")
-                compiler.visit_order_by(clause)
-        if self._limit is not None:
-            compiler.write(" LIMIT ")
-            compiler.write(compiler.add_param(self._limit))
-        if self._offset is not None:
-            compiler.write(" OFFSET ")
-            compiler.write(compiler.add_param(self._offset))
+        write_group_having(compiler, group_by=self._group_by, having=self._having)
+        write_order_limit_offset(
+            compiler,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+        )
+        write_locking(compiler, dialect, self._locking)
         return compiler.build()
+
+    def as_subquery(self) -> SubqueryExpr[Any]:
+        sql, params = self.to_sql()
+        return SubqueryExpr(sql, params)
 
     def _hydrate(self, row: Sequence[Any]) -> tuple[*Ts]:
         if not self._needs_decode:
@@ -453,6 +543,33 @@ class ProjectedSelectQuery[*Ts]:
         sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
         return [self._hydrate(row) for row in rows]
+
+    async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[tuple[*Ts]]:
+        """Yield projected rows in batches; requires stable ORDER BY beyond batch 1."""
+        if batch_size < 1:
+            msg = "batch_size must be >= 1"
+            raise ValueError(msg)
+        start = self._offset or 0
+        remaining = self._limit
+        offset = start
+        while True:
+            size = batch_size if remaining is None else min(batch_size, remaining)
+            if size <= 0:
+                return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
+            sql, params = self.limit(size).offset(offset).to_sql()
+            rows = await self._adapter.fetch_all(sql, params)
+            if not rows:
+                return
+            for row in rows:
+                yield self._hydrate(row)
+            if len(rows) < size:
+                return
+            offset += size
+            if remaining is not None:
+                remaining -= size
 
     def _with_fetch_limit(self, maximum: int) -> ProjectedSelectQuery[*Ts]:
         if self._limit is not None and self._limit <= maximum:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import starmap
 from typing import Any, ClassVar, Literal, Self, cast, overload
@@ -12,12 +12,21 @@ from atla.adapter.base import DBAdapter
 from atla.advanced import ProjectedSelectQuery, UpsertQuery, conflict_column_names
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
-from atla.expressions import Column, Expr, OrderByClause, and_
+from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
+from atla.select_clauses import (
+    LockClause,
+    lock_of_targets,
+    write_distinct,
+    write_group_having,
+    write_locking,
+    write_order_limit_offset,
+)
 from atla.table import TableRef
 from atla.types import is_unset
 
 # Stay under common driver bind limits (SQLite ~32766, MySQL/Postgres similar).
 _IN_BATCH_SIZE = 500
+_LOCK_UNSET = object()
 
 
 def _compile_value(compiler: SQLCompiler, value: Any) -> str:
@@ -135,7 +144,18 @@ class _ProjectableSelect:
 class BaseSelectQuery[RecordT](_ProjectableSelect):
     """Immutable SELECT query builder backed by AOT SQL fragments."""
 
-    __slots__ = ("_adapter", "_limit", "_offset", "_order_by", "_where")
+    __slots__ = (
+        "_adapter",
+        "_distinct",
+        "_distinct_on",
+        "_group_by",
+        "_having",
+        "_limit",
+        "_locking",
+        "_offset",
+        "_order_by",
+        "_where",
+    )
 
     _TABLE_NAME: str
     _SELECT_SQL: str
@@ -155,12 +175,22 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         order_by: tuple[OrderByClause, ...] = (),
         limit: int | None = None,
         offset: int | None = None,
+        group_by: tuple[Expr[Any], ...] = (),
+        having: tuple[Expr[bool], ...] = (),
+        distinct: bool = False,
+        distinct_on: tuple[Expr[Any], ...] = (),
+        locking: LockClause | None = None,
     ) -> None:
         self._adapter = adapter
         self._where = where
         self._order_by = order_by
         self._limit = limit
         self._offset = offset
+        self._group_by = group_by
+        self._having = having
+        self._distinct = distinct
+        self._distinct_on = distinct_on
+        self._locking = locking
 
     @property
     def adapter(self) -> DBAdapter:
@@ -175,6 +205,11 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         offset: int | None = None,
         replace_limit: bool = False,
         replace_offset: bool = False,
+        group_by: tuple[Expr[Any], ...] | None = None,
+        having: tuple[Expr[bool], ...] | None = None,
+        distinct: bool | None = None,
+        distinct_on: tuple[Expr[Any], ...] | None = None,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> Self:
         return type(self)(
             self._adapter,
@@ -182,6 +217,11 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             order_by=self._order_by if order_by is None else order_by,
             limit=limit if replace_limit else self._limit,
             offset=offset if replace_offset else self._offset,
+            group_by=self._group_by if group_by is None else group_by,
+            having=self._having if having is None else having,
+            distinct=self._distinct if distinct is None else distinct,
+            distinct_on=self._distinct_on if distinct_on is None else distinct_on,
+            locking=self._locking if locking is _LOCK_UNSET else cast(LockClause | None, locking),
         )
 
     def where(self, *predicates: Expr[bool]) -> Self:
@@ -199,6 +239,54 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
 
     def offset(self, n: int) -> Self:
         return self._clone(offset=n, replace_offset=True)
+
+    def group_by(self, *exprs: Expr[Any]) -> Self:
+        if not exprs:
+            return self
+        return self._clone(group_by=self._group_by + exprs)
+
+    def having(self, *predicates: Expr[bool]) -> Self:
+        if not predicates:
+            return self
+        return self._clone(having=self._having + predicates)
+
+    def distinct(self, *on: Expr[Any]) -> Self:
+        if on:
+            return self._clone(distinct=True, distinct_on=self._distinct_on + on)
+        # Keep any existing DISTINCT ON expressions; bare distinct() must not clear them.
+        return self._clone(distinct=True)
+
+    def for_update(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> Self:
+        return self._clone(
+            locking=LockClause(
+                mode="UPDATE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
+
+    def for_share(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> Self:
+        return self._clone(
+            locking=LockClause(
+                mode="SHARE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
 
     def join[OtherT](
         self,
@@ -254,6 +342,11 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             order_by=self._order_by,
             limit=self._limit,
             offset=self._offset,
+            group_by=self._group_by,
+            having=self._having,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+            locking=self._locking,
         )
 
     def preload[OtherT](
@@ -306,26 +399,53 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             order_by=self._order_by,
             limit=self._limit,
             offset=self._offset,
+            group_by=self._group_by,
+            having=self._having,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+            locking=self._locking,
+        )
+
+    def _has_select_modifiers(self) -> bool:
+        return bool(
+            self._where
+            or self._order_by
+            or self._limit is not None
+            or self._offset is not None
+            or self._group_by
+            or self._having
+            or self._distinct
+            or self._distinct_on
+            or self._locking is not None
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
-        compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._SELECT_SQL)
+        dialect = self._adapter.dialect
+        compiler = SQLCompiler(dialect)
+        compiler.write("SELECT ")
+        write_distinct(
+            compiler,
+            dialect,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+        )
+        compiler.write(f"{type(self)._SELECT_COLS} FROM {type(self)._FROM_SQL}")
         if self._where:
             compiler.write(" WHERE ")
             compiler.visit(and_(*self._where))
-        if self._order_by:
-            compiler.write(" ORDER BY ")
-            for index, clause in enumerate(self._order_by):
-                if index:
-                    compiler.write(", ")
-                compiler.visit_order_by(clause)
-        if self._limit is not None:
-            compiler.write(" LIMIT ")
-            compiler.write(compiler.add_param(self._limit))
-        if self._offset is not None:
-            compiler.write(" OFFSET ")
-            compiler.write(compiler.add_param(self._offset))
+        write_group_having(compiler, group_by=self._group_by, having=self._having)
+        write_order_limit_offset(
+            compiler,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+        )
+        write_locking(compiler, dialect, self._locking)
         return compiler.build()
+
+    def as_subquery(self) -> SubqueryExpr[Any]:
+        sql, params = self.to_sql()
+        return SubqueryExpr(sql, params)
 
     def _is_static_select(self) -> bool:
         """True when the AOT ``_SELECT_SQL`` can be used verbatim (no builder clauses).
@@ -333,9 +453,7 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         Single source of truth for ``all()`` / ``first()`` fast paths. Any new clause
         that alters the SELECT text (GROUP BY, DISTINCT, ...) must be checked here.
         """
-        return (
-            not self._where and not self._order_by and self._limit is None and self._offset is None
-        )
+        return not self._has_select_modifiers()
 
     async def all(self) -> list[RecordT]:
         cls = type(self)
@@ -350,6 +468,40 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             return list(starmap(ctor, rows))
         mapper = cls._ROW_MAPPER
         return [mapper(row) for row in rows]
+
+    async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[RecordT]:
+        """Yield hydrated rows in batches to bound memory for large result sets.
+
+        Callers must supply a stable ``ORDER BY``; without one, LIMIT/OFFSET
+        paging can duplicate or skip rows as the result set shifts. Deep
+        ``OFFSET`` values also force O(offset) scans on most engines.
+        """
+        if batch_size < 1:
+            msg = "batch_size must be >= 1"
+            raise ValueError(msg)
+        start = self._offset or 0
+        remaining = self._limit
+        offset = start
+        mapper = type(self)._ROW_MAPPER
+        while True:
+            size = batch_size if remaining is None else min(batch_size, remaining)
+            if size <= 0:
+                return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
+            batch_query = self.limit(size).offset(offset)
+            sql, params = batch_query.to_sql()
+            rows = await self._adapter.fetch_all(sql, params)
+            if not rows:
+                return
+            for row in rows:
+                yield mapper(row)
+            if len(rows) < size:
+                return
+            offset += size
+            if remaining is not None:
+                remaining -= size
 
     def _with_fetch_limit(self, maximum: int) -> Self:
         """Cap rows fetched without raising the caller's existing LIMIT."""
@@ -377,7 +529,18 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         return rows[0]
 
     async def count(self) -> int:
-        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination)."""
+        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination).
+
+        ``group_by`` / ``having`` / ``distinct`` / ``distinct_on`` are not
+        applied — call ``count()`` only on ungrouped queries, or project an
+        aggregate via ``select(count())`` instead.
+        """
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "count() ignores group_by/having/distinct; remove those clauses "
+                "or use select(count(...)) for grouped aggregates"
+            )
+            raise ValueError(msg)
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._COUNT_SQL)
         if self._where:
             compiler.write(" WHERE ")
@@ -392,6 +555,12 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         Preserves the caller's LIMIT/OFFSET pagination (e.g. ``offset(100).exists()``
         is false when fewer than 101 matching rows exist).
         """
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "exists() ignores group_by/having/distinct; remove those clauses "
+                "or use select(...) with a subquery"
+            )
+            raise ValueError(msg)
         if self._limit == 0:
             return False
         compiler = SQLCompiler(
@@ -753,9 +922,14 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
 
     __slots__ = (
         "_adapter",
+        "_distinct",
+        "_distinct_on",
         "_from_sql",
+        "_group_by",
+        "_having",
         "_joins",
         "_limit",
+        "_locking",
         "_offset",
         "_order_by",
         "_segments",
@@ -773,6 +947,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         order_by: tuple[OrderByClause, ...] = (),
         limit: int | None = None,
         offset: int | None = None,
+        group_by: tuple[Expr[Any], ...] = (),
+        having: tuple[Expr[bool], ...] = (),
+        distinct: bool = False,
+        distinct_on: tuple[Expr[Any], ...] = (),
+        locking: LockClause | None = None,
     ) -> None:
         self._adapter = adapter
         self._from_sql = from_sql
@@ -782,6 +961,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         self._order_by = order_by
         self._limit = limit
         self._offset = offset
+        self._group_by = group_by
+        self._having = having
+        self._distinct = distinct
+        self._distinct_on = distinct_on
+        self._locking = locking
 
     def _clone(
         self,
@@ -794,6 +978,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         offset: int | None = None,
         replace_limit: bool = False,
         replace_offset: bool = False,
+        group_by: tuple[Expr[Any], ...] | None = None,
+        having: tuple[Expr[bool], ...] | None = None,
+        distinct: bool | None = None,
+        distinct_on: tuple[Expr[Any], ...] | None = None,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> JoinedSelectQuery[*Ts]:
         return JoinedSelectQuery(
             self._adapter,
@@ -804,6 +993,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
             order_by=self._order_by if order_by is None else order_by,
             limit=limit if replace_limit else self._limit,
             offset=offset if replace_offset else self._offset,
+            group_by=self._group_by if group_by is None else group_by,
+            having=self._having if having is None else having,
+            distinct=self._distinct if distinct is None else distinct,
+            distinct_on=self._distinct_on if distinct_on is None else distinct_on,
+            locking=self._locking if locking is _LOCK_UNSET else cast(LockClause | None, locking),
         )
 
     def where(self, *predicates: Expr[bool]) -> JoinedSelectQuery[*Ts]:
@@ -822,6 +1016,53 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
     def offset(self, n: int) -> JoinedSelectQuery[*Ts]:
         return self._clone(offset=n, replace_offset=True)
 
+    def group_by(self, *exprs: Expr[Any]) -> JoinedSelectQuery[*Ts]:
+        if not exprs:
+            return self
+        return self._clone(group_by=self._group_by + exprs)
+
+    def having(self, *predicates: Expr[bool]) -> JoinedSelectQuery[*Ts]:
+        if not predicates:
+            return self
+        return self._clone(having=self._having + predicates)
+
+    def distinct(self, *on: Expr[Any]) -> JoinedSelectQuery[*Ts]:
+        if on:
+            return self._clone(distinct=True, distinct_on=self._distinct_on + on)
+        return self._clone(distinct=True)
+
+    def for_update(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> JoinedSelectQuery[*Ts]:
+        return self._clone(
+            locking=LockClause(
+                mode="UPDATE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
+
+    def for_share(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: Sequence[TableRef[Any]] = (),
+    ) -> JoinedSelectQuery[*Ts]:
+        return self._clone(
+            locking=LockClause(
+                mode="SHARE",
+                nowait=nowait,
+                skip_locked=skip_locked,
+                of=lock_of_targets(of, self._adapter.dialect),
+            )
+        )
+
     def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
         join_parts = tuple(
             (f" {join.kind} JOIN {join.target_sql} ON ", join.on) for join in self._joins
@@ -834,6 +1075,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
             order_by=self._order_by,
             limit=self._limit,
             offset=self._offset,
+            group_by=self._group_by,
+            having=self._having,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+            locking=self._locking,
             join_parts=join_parts,
         )
 
@@ -889,33 +1135,44 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
             order_by=self._order_by,
             limit=self._limit,
             offset=self._offset,
+            group_by=self._group_by,
+            having=self._having,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
+            locking=self._locking,
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
+        dialect = self._adapter.dialect
         select_lists = ", ".join(segment.select_list for segment in self._segments)
-        compiler = SQLCompiler(
-            self._adapter.dialect,
-            initial_sql=f"SELECT {select_lists} FROM {self._from_sql}",
+        compiler = SQLCompiler(dialect)
+        compiler.write("SELECT ")
+        write_distinct(
+            compiler,
+            dialect,
+            distinct=self._distinct,
+            distinct_on=self._distinct_on,
         )
+        compiler.write(f"{select_lists} FROM {self._from_sql}")
         for join in self._joins:
             compiler.write(f" {join.kind} JOIN {join.target_sql} ON ")
             compiler.visit(and_(*join.on))
         if self._where:
             compiler.write(" WHERE ")
             compiler.visit(and_(*self._where))
-        if self._order_by:
-            compiler.write(" ORDER BY ")
-            for index, clause in enumerate(self._order_by):
-                if index:
-                    compiler.write(", ")
-                compiler.visit_order_by(clause)
-        if self._limit is not None:
-            compiler.write(" LIMIT ")
-            compiler.write(compiler.add_param(self._limit))
-        if self._offset is not None:
-            compiler.write(" OFFSET ")
-            compiler.write(compiler.add_param(self._offset))
+        write_group_having(compiler, group_by=self._group_by, having=self._having)
+        write_order_limit_offset(
+            compiler,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+        )
+        write_locking(compiler, dialect, self._locking)
         return compiler.build()
+
+    def as_subquery(self) -> SubqueryExpr[Any]:
+        sql, params = self.to_sql()
+        return SubqueryExpr(sql, params)
 
     def _hydrate(self, row: Sequence[Any]) -> tuple[*Ts]:
         segments = self._segments
@@ -944,6 +1201,33 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         rows = await self._adapter.fetch_all(sql, params)
         hydrate = self._hydrate
         return [hydrate(row) for row in rows]
+
+    async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[tuple[*Ts]]:
+        """Yield joined rows in batches; requires stable ORDER BY beyond batch 1."""
+        if batch_size < 1:
+            msg = "batch_size must be >= 1"
+            raise ValueError(msg)
+        start = self._offset or 0
+        remaining = self._limit
+        offset = start
+        while True:
+            size = batch_size if remaining is None else min(batch_size, remaining)
+            if size <= 0:
+                return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
+            sql, params = self.limit(size).offset(offset).to_sql()
+            rows = await self._adapter.fetch_all(sql, params)
+            if not rows:
+                return
+            for row in rows:
+                yield self._hydrate(row)
+            if len(rows) < size:
+                return
+            offset += size
+            if remaining is not None:
+                remaining -= size
 
     def _with_fetch_limit(self, maximum: int) -> JoinedSelectQuery[*Ts]:
         if self._limit is not None and self._limit <= maximum:
