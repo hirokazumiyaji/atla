@@ -96,3 +96,16 @@ async def test_sqlite_insert_many_upsert_select(
     assert len(rows) == 1
     assert rows[0].name == "Alice2"
     await conn.close()
+
+    # Re-open to prove writes were committed (not rolled back on close).
+    conn2 = await aiosqlite.connect(db_path)
+    try:
+        adapter2 = AiosqliteAdapter(conn2)
+        client2 = AtlaClient(adapter2)
+        persisted = await client2.user.query().order_by(User.email.asc()).all()
+        assert [(row.email, row.name) for row in persisted] == [
+            ("a@example.com", "Alice2"),
+            ("b@example.com", "Bob"),
+        ]
+    finally:
+        await conn2.close()

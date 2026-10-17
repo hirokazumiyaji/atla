@@ -2,20 +2,49 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
+
+_REQUIRED_DIALECT_ATTRS = (
+    "name",
+    "quote_char",
+    "supports_returning",
+    "supports_ilike",
+    "positional_style",
+)
 
 
 class Dialect:
-    """Base dialect describing engine-specific SQL surface syntax."""
+    """Base dialect describing engine-specific SQL surface syntax.
+
+    Concrete subclasses must define the class attributes listed in
+    ``_REQUIRED_DIALECT_ATTRS``. Instantiating :class:`Dialect` directly is
+    rejected so missing configuration surfaces early.
+    """
 
     __slots__ = ()
 
-    name: str
-    quote_char: str
-    supports_returning: bool
-    supports_ilike: bool
-    positional_style: str  # "dollar" | "format" | "qmark"
-    upsert_style: Literal["conflict", "duplicate"] = "conflict"
+    name: ClassVar[str]
+    quote_char: ClassVar[str]
+    supports_returning: ClassVar[bool]
+    supports_ilike: ClassVar[bool]
+    positional_style: ClassVar[str]  # "dollar" | "format" | "qmark"
+    upsert_style: ClassVar[Literal["conflict", "duplicate"]] = "conflict"
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for attr in _REQUIRED_DIALECT_ATTRS:
+            if not any(
+                attr in base.__dict__
+                for base in cls.__mro__
+                if base is not Dialect and base is not object
+            ):
+                msg = f"{cls.__name__} must define dialect attribute {attr!r}"
+                raise TypeError(msg)
+
+    def __init__(self) -> None:
+        if type(self) is Dialect:
+            msg = "Dialect is abstract; instantiate a concrete dialect subclass"
+            raise TypeError(msg)
 
     def quote(self, ident: str) -> str:
         q = self.quote_char

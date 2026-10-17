@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from atlagen.ir import ColumnIR, SchemaIR, TableIR
-from atlagen.naming import to_pascal_case
 
 
 def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
@@ -43,7 +42,7 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
         return "\n".join(lines)
 
     for table in schema.tables:
-        table_cls = f"{to_pascal_case(table.name)}Table"
+        table_cls = f"{table.model_name}Table"
         lines.extend(_emit_record(table, frozen=frozen))
         lines.append("")
         lines.extend(_emit_table(table, table_cls=table_cls))

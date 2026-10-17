@@ -47,7 +47,11 @@ def test_postgres_core_types() -> None:
     assert decimal.row_codec is None
     assert resolve_sql_type("boolean", dialect="postgres").base_python_type == "bool"
     assert resolve_sql_type("uuid", dialect="postgres").row_codec is None
-    assert resolve_sql_type("jsonb", dialect="postgres").import_symbol == ("typing", "Any")
+    jsonb = resolve_sql_type("jsonb", dialect="postgres")
+    assert jsonb.import_symbol == ("typing", "Any")
+    assert jsonb.row_codec is not None
+    assert "json.loads" in jsonb.row_codec
+    assert resolve_sql_type("money", dialect="postgres").base_python_type == "str"
     array = resolve_sql_type("integer[]", dialect="postgres")
     assert array.base_python_type == "list[int]"
 
@@ -159,6 +163,8 @@ def test_sqlite_array_preserves_element_codec() -> None:
     assert mapping.row_codec is not None
     assert "UUID(v)" in mapping.row_codec
     assert "for v in" in mapping.row_codec
+    assert "or ()" not in mapping.row_codec
+    assert "None if {value} is None" in mapping.row_codec
 
 
 def test_cockroach_and_tidb_aliases() -> None:

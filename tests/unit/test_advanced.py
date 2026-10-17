@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from atla.adapter.base import DBAdapter
-from atla.advanced import BaseInsertManyQuery
+from atla.advanced import BaseInsertManyQuery, insert_many_rows
 from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect
 from atla.expressions import Column
 from atla.query import BaseInsertQuery, BaseSelectQuery
@@ -146,6 +146,27 @@ async def test_projected_select_types_and_sql() -> None:
     assert rows == [(1, "a@example.com")]
     sql = adapter.calls[0][1]
     assert sql.startswith('SELECT "users"."id", "users"."email" FROM "users"')
+
+
+def test_insert_many_rows_normalizes_key_order() -> None:
+    rows = insert_many_rows(
+        [{"email": "a", "name": "A"}, {"name": "B", "email": "b"}],
+        attr_to_sql={},
+    )
+    assert rows == (
+        (("email", "a"), ("name", "A")),
+        (("email", "b"), ("name", "B")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_insert_many_chunks_large_batches() -> None:
+    adapter = FakeAdapter(SQLiteDialect())
+    # 2 columns x 20_000 rows => 40_000 binds, must split under 30_000.
+    rows = tuple((("a", i), ("b", i)) for i in range(20_000))
+    q = UserInsertMany(adapter, table_name='"t"', rows=rows)
+    assert await q.execute() == 4  # two chunks x execute_count 2
+    assert len([c for c in adapter.calls if c[0] == "execute"]) == 2
 
 
 @pytest.mark.asyncio

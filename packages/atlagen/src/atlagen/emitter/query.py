@@ -254,9 +254,10 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
     lines: list[str] = []
     used_names: set[str] = set()
     for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):
-        method = f"with_{child.name}"
+        child_sql = child.name.rsplit(".", 1)[-1]
+        method = f"with_{child_sql}"
         if method in used_names:
-            method = f"with_{child.name}_{fk_attr}"
+            method = f"with_{child_sql}_{fk_attr}"
         used_names.add(method)
         lines.extend(
             [
@@ -267,6 +268,8 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
                 f"            {child.model_name},",
                 f"            fk={child.model_name}.{fk_attr},",
                 f"            key={table.model_name}.{parent_key_attr},",
+                f"            fk_attr={fk_attr!r},",
+                f"            key_attr={parent_key_attr!r},",
                 "        )",
             ]
         )

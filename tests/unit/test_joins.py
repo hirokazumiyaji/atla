@@ -155,7 +155,11 @@ async def test_preload_issues_single_in_query_without_n_plus_one() -> None:
         [(1, "a@example.com"), (2, "b@example.com")],
         [(10, 1, "p1"), (11, 1, "p2"), (20, 2, "p3")],
     ]
-    rows = await UserQuery(adapter).preload(Post, fk=Post.user_id, key=User.id).all()
+    rows = await (
+        UserQuery(adapter)
+        .preload(Post, fk=Post.user_id, key=User.id, fk_attr="user_id", key_attr="id")
+        .all()
+    )
     assert rows == [
         (UserRecord(1, "a@example.com"), [PostRecord(10, 1, "p1"), PostRecord(11, 1, "p2")]),
         (UserRecord(2, "b@example.com"), [PostRecord(20, 2, "p3")]),

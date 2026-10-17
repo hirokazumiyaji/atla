@@ -10,14 +10,13 @@ from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import Column, Expr, OrderByClause, and_
 
+# Stay under common driver bind limits (SQLite ~32766).
+_MAX_BIND_PARAMS = 30_000
+
 
 def _compile_value(compiler: SQLCompiler, value: Any) -> str:
     if isinstance(value, Expr):
-        start = len(compiler.buf)
-        compiler.visit(value)  # pyright: ignore[reportUnknownArgumentType]
-        fragment = "".join(compiler.buf[start:])
-        del compiler.buf[start:]
-        return fragment
+        return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
     return compiler.add_param(value)
 
 
@@ -50,7 +49,7 @@ class BaseInsertManyQuery[RecordT]:
             returning=True,
         )
 
-    def to_sql(self) -> tuple[str, list[Any]]:
+    def _validated_columns(self) -> list[str]:
         if not self._rows:
             msg = "insert_many() requires at least one row"
             raise ValueError(msg)
@@ -63,11 +62,24 @@ class BaseInsertManyQuery[RecordT]:
             if row_cols != columns:
                 msg = "insert_many() requires every row to use the same column set"
                 raise ValueError(msg)
+        return columns
+
+    def _chunk_rows(self) -> list[tuple[tuple[tuple[str, Any], ...], ...]]:
+        columns = self._validated_columns()
+        chunk_size = max(1, _MAX_BIND_PARAMS // len(columns))
+        rows = self._rows
+        return [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
+
+    def _sql_for_rows(
+        self,
+        rows: tuple[tuple[tuple[str, Any], ...], ...],
+        columns: list[str],
+    ) -> tuple[str, list[Any]]:
         dialect = self._adapter.dialect
         cols_sql = ", ".join(dialect.quote(name) for name in columns)
         compiler = SQLCompiler(dialect)
         value_groups: list[str] = []
-        for row in self._rows:
+        for row in rows:
             placeholders = [_compile_value(compiler, value) for _, value in row]
             value_groups.append(f"({', '.join(placeholders)})")
         sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
@@ -78,18 +90,30 @@ class BaseInsertManyQuery[RecordT]:
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
         return sql, compiler.params
 
+    def to_sql(self) -> tuple[str, list[Any]]:
+        columns = self._validated_columns()
+        return self._sql_for_rows(self._rows, columns)
+
     async def execute(self) -> int:
-        sql, params = self.to_sql()
-        return await self._adapter.execute(sql, params)
+        columns = self._validated_columns()
+        total = 0
+        for chunk in self._chunk_rows():
+            sql, params = self._sql_for_rows(chunk, columns)
+            total += await self._adapter.execute(sql, params)
+        return total
 
     async def all(self) -> list[RecordT]:
         if not self._returning:
             msg = "all() requires .returning()"
             raise ValueError(msg)
-        sql, params = self.to_sql()
-        rows = await self._adapter.fetch_all(sql, params)
+        columns = self._validated_columns()
         mapper = type(self)._ROW_MAPPER
-        return [mapper(row) for row in rows]
+        result: list[RecordT] = []
+        for chunk in self._chunk_rows():
+            sql, params = self._sql_for_rows(chunk, columns)
+            rows = await self._adapter.fetch_all(sql, params)
+            result.extend(mapper(row) for row in rows)
+        return result
 
 
 class UpsertQuery[RecordT]:
@@ -350,22 +374,25 @@ def insert_many_rows(
     *,
     attr_to_sql: Mapping[str, str],
 ) -> tuple[tuple[tuple[str, Any], ...], ...]:
-    """Normalize attr-keyed mappings into ordered SQL-name value tuples."""
+    """Normalize attr-keyed mappings into ordered SQL-name value tuples.
+
+    Column *set* must match across rows; key order is normalized to the first
+    row's order so ordinary ``dict`` insertion-order differences are accepted.
+    """
     if not rows:
         return ()
     normalized: list[tuple[tuple[str, Any], ...]] = []
     column_order: list[str] | None = None
+    column_set: set[str] | None = None
     for row in rows:
-        pairs: list[tuple[str, Any]] = []
-        for attr, value in row.items():
-            sql_name = attr_to_sql.get(attr, attr)
-            pairs.append((sql_name, value))
-        pairs_tuple = tuple(pairs)
-        names = [name for name, _ in pairs_tuple]
+        by_sql = {attr_to_sql.get(attr, attr): value for attr, value in row.items()}
+        names = set(by_sql)
         if column_order is None:
-            column_order = names
-        elif names != column_order:
-            msg = "insert_many() requires every row to use the same column set/order"
+            column_order = list(by_sql)
+            column_set = names
+        elif names != column_set:
+            msg = "insert_many() requires every row to use the same column set"
             raise ValueError(msg)
-        normalized.append(pairs_tuple)
+        assert column_order is not None
+        normalized.append(tuple((name, by_sql[name]) for name in column_order))
     return tuple(normalized)

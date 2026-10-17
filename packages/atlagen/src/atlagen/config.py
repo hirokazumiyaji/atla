@@ -87,8 +87,13 @@ def load_pyproject_settings(path: Path | None = None) -> dict[str, Any]:
     pyproject = path or Path("pyproject.toml")
     if not pyproject.is_file():
         return {}
-    with pyproject.open("rb") as handle:
-        data: dict[str, Any] = tomllib.load(handle)
+    try:
+        with pyproject.open("rb") as handle:
+            data: dict[str, Any] = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid pyproject.toml while reading [tool.atlagen]: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"failed to read pyproject.toml: {exc}") from exc
     tool = data.get("tool")
     if not isinstance(tool, dict):
         return {}
@@ -109,8 +114,8 @@ def resolve_config(
     dialect = _coalesce_str(args.dialect, settings.get("dialect"))
     out_value = args.out if args.out is not None else settings.get("out")
     schema = _coalesce_str(args.schema, settings.get("schema"), default="-") or "-"
-    dev_url = _coalesce_str(args.dev_url, settings.get("dev_url"), allow_none=True)
-    schema_name = _coalesce_str(args.schema_name, settings.get("schema_name"), allow_none=True)
+    dev_url = _coalesce_str(args.dev_url, settings.get("dev_url"))
+    schema_name = _coalesce_str(args.schema_name, settings.get("schema_name"))
 
     frozen = True
     if getattr(args, "mutable", False):
@@ -133,9 +138,11 @@ def resolve_config(
     out = Path(out_value)
     isatty = sys.stdin.isatty() if stdin_isatty is None else stdin_isatty
     if schema == "-" and isatty and args.schema is None and "schema" not in settings:
-        # Allow explicit '-' ; warn only when nothing was configured and stdin is a TTY.
-        # generate/check still attempt stdin read so piped CI usage works when not a TTY.
-        pass
+        print(
+            "warning: reading Atlas JSON from stdin (interactive TTY); "
+            "pass --schema PATH or pipe JSON into stdin",
+            file=sys.stderr,
+        )
 
     return AtlagenConfig(
         dialect=dialect,
@@ -150,7 +157,6 @@ def resolve_config(
 def _coalesce_str(
     *values: object,
     default: str | None = None,
-    allow_none: bool = False,
 ) -> str | None:
     for value in values:
         if value is None:
@@ -158,6 +164,4 @@ def _coalesce_str(
         text = str(value).strip()
         if text:
             return text
-    if allow_none:
-        return default
     return default
