@@ -205,6 +205,17 @@ async def test_asyncmy_adapter_with_mocks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_asyncpg_pool_blocks_outer_ops_during_transaction() -> None:
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    adapter = AsyncpgAdapter(pool, dialect=PostgresDialect())
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await adapter.fetch_all("SELECT 1")
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
 async def test_asyncmy_pool_blocks_outer_ops_during_transaction() -> None:
     conn = FakeAsyncmyConnection()
     pool = FakeAsyncmyPool(conn)
