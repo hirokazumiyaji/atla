@@ -1,0 +1,34 @@
+[project]
+name = "atlagen"
+version = "0.1.0"
+description = "AOT code generator CLI for atla, powered by Atlas schema inspect"
+readme = { text = "AOT code generator for atla from Atlas schema JSON.", content-type = "text/plain" }
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Hirokazu Miyaji" }]
+keywords = ["sql", "codegen", "atlas", "type-safe"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "atla",
+]
+
+[project.scripts]
+atlagen = "atlagen.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atlagen"]
+
+[tool.uv.sources]
+atla = { workspace = true }
