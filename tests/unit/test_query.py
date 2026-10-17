@@ -256,10 +256,59 @@ def test_insert_returning_requires_support() -> None:
 @pytest.mark.asyncio
 async def test_insert_execute_and_one() -> None:
     adapter = FakeAdapter()
+    adapter.rows = [(1, "alice@example.com")]
     builder = UserInsertBuilder(adapter).values(email="a@example.com").returning()
     assert await builder.execute() == 1
     record = await builder.one()
     assert record == UserRecord(1, "alice@example.com")
+
+
+@pytest.mark.asyncio
+async def test_insert_one_raises_on_multiple_returning_rows() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [(1, "a@example.com"), (2, "b@example.com")]
+    builder = UserInsertBuilder(adapter).values(email="a@example.com").returning()
+    with pytest.raises(MultipleResultsError):
+        await builder.one()
+
+
+@pytest.mark.asyncio
+async def test_update_returning_all_first_one() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [(1, "a@example.com"), (2, "b@example.com")]
+    q = UserUpdateBuilder(adapter).set(email="x").where(id_col > 0).returning()
+    rows = await q.all()
+    assert rows == [UserRecord(1, "a@example.com"), UserRecord(2, "b@example.com")]
+    assert await q.first() == UserRecord(1, "a@example.com")
+    with pytest.raises(MultipleResultsError):
+        await q.one()
+    adapter.rows = [(1, "a@example.com")]
+    assert await q.one() == UserRecord(1, "a@example.com")
+
+
+class UserDeleteBuilder(BaseDeleteQuery[UserRecord]):
+    __slots__ = ()
+    _RETURNING_COLS = '"id", "email"'
+    _ROW_MAPPER = UserRecord.from_row
+
+
+def test_delete_returning_sql() -> None:
+    adapter = FakeAdapter()
+    sql, params = (
+        UserDeleteBuilder(adapter, table_name='"users"').where(id_col == 1).returning().to_sql()
+    )
+    assert sql == 'DELETE FROM "users" WHERE "users"."id" = $1 RETURNING "id", "email"'
+    assert params == [1]
+
+
+@pytest.mark.asyncio
+async def test_delete_returning_one() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [(1, "a@example.com")]
+    record = (
+        await UserDeleteBuilder(adapter, table_name='"users"').where(id_col == 1).returning().one()
+    )
+    assert record == UserRecord(1, "a@example.com")
 
 
 def test_update_accepts_expr_and_literal() -> None:
@@ -286,7 +335,7 @@ def test_update_allow_full_table() -> None:
 
 def test_delete_without_where_raises() -> None:
     adapter = FakeAdapter()
-    q = BaseDeleteQuery(adapter, table_name='"users"')
+    q: BaseDeleteQuery[object] = BaseDeleteQuery(adapter, table_name='"users"')
     with pytest.raises(UnsafeMutationError):
         q.to_sql()
 
@@ -318,7 +367,7 @@ def test_update_delete_where_is_immutable() -> None:
     with pytest.raises(UnsafeMutationError):
         base_update.to_sql()
 
-    base_delete = BaseDeleteQuery(adapter, table_name='"users"')
+    base_delete: BaseDeleteQuery[object] = BaseDeleteQuery(adapter, table_name='"users"')
     with pytest.raises(UnsafeMutationError):
         base_delete.to_sql()
     d1_sql, d1_params = base_delete.where(id_col == 1).to_sql()

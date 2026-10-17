@@ -79,14 +79,27 @@ def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:
     return lines
 
 
-def _row_expr(column: ColumnIR, index: int) -> str:
-    value = f"c{index}"
+def _decode_expr(column: ColumnIR, value: str) -> str:
+    """Python expression decoding *value* (an expression string) for *column*.
+
+    Shared by ``Record._from_row`` (``c<i>`` locals) and ``Column`` decoders (``v``).
+    """
     if column.row_codec is None:
         return value
     expr = column.row_codec.replace("{value}", value)
     if column.nullable:
         return f"(None if {value} is None else ({expr}))"
     return f"({expr})"
+
+
+def _row_expr(column: ColumnIR, index: int) -> str:
+    return _decode_expr(column, f"c{index}")
+
+
+def _decoder_lambda(column: ColumnIR) -> str | None:
+    if column.row_codec is None:
+        return None
+    return f"(lambda v: {_decode_expr(column, 'v')})"
 
 
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
@@ -119,10 +132,17 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
         f"        t = alias or {table.name.rsplit('.', 1)[-1]!r}",
     ]
     for column in table.columns:
-        lines.append(
-            f"        self.{column.attr_name}: Column[{column.python_type}] = "
-            f"Column(t, {column.name!r})"
-        )
+        decoder = _decoder_lambda(column)
+        if decoder is None:
+            lines.append(
+                f"        self.{column.attr_name}: Column[{column.python_type}] = "
+                f"Column(t, {column.name!r})"
+            )
+        else:
+            lines.append(
+                f"        self.{column.attr_name}: Column[{column.python_type}] = "
+                f"Column(t, {column.name!r}, decoder={decoder})"
+            )
     lines.extend(
         [
             "",

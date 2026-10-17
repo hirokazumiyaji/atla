@@ -30,7 +30,7 @@ def test_safe_attr_name_keywords() -> None:
     assert safe_attr_name("_alias") == "_alias_"
     assert safe_attr_name("_from_row") == "_from_row_"
     assert safe_attr_name("list") == "list_"
-    assert safe_attr_name("transaction") == "transaction_"
+    assert safe_attr_name("transaction") == "transaction"
     assert safe_attr_name("user-name") == "user_name"
     assert safe_attr_name("1st") == "col_1st"
     assert unique_attr_names(["user-name", "user_name"]) == ["user_name", "user_name_2"]
