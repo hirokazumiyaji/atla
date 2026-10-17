@@ -109,21 +109,22 @@ class AiosqliteAdapter:
                 )
                 raise RuntimeError(msg)
             self._tx_active = True
-            await self._exec_control("BEGIN")
-            pinned = AiosqliteAdapter(
-                self._conn,
-                dialect=self._dialect,
-                foreign_keys=self._foreign_keys,
-                _depth=1,
-                _configure=False,
-            )
             try:
-                yield pinned
-            except BaseException:
-                await self._exec_control("ROLLBACK")
-                raise
-            else:
-                await self._exec_control("COMMIT")
+                await self._exec_control("BEGIN")
+                pinned = AiosqliteAdapter(
+                    self._conn,
+                    dialect=self._dialect,
+                    foreign_keys=self._foreign_keys,
+                    _depth=1,
+                    _configure=False,
+                )
+                try:
+                    yield pinned
+                except BaseException:
+                    await self._exec_control("ROLLBACK")
+                    raise
+                else:
+                    await self._exec_control("COMMIT")
             finally:
                 self._tx_active = False
             return

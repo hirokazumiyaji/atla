@@ -236,6 +236,47 @@ async def test_aiosqlite_rejects_reentrant_transaction_on_same_adapter() -> None
 
 
 @pytest.mark.asyncio
+async def test_aiosqlite_clears_tx_active_when_begin_fails() -> None:
+    class BoomConn:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, sql: str, params: Sequence[Any] = ()) -> Any:
+            self.calls.append(sql)
+            if sql == "BEGIN":
+                raise RuntimeError("begin failed")
+
+            class _Cursor:
+                rowcount = 0
+
+                async def fetchall(self) -> list[Any]:
+                    return []
+
+                async def fetchone(self) -> None:
+                    return None
+
+                async def close(self) -> None:
+                    return None
+
+            return _Cursor()
+
+        async def executemany(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    conn = BoomConn()
+    adapter = AiosqliteAdapter(conn, foreign_keys=False)
+    with pytest.raises(RuntimeError, match="begin failed"):
+        async with adapter.transaction():
+            pass
+    assert adapter._tx_active is False  # pyright: ignore[reportPrivateUsage]
+    # Adapter remains usable after a failed BEGIN.
+    assert await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)") == 0
+
+
+@pytest.mark.asyncio
 async def test_aiosqlite_autocommit_persists_without_transaction(
     tmp_path: Path,
 ) -> None:
