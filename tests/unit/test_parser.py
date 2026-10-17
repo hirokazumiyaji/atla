@@ -112,6 +112,38 @@ def test_primary_key_forces_non_nullable() -> None:
     assert column.nullable is False
 
 
+def test_parse_foreign_key_string_ref_keeps_qualification() -> None:
+    schema = parse_atlas_json(
+        {
+            "schemas": [
+                {
+                    "name": "public",
+                    "tables": [
+                        {
+                            "name": "posts",
+                            "columns": [
+                                {"name": "id", "type": "int", "null": False},
+                                {"name": "user_id", "type": "int", "null": False},
+                            ],
+                            "primary_key": {"columns": [{"name": "id"}]},
+                            "foreign_keys": [
+                                {
+                                    "name": "posts_user_fk",
+                                    "columns": [{"name": "user_id"}],
+                                    "ref_columns": [{"name": "id"}],
+                                    "ref": "other.users",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        dialect="postgres",
+    )
+    assert schema.tables[0].foreign_keys[0].ref_table == "other.users"
+
+
 def test_parse_foreign_key_nested_ref_object() -> None:
     schema = parse_atlas_json(
         {
