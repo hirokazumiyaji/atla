@@ -327,12 +327,17 @@ class ProjectedSelectQuery[*Ts]:
         rows = await self._adapter.fetch_all(sql, params)
         return [self._hydrate(row) for row in rows]
 
+    def _with_fetch_limit(self, maximum: int) -> ProjectedSelectQuery[*Ts]:
+        if self._limit is not None and self._limit <= maximum:
+            return self
+        return self.limit(maximum)
+
     async def first(self) -> tuple[*Ts] | None:
-        rows = await self.limit(1).all()
+        rows = await self._with_fetch_limit(1).all()
         return rows[0] if rows else None
 
     async def one(self) -> tuple[*Ts]:
-        rows = await self.limit(2).all()
+        rows = await self._with_fetch_limit(2).all()
         if not rows:
             raise NotFoundError("expected exactly one row, found 0")
         if len(rows) > 1:
