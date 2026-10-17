@@ -14,7 +14,8 @@ _NATIVE_DATETIME_DIALECTS = frozenset({"postgres", "cockroach", "mysql", "tidb"}
 _NATIVE_UUID_DIALECTS = frozenset({"postgres", "cockroach"})
 _NATIVE_BOOL_DIALECTS = frozenset({"postgres", "cockroach", "sqlite"})
 # asyncpg returns json/jsonb as str unless set_type_codec is registered; asyncmy
-# similarly yields text. Always decode with json.loads (idempotent for dict/list).
+# similarly yields text. Always apply the json.loads codec; drivers that already
+# return dict/list pass through unchanged via the isinstance(str/bytes) guard.
 _NATIVE_JSON_DIALECTS: frozenset[str] = frozenset()
 _NATIVE_DECIMAL_DIALECTS = frozenset({"postgres", "cockroach"})
 
