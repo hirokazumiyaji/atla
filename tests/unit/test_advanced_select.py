@@ -109,10 +109,10 @@ def test_for_update_rejected_on_sqlite() -> None:
         UserQuery(adapter).for_update().to_sql()
 
 
-def test_tidb_rejects_for_share_and_skip_locked() -> None:
+def test_tidb_share_lock_and_rejects_skip_locked() -> None:
     adapter = FakeAdapter(TiDBDialect())
-    with pytest.raises(ValueError, match="FOR SHARE"):
-        UserQuery(adapter).for_share().to_sql()
+    sql, _ = UserQuery(adapter).for_share().to_sql()
+    assert sql.endswith(" LOCK IN SHARE MODE")
     with pytest.raises(ValueError, match="SKIP LOCKED"):
         UserQuery(adapter).for_update(skip_locked=True).to_sql()
     sql, _ = UserQuery(adapter).for_update().to_sql()
