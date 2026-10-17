@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from collections.abc import Mapping
 from typing import Any, cast
@@ -19,6 +20,7 @@ from atlagen.naming import (
     enum_class_name,
     mysql_inline_enum_class_name,
     mysql_inline_enum_name,
+    safe_attr_name,
     table_accessor_name,
     table_model_name,
     unique_attr_names,
@@ -88,6 +90,17 @@ def parse_atlas_json(
         enums=tuple(enums),
         tables=tuple(tables),
     )
+
+
+def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
+    text = value.strip()
+    if not text.isidentifier() or keyword.iskeyword(text):
+        msg = (
+            f"override {kind} {value!r} for table {table_name!r} "
+            "must be a valid non-keyword Python identifier"
+        )
+        raise AtlasParseError(msg)
+    return text
 
 
 def _assert_unique_table_names(tables: list[TableIR]) -> None:
@@ -173,12 +186,31 @@ def _parse_table(
 
     model_name = table_model_name(table_name)
     accessor_name = table_accessor_name(table_name)
-    override = overrides.get(table_name) or overrides.get(table_name.rsplit(".", 1)[-1])
+    unqualified = table_name.rsplit(".", 1)[-1]
+    # Prefer an exact key. Fall back to the unqualified name only when the table
+    # itself is unqualified (avoid applying ``users`` overrides to ``other.users``).
+    if table_name in overrides:
+        override: Mapping[str, str] | None = overrides[table_name]
+    elif "." not in table_name:
+        override = overrides.get(unqualified)
+    else:
+        override = None
     if override:
         if override.get("model_name"):
-            model_name = str(override["model_name"])
+            model_name = _validate_override_ident(
+                str(override["model_name"]),
+                kind="model_name",
+                table_name=table_name,
+            )
         if override.get("accessor_name"):
-            accessor_name = str(override["accessor_name"])
+            raw_accessor = str(override["accessor_name"]).strip()
+            if not raw_accessor.isidentifier():
+                msg = (
+                    f"override accessor_name {raw_accessor!r} for table {table_name!r} "
+                    "must be a valid Python identifier"
+                )
+                raise AtlasParseError(msg)
+            accessor_name = safe_attr_name(raw_accessor)
     primary_key = _parse_primary_key(table_raw.get("primary_key"))
     pk_set = set(primary_key)
 

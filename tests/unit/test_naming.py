@@ -71,6 +71,29 @@ def test_collision_raises() -> None:
         parse_atlas_json(schema, dialect="sqlite")
 
 
+def test_invalid_override_rejected() -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "tables": [{"name": "users", "columns": [{"name": "id", "type": "INTEGER"}]}],
+            }
+        ]
+    }
+    with pytest.raises(AtlasParseError, match="model_name"):
+        parse_atlas_json(
+            schema,
+            dialect="sqlite",
+            table_overrides={"users": {"model_name": "User Model"}},
+        )
+    with pytest.raises(AtlasParseError, match="accessor_name"):
+        parse_atlas_json(
+            schema,
+            dialect="sqlite",
+            table_overrides={"users": {"accessor_name": "bad-name"}},
+        )
+
+
 def test_table_override_resolves_collision() -> None:
     schema = {
         "schemas": [
