@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from functools import wraps
-from typing import Any
+from types import CoroutineType
+from typing import Any, cast
 
 from atla.errors import (
     CheckViolationError,
@@ -123,7 +124,7 @@ def reraise_translated(exc: BaseException) -> None:
 
 def with_translated_errors[**P, R](
     func: Callable[P, Coroutine[Any, Any, R]],
-) -> Callable[P, Coroutine[Any, Any, R]]:
+) -> Callable[P, CoroutineType[Any, Any, R]]:
     """Wrap an async adapter method so driver errors become atla errors."""
 
     @wraps(func)
@@ -134,4 +135,4 @@ def with_translated_errors[**P, R](
             reraise_translated(exc)
             raise  # pragma: no cover — reraise_translated always raises
 
-    return wrapper
+    return cast("Callable[P, CoroutineType[Any, Any, R]]", wrapper)
