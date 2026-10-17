@@ -299,11 +299,14 @@ def _iter_raw_code_spans(
             i = j
             code_start = i
             continue
-        # Double-quoted identifier/literal
+        # Double-quoted identifier/literal (MySQL default: string with backslash escapes)
         if ch == '"':
             flush_code(i)
             j = i + 1
             while j < n:
+                if mysql_backslash and sql[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
                 if sql[j] == '"':
                     if j + 1 < n and sql[j + 1] == '"':
                         j += 2
