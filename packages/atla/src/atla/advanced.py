@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from typing import Any, Self, cast
+from typing import Any, ClassVar, Self, cast
 
 from atla.adapter.base import DBAdapter
 from atla.compiler import SQLCompiler
-from atla.errors import NotFoundError
-from atla.expressions import Expr, OrderByClause, SubqueryExpr, and_
+from atla.errors import MultipleResultsError, NotFoundError
+from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
 from atla.select_clauses import (
     LockClause,
     fetch_first,
@@ -20,11 +20,23 @@ from atla.select_clauses import (
     write_order_limit_offset,
 )
 from atla.table import TableRef
+from atla.types import is_unset
 
 _LOCK_UNSET = object()
 
 # Stay under common driver bind limits (SQLite ~32766).
 _MAX_BIND_PARAMS = 30_000
+
+
+def conflict_column_names(*columns: Column[Any] | str) -> tuple[str, ...]:
+    """Normalize ``on_conflict`` targets to bare SQL identifier names."""
+    names: list[str] = []
+    for column in columns:
+        if isinstance(column, Column):
+            names.append(column.name)
+        else:
+            names.append(column)
+    return tuple(names)
 
 
 class BaseInsertManyQuery[RecordT]:
@@ -77,6 +89,9 @@ class BaseInsertManyQuery[RecordT]:
         rows = self._rows
         return [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
 
+    def _rows_are_literals(self, rows: tuple[tuple[tuple[str, Any], ...], ...]) -> bool:
+        return all(not isinstance(value, Expr) for row in rows for _, value in row)
+
     def _sql_for_rows(
         self,
         rows: tuple[tuple[tuple[str, Any], ...], ...],
@@ -84,8 +99,31 @@ class BaseInsertManyQuery[RecordT]:
     ) -> tuple[str, list[Any]]:
         dialect = self._adapter.dialect
         cols_sql = ", ".join(dialect.quote(name) for name in columns)
+        if self._rows_are_literals(rows):
+            # Expand placeholders without per-value Expr dispatch.
+            params: list[Any] = []
+            value_groups: list[str] = []
+            for row in rows:
+                start = len(params) + 1
+                ph = (
+                    "("
+                    + ", ".join(
+                        dialect.placeholder(start + offset) for offset in range(len(columns))
+                    )
+                    + ")"
+                )
+                value_groups.append(ph)
+                params.extend(value for _, value in row)
+            sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
+            if self._returning:
+                if not dialect.supports_returning:
+                    msg = f"{dialect.name} does not support RETURNING"
+                    raise ValueError(msg)
+                sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
+            return sql, params
+
         compiler = SQLCompiler(dialect)
-        value_groups: list[str] = []
+        value_groups = []
         for row in rows:
             placeholders = [compiler.compile_value(value) for _, value in row]
             value_groups.append(f"({', '.join(placeholders)})")
@@ -102,6 +140,16 @@ class BaseInsertManyQuery[RecordT]:
         return self._sql_for_rows(self._rows, columns)
 
     async def execute(self) -> int:
+        """Insert all rows and return the number of rows submitted.
+
+        Uses atomic multi-row ``INSERT ... VALUES (...), (...)`` statements, chunked
+        to the bind-parameter limit. Each chunk is one statement (all-or-nothing for
+        that chunk). Chunks are not atomic together outside a transaction — wrap
+        ``execute()`` in ``adapter.transaction()`` when the whole batch must commit
+        or roll back as a unit.
+
+        Return value: the sum of driver rowcounts across chunks.
+        """
         columns = self._validated_columns()
         total = 0
         for chunk in self._chunk_rows():
@@ -137,7 +185,8 @@ class UpsertQuery[RecordT]:
     )
 
     _RETURNING_COLS: str
-    _ROW_MAPPER: Any
+    _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {}
 
     def __init__(
         self,
@@ -170,7 +219,18 @@ class UpsertQuery[RecordT]:
         )
 
     def do_update(self, **columns: Any) -> Self:
-        pairs = tuple((name, value) for name, value in columns.items())
+        """Accumulate DO UPDATE columns (bare SQL identifiers).
+
+        Generated ``*UpsertBuilder.do_update`` maps Python attribute names onto
+        SQL identifiers before calling :meth:`_do_update_values`. Hand-written
+        callers may use this method with SQL names, or :meth:`do_update_attrs`
+        for ``_ATTR_TO_SQL`` remapping.
+        """
+        return self._do_update_values(**columns)
+
+    def _do_update_values(self, **columns: Any) -> Self:
+        """Internal DO UPDATE accumulation shared with generated builders."""
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         if not pairs:
             msg = "do_update() requires at least one column"
             raise ValueError(msg)
@@ -183,6 +243,14 @@ class UpsertQuery[RecordT]:
             do_nothing=False,
             returning=self._returning,
         )
+
+    def do_update_attrs(self, **columns: Any) -> Self:
+        """Like ``do_update``, remapping Python attr names via ``_ATTR_TO_SQL``."""
+        mapping = type(self)._ATTR_TO_SQL
+        pairs = {
+            mapping.get(name, name): value for name, value in columns.items() if not is_unset(value)
+        }
+        return self._do_update_values(**pairs)
 
     def returning(self) -> Self:
         return type(self)(
@@ -243,30 +311,53 @@ class UpsertQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
+    async def all(self) -> list[RecordT]:
+        if not self._returning:
+            msg = "all() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
     async def one(self) -> RecordT:
         if not self._returning:
             msg = "one() requires .returning()"
             raise ValueError(msg)
         sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
+        rows = await self._adapter.fetch_all(sql, params)
+        if not rows:
             raise NotFoundError("upsert ... returning produced no row")
-        return cast(RecordT, type(self)._ROW_MAPPER(row))
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class ProjectedSelectQuery[*Ts]:
-    """SELECT of explicit expressions hydrating ``tuple[*Ts]``."""
+    """SELECT of explicit expressions hydrating ``tuple[*Ts]``.
+
+    For a single-column projection, use :meth:`scalars` / :meth:`scalar_one` /
+    :meth:`scalar_first` to unwrap ``tuple[T]`` into ``T``.
+    """
 
     __slots__ = (
         "_adapter",
         "_columns",
+        "_decoders",
         "_distinct",
         "_distinct_on",
         "_from_sql",
         "_group_by",
         "_having",
+        "_join_parts",
         "_limit",
         "_locking",
+        "_needs_decode",
         "_offset",
         "_order_by",
         "_where",
@@ -287,6 +378,7 @@ class ProjectedSelectQuery[*Ts]:
         distinct: bool = False,
         distinct_on: tuple[Expr[Any], ...] = (),
         locking: LockClause | None = None,
+        join_parts: tuple[tuple[str, tuple[Expr[bool], ...]], ...] = (),
     ) -> None:
         self._adapter = adapter
         self._from_sql = from_sql
@@ -300,6 +392,10 @@ class ProjectedSelectQuery[*Ts]:
         self._distinct = distinct
         self._distinct_on = distinct_on
         self._locking = locking
+        self._join_parts = join_parts
+        decoders = tuple(expr.decoder if isinstance(expr, Column) else None for expr in columns)
+        self._decoders = decoders
+        self._needs_decode = any(decoder is not None for decoder in decoders)
 
     def _clone(
         self,
@@ -329,6 +425,7 @@ class ProjectedSelectQuery[*Ts]:
             distinct=self._distinct if distinct is None else distinct,
             distinct_on=self._distinct_on if distinct_on is None else distinct_on,
             locking=self._locking if locking is _LOCK_UNSET else cast(LockClause | None, locking),
+            join_parts=self._join_parts,
         )
 
     def where(self, *predicates: Expr[bool]) -> ProjectedSelectQuery[*Ts]:
@@ -409,6 +506,9 @@ class ProjectedSelectQuery[*Ts]:
                 compiler.write(", ")
             compiler.visit(expr)
         compiler.write(f" FROM {self._from_sql}")
+        for prefix, on in self._join_parts:
+            compiler.write(prefix)
+            compiler.visit(and_(*on))
         if self._where:
             compiler.write(" WHERE ")
             compiler.visit(and_(*self._where))
@@ -427,7 +527,13 @@ class ProjectedSelectQuery[*Ts]:
         return SubqueryExpr(sql, params)
 
     def _hydrate(self, row: Sequence[Any]) -> tuple[*Ts]:
-        return cast(tuple[*Ts], tuple(row))
+        if not self._needs_decode:
+            return cast(tuple[*Ts], tuple(row))
+        values: list[Any] = []
+        for index, decoder in enumerate(self._decoders):
+            value = row[index]
+            values.append(value if decoder is None or value is None else decoder(value))
+        return cast(tuple[*Ts], tuple(values))
 
     async def all(self) -> list[tuple[*Ts]]:
         sql, params = self.to_sql()
@@ -472,6 +578,30 @@ class ProjectedSelectQuery[*Ts]:
     async def one(self) -> tuple[*Ts]:
         return await fetch_one(self._with_fetch_limit(2).all)
 
+    async def scalars[T](self: ProjectedSelectQuery[T]) -> list[T]:
+        """Unwrap a single-column projection into a flat list."""
+        if len(self._columns) != 1:
+            msg = "scalars() requires a single-column projection"
+            raise ValueError(msg)
+        rows = await self.all()
+        return [row[0] for row in rows]
+
+    async def scalar_first[T](self: ProjectedSelectQuery[T]) -> T | None:
+        """Return the first scalar from a single-column projection, or ``None``."""
+        if len(self._columns) != 1:
+            msg = "scalar_first() requires a single-column projection"
+            raise ValueError(msg)
+        row = await self.first()
+        return None if row is None else row[0]
+
+    async def scalar_one[T](self: ProjectedSelectQuery[T]) -> T:
+        """Return the only scalar from a single-column projection."""
+        if len(self._columns) != 1:
+            msg = "scalar_one() requires a single-column projection"
+            raise ValueError(msg)
+        row = await self.one()
+        return row[0]
+
 
 def insert_many_rows(
     rows: Sequence[Mapping[str, Any]],
@@ -497,9 +627,7 @@ def insert_many_rows(
                 msg = f"insert_many() got unknown column(s): {', '.join(sorted(map(str, unknown)))}"
                 raise ValueError(msg)
         by_sql = (
-            {attr_to_sql[attr]: value for attr, value in row.items()}
-            if attr_to_sql
-            else {attr: value for attr, value in row.items()}
+            {attr_to_sql[attr]: value for attr, value in row.items()} if attr_to_sql else dict(row)
         )
         names = set(by_sql)
         if column_order is None:

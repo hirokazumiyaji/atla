@@ -17,6 +17,7 @@ from atla import (
     compile_expr,
     compile_order_by,
     count,
+    excluded,
     or_,
     raw_sql,
 )
@@ -294,3 +295,13 @@ def test_expr_chain_compare_and_functions() -> None:
     )
     assert sql == 'CASE WHEN "users"."age" > $1 THEN $2 ELSE $3 END'
     assert params == [18, "adult", "minor"]
+
+
+def test_excluded_compiles_per_upsert_style() -> None:
+    email = Column[str]("users", "email")
+    pg_sql, pg_params = compile_expr(PostgresDialect(), excluded(email))
+    assert pg_sql == 'EXCLUDED."email"'
+    assert pg_params == []
+    mysql_sql, mysql_params = compile_expr(MySQLDialect(), excluded(email))
+    assert mysql_sql == "VALUES(`email`)"
+    assert mysql_params == []

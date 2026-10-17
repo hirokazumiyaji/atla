@@ -19,28 +19,25 @@ def emit_client(schema: SchemaIR) -> str:
     if schema.tables:
         repo_imports = ", ".join(f"{table.model_name}Repository" for table in schema.tables)
         lines.append(f"from .query import {repo_imports}")
+    slot_parts = ['"_adapter"']
+    slot_parts.extend(repr(table.accessor_name) for table in schema.tables)
+    slots = ", ".join(slot_parts)
     lines.extend(
         [
             "",
             'T = TypeVar("T")',
             "",
             "class AtlaClient:",
-            '    __slots__ = ("_adapter",)',
+            # Trailing comma keeps a single-item slots definition a tuple.
+            f"    __slots__ = ({slots},)",
             "",
             "    def __init__(self, adapter: DBAdapter) -> None:",
             "        self._adapter = adapter",
-            "",
         ]
     )
     for table in schema.tables:
-        lines.extend(
-            [
-                "    @property",
-                f"    def {table.accessor_name}(self) -> {table.model_name}Repository:",
-                f"        return {table.model_name}Repository(self._adapter)",
-                "",
-            ]
-        )
+        lines.append(f"        self.{table.accessor_name} = {table.model_name}Repository(adapter)")
+    lines.append("")
     lines.extend(
         [
             "    @asynccontextmanager",
