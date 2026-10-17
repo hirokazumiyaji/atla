@@ -144,6 +144,27 @@ def test_raw_sql_placeholder_count_mismatch_raises() -> None:
         compile_expr(MySQLDialect(), raw_sql("x = %s AND y = %s", 1))
 
 
+def test_raw_sql_reuses_repeated_dollar_placeholders() -> None:
+    sql, params = compile_expr(
+        PostgresDialect(),
+        and_(
+            Column[int]("users", "age") == 1,
+            raw_sql("x = $1 OR y = $1", 9),
+        ),
+    )
+    assert sql == '("users"."age" = $1 AND x = $2 OR y = $2)'
+    assert params == [1, 9]
+
+
+def test_raw_sql_format_ignores_modulo_identifiers() -> None:
+    sql, params = compile_expr(
+        MySQLDialect(),
+        raw_sql("score %score = %s", 3),
+    )
+    assert sql == "score %score = %s"
+    assert params == [3]
+
+
 def test_raw_sql_ignores_placeholders_inside_literals() -> None:
     sql, params = compile_expr(
         SQLiteDialect(),

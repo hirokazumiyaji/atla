@@ -254,8 +254,13 @@ def _scan_code_span(span: str, style: str, placeholders: list[int]) -> None:
                 index += 2
                 continue
             if span.startswith("%s", index):
+                end = index + 2
+                # Avoid treating identifiers like `%score` as a `%s` bind placeholder.
+                if end < len(span) and (span[end].isalnum() or span[end] == "_"):
+                    index += 1
+                    continue
                 placeholders.append(0)
-                index += 2
+                index = end
                 continue
             index += 1
         return
