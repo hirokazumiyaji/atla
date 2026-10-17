@@ -234,6 +234,50 @@ async def test_belongs_to_preload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_belongs_to_missing_non_null_parent_raises() -> None:
+    adapter = FakeAdapter()
+    adapter.fetch_all_responses = [
+        [(10, 99, "orphan", True)],
+        [],
+    ]
+    with pytest.raises(NotFoundError, match="missing related row"):
+        await (
+            PostQuery(adapter)
+            .preload_one(
+                User,
+                fk=Post.user_id,
+                key=User.id,
+                fk_attr="user_id",
+                key_attr="id",
+                nullable=False,
+            )
+            .all()
+        )
+
+
+@pytest.mark.asyncio
+async def test_belongs_to_nullable_missing_parent() -> None:
+    adapter = FakeAdapter()
+    adapter.fetch_all_responses = [
+        [(10, 99, "orphan", True)],
+        [],
+    ]
+    rows = await (
+        PostQuery(adapter)
+        .preload_one(
+            User,
+            fk=Post.user_id,
+            key=User.id,
+            fk_attr="user_id",
+            key_attr="id",
+            nullable=True,
+        )
+        .all()
+    )
+    assert rows == [(PostRecord(10, 99, "orphan", True), None)]
+
+
+@pytest.mark.asyncio
 async def test_multi_relation_preload() -> None:
     adapter = FakeAdapter()
     adapter.fetch_all_responses = [

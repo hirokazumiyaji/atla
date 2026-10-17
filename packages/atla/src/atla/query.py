@@ -1095,7 +1095,13 @@ class _RelationSpec[RelatedT]:
 
 
 class PreloadSelectQuery[ParentT, ChildT]:
-    """Two-query batch eager loader: parent SELECT + ``WHERE fk IN (...)`` (has-many)."""
+    """Two-query batch eager loader: parent SELECT + ``WHERE fk IN (...)`` (has-many).
+
+    ``limit`` / ``offset`` / parent ``order_by`` / ``where`` apply to the *parent*
+    query. Related-row ``order_by`` passed to :meth:`BaseSelectQuery.preload`
+    sorts the follow-up ``IN`` query; that preserves each parent's relative
+    child order without providing per-parent top-N limits.
+    """
 
     __slots__ = ("_parent", "_spec")
 
@@ -1270,9 +1276,23 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
         for child in children:
             fk_value = getattr(child, fk_attr)
             if fk_value is None:
+                if not self._spec.nullable:
+                    msg = f"belongs-to foreign key {fk_attr!r} is NULL but relation is non-nullable"
+                    raise NotFoundError(msg)
                 results.append((child, cast(ParentT, None)))
+                continue
+            related = by_key.get(fk_value)
+            if related is None:
+                if self._spec.nullable:
+                    results.append((child, cast(ParentT, None)))
+                else:
+                    msg = (
+                        f"missing related row for non-nullable belongs-to "
+                        f"{fk_attr}={fk_value!r}"
+                    )
+                    raise NotFoundError(msg)
             else:
-                results.append((child, cast(ParentT, by_key.get(fk_value))))
+                results.append((child, cast(ParentT, related)))
         return results
 
     async def first(self) -> tuple[ChildT, ParentT] | None:
