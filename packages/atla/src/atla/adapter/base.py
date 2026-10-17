@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from atla.dialect import Dialect
+
+IsolationLevel = Literal[
+    "read_uncommitted",
+    "read_committed",
+    "repeatable_read",
+    "serializable",
+]
 
 
 class DBAdapter(Protocol):
@@ -35,6 +42,12 @@ class DBAdapter(Protocol):
         """Execute a batch DML statement."""
         ...
 
-    def transaction(self) -> AbstractAsyncContextManager[DBAdapter]:
+    def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AbstractAsyncContextManager[DBAdapter]:
         """Begin a transaction and yield a connection-pinned adapter."""
         ...

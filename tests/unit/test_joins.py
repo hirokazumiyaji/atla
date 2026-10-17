@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import PostgresDialect
 from atla.expressions import Column
 from atla.query import BaseSelectQuery
@@ -110,7 +110,13 @@ class FakeAdapter:
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         self.calls.append(("execute_many", sql, [list(p) for p in params_seq]))
 
-    def transaction(self) -> AbstractAsyncContextManager[DBAdapter]:
+    def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AbstractAsyncContextManager[DBAdapter]:
         raise NotImplementedError
 
 

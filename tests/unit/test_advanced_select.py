@@ -8,7 +8,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect, TiDBDialect
 from atla.expressions import Column, count, exists
 from atla.query import BaseSelectQuery
@@ -59,7 +59,13 @@ class FakeAdapter:
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         return None
 
-    def transaction(self) -> AbstractAsyncContextManager[DBAdapter]:
+    def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AbstractAsyncContextManager[DBAdapter]:
         raise NotImplementedError
 
 

@@ -11,7 +11,10 @@ from atla.adapter._checkout import (
     ensure_not_checked_out,
     new_checkout_owners,
 )
+from atla.adapter.base import IsolationLevel
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import CockroachDialect, Dialect, PostgresDialect
+from atla.transaction import map_asyncpg_isolation
 
 
 def _parse_status(status: str) -> int:
@@ -67,35 +70,55 @@ class AsyncpgAdapter:
     def dialect(self) -> Dialect:
         return self._dialect
 
+    @with_translated_errors
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         ensure_not_checked_out(self._checkout_owners)
         encoded = self._dialect.encode_params(params)
         # Pool exposes fetch/fetchrow/fetchval/execute directly (C-backed acquire).
         return cast(Sequence[Sequence[Any]], await self._target.fetch(sql, *encoded))
 
+    @with_translated_errors
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         ensure_not_checked_out(self._checkout_owners)
         encoded = self._dialect.encode_params(params)
         return cast(Sequence[Any] | None, await self._target.fetchrow(sql, *encoded))
 
+    @with_translated_errors
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         ensure_not_checked_out(self._checkout_owners)
         encoded = self._dialect.encode_params(params)
         return await self._target.fetchval(sql, *encoded)
 
+    @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         ensure_not_checked_out(self._checkout_owners)
         encoded = self._dialect.encode_params(params)
         status = await self._target.execute(sql, *encoded)
         return _parse_status(str(status))
 
+    @with_translated_errors
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         ensure_not_checked_out(self._checkout_owners)
         encoded_seq = self._dialect.encode_params_seq(params_seq)
         await self._target.executemany(sql, encoded_seq)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[AsyncpgAdapter]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[AsyncpgAdapter]:
+        isolation_kw = map_asyncpg_isolation(isolation)
+        tx_kwargs: dict[str, Any] = {}
+        if isolation_kw is not None:
+            tx_kwargs["isolation"] = isolation_kw
+        if readonly:
+            tx_kwargs["readonly"] = True
+        if deferrable:
+            tx_kwargs["deferrable"] = True
+
         # Match fetch_*/execute*: the outer pool adapter must not be reused
         # while this task already holds a checkout (use the yielded adapter).
         ensure_not_checked_out(self._checkout_owners)
@@ -103,13 +126,19 @@ class AsyncpgAdapter:
             # Per-task checkout: peers may still acquire from the same pool.
             with checkout_scope(self._checkout_owners):
                 async with self._target.acquire() as conn:
-                    async with conn.transaction():
-                        yield AsyncpgAdapter(conn, dialect=self._dialect, _depth=1)
+                    try:
+                        async with conn.transaction(**tx_kwargs):
+                            yield AsyncpgAdapter(conn, dialect=self._dialect, _depth=1)
+                    except Exception as exc:
+                        reraise_translated(exc)
             return
 
-        async with self._target.transaction():
-            yield AsyncpgAdapter(
-                self._target,
-                dialect=self._dialect,
-                _depth=self._depth + 1,
-            )
+        try:
+            async with self._target.transaction(**tx_kwargs):
+                yield AsyncpgAdapter(
+                    self._target,
+                    dialect=self._dialect,
+                    _depth=self._depth + 1,
+                )
+        except Exception as exc:
+            reraise_translated(exc)

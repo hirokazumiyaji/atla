@@ -7,6 +7,8 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
+from atla.adapter.base import IsolationLevel
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, SQLiteDialect
 
 
@@ -86,6 +88,7 @@ class AiosqliteAdapter:
         if self._depth == 0 and not self._tx_active:
             await self._conn.commit()
 
+    @with_translated_errors
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         async with self._lock:
             self._ensure_not_in_active_transaction()
@@ -97,6 +100,7 @@ class AiosqliteAdapter:
                 rows = await self._conn.execute_fetchall(sql)
             return rows
 
+    @with_translated_errors
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         async with self._lock:
             self._ensure_not_in_active_transaction()
@@ -109,12 +113,14 @@ class AiosqliteAdapter:
             finally:
                 await cursor.close()
 
+    @with_translated_errors
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         row = await self.fetch_one(sql, params)
         if row is None:
             return None
         return row[0]
 
+    @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         async with self._lock:
             self._ensure_not_in_active_transaction()
@@ -128,6 +134,7 @@ class AiosqliteAdapter:
             await self._commit_if_autocommit()
         return rowcount
 
+    @with_translated_errors
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         async with self._lock:
             self._ensure_not_in_active_transaction()
@@ -141,7 +148,22 @@ class AiosqliteAdapter:
         await cursor.close()
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[AiosqliteAdapter]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[AiosqliteAdapter]:
+        if isolation is not None:
+            msg = "SQLite does not support isolation/readonly/deferrable transaction options"
+            raise ValueError(msg)
+        if readonly:
+            msg = "SQLite does not support readonly transactions"
+            raise ValueError(msg)
+        if deferrable:
+            msg = "SQLite does not support deferrable transactions"
+            raise ValueError(msg)
         if self._depth == 0:
             async with self._lock:
                 await self._ensure_configured_unlocked()
@@ -167,17 +189,22 @@ class AiosqliteAdapter:
             )
             try:
                 yield pinned
-            except BaseException:
+            except BaseException as exc:
                 async with self._lock:
                     try:
                         await self._exec_control("ROLLBACK")
                     finally:
                         self._tx_active = False
+                if isinstance(exc, Exception):
+                    reraise_translated(exc)
                 raise
             else:
                 async with self._lock:
                     try:
-                        await self._exec_control("COMMIT")
+                        try:
+                            await self._exec_control("COMMIT")
+                        except Exception as exc:
+                            reraise_translated(exc)
                     finally:
                         self._tx_active = False
             return
@@ -195,10 +222,12 @@ class AiosqliteAdapter:
         )
         try:
             yield pinned
-        except BaseException:
+        except BaseException as exc:
             async with self._lock:
                 await self._exec_control(f"ROLLBACK TO SAVEPOINT {savepoint}")
                 await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+            if isinstance(exc, Exception):
+                reraise_translated(exc)
             raise
         else:
             async with self._lock:

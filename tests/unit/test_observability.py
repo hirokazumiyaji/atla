@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from atla.adapter.base import IsolationLevel
 from atla.dialect import PostgresDialect, SQLiteDialect
 from atla.observability import InstrumentedAdapter, extract_sql_meta
 from atla.observability.otel import OTelAdapter
@@ -43,7 +44,13 @@ class FakeAdapter:
         self.calls.append(("execute_many", sql, [list(p) for p in params_seq]))
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[FakeAdapter, None]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[FakeAdapter, None]:
         yield self
 
 
@@ -191,7 +198,7 @@ class _KwargsTxAdapter(FakeAdapter):
     async def transaction(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         *,
-        isolation: str | None = None,
+        isolation: IsolationLevel | None = None,
         readonly: bool = False,
         deferrable: bool = False,
     ) -> AsyncGenerator[FakeAdapter, None]:

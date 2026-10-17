@@ -11,7 +11,10 @@ from atla.adapter._checkout import (
     ensure_not_checked_out,
     new_checkout_owners,
 )
+from atla.adapter.base import IsolationLevel
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
+from atla.transaction import begin_sql
 
 
 class AsyncmyAdapter:
@@ -71,6 +74,7 @@ class AsyncmyAdapter:
         if self._pool is not None and self._conn is None:
             await self._pool.release(conn)
 
+    @with_translated_errors
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
@@ -82,6 +86,7 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
@@ -92,12 +97,14 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         row = await self.fetch_one(sql, params)
         if row is None:
             return None
         return row[0]
 
+    @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
@@ -107,6 +114,7 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    @with_translated_errors
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         encoded_seq = self._dialect.encode_params_seq(params_seq)
         conn = await self._acquire()
@@ -116,8 +124,31 @@ class AsyncmyAdapter:
         finally:
             await self._release(conn)
 
+    async def _apply_tx_options(
+        self,
+        conn: Any,
+        *,
+        isolation: IsolationLevel | None,
+        readonly: bool,
+        deferrable: bool,
+    ) -> None:
+        for statement in begin_sql(
+            self._dialect.name,
+            isolation=isolation,
+            readonly=readonly,
+            deferrable=deferrable,
+        ):
+            async with conn.cursor() as cursor:
+                await cursor.execute(statement)
+
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
+    async def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncGenerator[AsyncmyAdapter]:
         # Match fetch_*/execute*: the outer pool adapter must not be reused
         # while this task already holds a checkout (use the yielded adapter).
         ensure_not_checked_out(self._checkout_owners)
@@ -126,51 +157,67 @@ class AsyncmyAdapter:
             with checkout_scope(self._checkout_owners):
                 active: Any = await self._pool.acquire()
                 try:
+                    # MySQL/TiDB apply SET TRANSACTION to the *next* transaction.
+                    await self._apply_tx_options(
+                        active,
+                        isolation=isolation,
+                        readonly=readonly,
+                        deferrable=deferrable,
+                    )
+                    await active.begin()
+                except BaseException:
                     try:
-                        await active.begin()
+                        await active.rollback()
                     except BaseException:
+                        pass
+                    raise
+                pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
+                try:
+                    yield pinned
+                except BaseException as exc:
+                    await active.rollback()
+                    if isinstance(exc, Exception):
+                        reraise_translated(exc)
+                    raise
+                else:
+                    try:
+                        await active.commit()
+                    except Exception as exc:
                         try:
                             await active.rollback()
                         except BaseException:
                             pass
-                        raise
-                    pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
-                    try:
-                        yield pinned
-                    except BaseException:
-                        await active.rollback()
-                        raise
-                    else:
-                        try:
-                            await active.commit()
-                        except BaseException:
-                            try:
-                                await active.rollback()
-                            except BaseException:
-                                pass
-                            raise
+                        reraise_translated(exc)
                 finally:
                     await self._pool.release(active)
             return
 
         assert self._conn is not None
         if self._depth == 0:
+            await self._apply_tx_options(
+                self._conn,
+                isolation=isolation,
+                readonly=readonly,
+                deferrable=deferrable,
+            )
             await self._conn.begin()
             pinned = AsyncmyAdapter(self._conn, dialect=self._dialect, _depth=1)
             try:
                 yield pinned
-            except BaseException:
+            except BaseException as exc:
                 await self._conn.rollback()
+                if isinstance(exc, Exception):
+                    reraise_translated(exc)
                 raise
             else:
                 try:
                     await self._conn.commit()
-                except BaseException:
+                except Exception as exc:
                     try:
                         await self._conn.rollback()
                     except BaseException:
                         pass
-                    raise
+                    reraise_translated(exc)
             return
 
         savepoint = f"atla_sp_{self._depth}"
