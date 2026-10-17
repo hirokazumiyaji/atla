@@ -35,6 +35,8 @@ from atlagen.parser import AtlasParseError, parse_atlas_json
         ("users", "user"),
         ("parties", "party"),
         ("classes", "class"),
+        ("houses", "house"),
+        ("addresses", "address"),
     ],
 )
 def test_singularize_cases(plural: str, singular: str) -> None:
