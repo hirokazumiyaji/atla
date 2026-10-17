@@ -9,6 +9,12 @@ from atla.dialect import (
     SQLiteDialect,
     TiDBDialect,
 )
+from atla.errors import (
+    AtlaError,
+    MultipleResultsError,
+    NotFoundError,
+    UnsafeMutationError,
+)
 from atla.expressions import (
     BetweenOp,
     BinaryOp,
@@ -31,10 +37,23 @@ from atla.expressions import (
     raw_sql,
     sum_,
 )
+from atla.query import (
+    BaseDeleteQuery,
+    BaseInsertQuery,
+    BaseSelectQuery,
+    BaseUpdateQuery,
+)
+from atla.types import UNSET, UnsetType
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "UNSET",
+    "AtlaError",
+    "BaseDeleteQuery",
+    "BaseInsertQuery",
+    "BaseSelectQuery",
+    "BaseUpdateQuery",
     "BetweenOp",
     "BinaryOp",
     "CockroachDialect",
@@ -45,7 +64,9 @@ __all__ = [
     "InOp",
     "Literal",
     "LogicalOp",
+    "MultipleResultsError",
     "MySQLDialect",
+    "NotFoundError",
     "OrderByClause",
     "PostgresDialect",
     "RawSQL",
@@ -53,6 +74,8 @@ __all__ = [
     "SQLiteDialect",
     "TiDBDialect",
     "UnaryOp",
+    "UnsafeMutationError",
+    "UnsetType",
     "__version__",
     "and_",
     "avg",
