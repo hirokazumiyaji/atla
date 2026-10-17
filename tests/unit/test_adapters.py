@@ -201,3 +201,15 @@ async def test_asyncmy_adapter_with_mocks() -> None:
 
     assert conn.rolled_back >= 1
     assert any("SAVEPOINT" in sql for sql in conn.cursor_obj.statements)
+    assert any("RELEASE SAVEPOINT" in sql for sql in conn.cursor_obj.statements)
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_pool_blocks_outer_ops_during_transaction() -> None:
+    conn = FakeAsyncmyConnection()
+    pool = FakeAsyncmyPool(conn)
+    adapter = AsyncmyAdapter(pool, dialect=MySQLDialect())
+    async with adapter.transaction() as tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await adapter.fetch_all("SELECT 1")
+        assert await tx.fetch_all("SELECT 1") == [(1, "alice")]

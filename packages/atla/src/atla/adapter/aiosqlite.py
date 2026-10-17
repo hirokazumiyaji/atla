@@ -79,11 +79,15 @@ class AiosqliteAdapter:
         await self._ensure_configured()
         await self._conn.executemany(sql, [tuple(params) for params in params_seq])
 
+    async def _exec_control(self, sql: str) -> None:
+        cursor = await self._conn.execute(sql)
+        await cursor.close()
+
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AiosqliteAdapter]:
         await self._ensure_configured()
         if self._depth == 0:
-            await self._conn.execute("BEGIN")
+            await self._exec_control("BEGIN")
             pinned = AiosqliteAdapter(
                 self._conn,
                 dialect=self._dialect,
@@ -94,14 +98,14 @@ class AiosqliteAdapter:
             try:
                 yield pinned
             except BaseException:
-                await self._conn.execute("ROLLBACK")
+                await self._exec_control("ROLLBACK")
                 raise
             else:
-                await self._conn.execute("COMMIT")
+                await self._exec_control("COMMIT")
             return
 
         savepoint = f"atla_sp_{self._depth}"
-        await self._conn.execute(f"SAVEPOINT {savepoint}")
+        await self._exec_control(f"SAVEPOINT {savepoint}")
         pinned = AiosqliteAdapter(
             self._conn,
             dialect=self._dialect,
@@ -112,7 +116,8 @@ class AiosqliteAdapter:
         try:
             yield pinned
         except BaseException:
-            await self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            await self._exec_control(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
             raise
         else:
-            await self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")

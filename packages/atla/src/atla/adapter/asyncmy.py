@@ -12,7 +12,7 @@ from atla.dialect import Dialect, MySQLDialect, TiDBDialect
 class AsyncmyAdapter:
     """Adapter over ``asyncmy`` pool or connection using tuple cursors."""
 
-    __slots__ = ("_conn", "_depth", "_dialect", "_pool", "_savepoint")
+    __slots__ = ("_conn", "_depth", "_dialect", "_pool", "_savepoint", "_tx_active")
 
     def __init__(
         self,
@@ -28,6 +28,7 @@ class AsyncmyAdapter:
             raise TypeError(msg)
         self._depth = _depth
         self._savepoint = _savepoint
+        self._tx_active = False
         if hasattr(pool_or_conn, "acquire") and not hasattr(pool_or_conn, "cursor"):
             self._pool = pool_or_conn
             self._conn: Any | None = None
@@ -40,6 +41,12 @@ class AsyncmyAdapter:
         return self._dialect
 
     async def _acquire(self) -> Any:
+        if self._tx_active:
+            msg = (
+                "connection is checked out for an active transaction; "
+                "use the adapter yielded by transaction()"
+            )
+            raise RuntimeError(msg)
         if self._conn is not None:
             return self._conn
         assert self._pool is not None
@@ -93,6 +100,7 @@ class AsyncmyAdapter:
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
         if self._pool is not None and self._conn is None:
+            self._tx_active = True
             conn = await self._pool.acquire()
             try:
                 await conn.begin()
@@ -106,6 +114,7 @@ class AsyncmyAdapter:
                     await conn.commit()
             finally:
                 await self._pool.release(conn)
+                self._tx_active = False
             return
 
         assert self._conn is not None
@@ -135,6 +144,7 @@ class AsyncmyAdapter:
         except BaseException:
             async with self._conn.cursor() as cursor:
                 await cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                await cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         else:
             async with self._conn.cursor() as cursor:
