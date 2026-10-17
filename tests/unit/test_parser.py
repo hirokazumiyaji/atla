@@ -149,7 +149,7 @@ def test_parse_foreign_key_nested_ref_object() -> None:
     fk = schema.tables[0].foreign_keys[0]
     assert fk.symbol == "posts_user_fk"
     assert fk.columns == ("user_id",)
-    assert fk.ref_table == "users"
+    assert fk.ref_table == "public.users"
     assert fk.ref_columns == ("id",)
 
 

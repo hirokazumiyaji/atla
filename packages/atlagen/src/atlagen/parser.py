@@ -379,21 +379,30 @@ def _extract_ref_table(raw_fk: JsonDict, ref_obj: JsonDict | None = None) -> str
 
 def _table_name_from_value(value: object) -> str:
     if isinstance(value, str) and value:
-        return value.rsplit(".", 1)[-1]
+        # Preserve schema-qualified names (e.g. "other.users").
+        return value
     value_obj = _as_dict(value)
     if value_obj is None:
         return ""
     name = value_obj.get("name")
     if isinstance(name, str) and name:
-        return name
-    # Nested schema-qualified table objects: {"schema": {...}, "name": "users"}
+        schema_prefix = _schema_name_from_value(value_obj.get("schema"))
+        return f"{schema_prefix}.{name}" if schema_prefix else name
+    # Nested table objects: {"table": {"name": "users", "schema": {...}}}
     nested = value_obj.get("table")
-    nested_obj = _as_dict(nested)
-    if nested_obj is not None:
-        nested_name = nested_obj.get("name")
-        if isinstance(nested_name, str) and nested_name:
-            return nested_name
+    if nested is not None:
+        return _table_name_from_value(nested)
     return ""
+
+
+def _schema_name_from_value(value: object) -> str:
+    if isinstance(value, str) and value:
+        return value
+    value_obj = _as_dict(value)
+    if value_obj is None:
+        return ""
+    name = value_obj.get("name")
+    return name if isinstance(name, str) else ""
 
 
 def _parse_index(raw_index: JsonDict) -> IndexIR | None:
