@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, NoReturn, cast
 
 
@@ -147,14 +147,25 @@ class Column[T](Expr[T]):
     ``__eq__`` / ``__ne__`` return SQL predicates, so equality is not
     identity-based. Hashing uses object identity (``__hash__ = object.__hash__``)
     so columns remain usable as ``set`` / ``dict`` keys by descriptor identity.
+
+    Optional ``decoder`` applies the same row codec used by ``Record._from_row``
+    when the column is projected via ``select()``.
     """
 
-    __slots__ = ("alias", "name", "table")
+    __slots__ = ("alias", "decoder", "name", "table")
 
-    def __init__(self, table: str, name: str, alias: str | None = None) -> None:
+    def __init__(
+        self,
+        table: str,
+        name: str,
+        alias: str | None = None,
+        *,
+        decoder: Callable[[Any], Any] | None = None,
+    ) -> None:
         self.table = table
         self.name = name
         self.alias = alias
+        self.decoder = decoder
 
     # Identity hash: ``__eq__`` builds SQL, so value-equality hashing is undefined.
     __hash__ = object.__hash__

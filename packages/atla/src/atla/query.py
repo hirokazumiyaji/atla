@@ -210,23 +210,64 @@ class BaseSelectQuery[RecordT]:
         )
 
     @overload
-    def select[T](self, c0: Column[T]) -> ProjectedSelectQuery[T]: ...
+    def select[T](self, c0: Expr[T]) -> ProjectedSelectQuery[T]: ...
 
     @overload
-    def select[T1, T2](self, c0: Column[T1], c1: Column[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+    def select[T1, T2](self, c0: Expr[T1], c1: Expr[T2]) -> ProjectedSelectQuery[T1, T2]: ...
 
     @overload
     def select[T1, T2, T3](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3]
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3]
     ) -> ProjectedSelectQuery[T1, T2, T3]: ...
 
     @overload
     def select[T1, T2, T3, T4](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3], c3: Column[T4]
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4]
     ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
 
-    def select(self, *columns: Column[Any]) -> Any:  # type: ignore[misc]
-        """Project specific columns as ``list[tuple[...]]`` (TypeVarTuple overloads)."""
+    @overload
+    def select[T1, T2, T3, T4, T5](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4], c4: Expr[T5]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7, T8](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+        c7: Expr[T8],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7, T8]: ...
+
+    def select(self, *columns: Expr[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns/expressions as ``list[tuple[...]]``."""
         if not columns:
             msg = "select() requires at least one column"
             raise ValueError(msg)
@@ -628,6 +669,42 @@ class JoinedSelectQuery[*Ts]:
 
     def offset(self, n: int) -> JoinedSelectQuery[*Ts]:
         return self._clone(offset=n, replace_offset=True)
+
+    @overload
+    def select[T](self, c0: Expr[T]) -> ProjectedSelectQuery[T]: ...
+
+    @overload
+    def select[T1, T2](self, c0: Expr[T1], c1: Expr[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+
+    @overload
+    def select[T1, T2, T3](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3]
+    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
+
+    @overload
+    def select[T1, T2, T3, T4](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
+
+    def select(self, *columns: Expr[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns/expressions from a joined query."""
+        if not columns:
+            msg = "select() requires at least one column"
+            raise ValueError(msg)
+        join_parts = tuple(
+            (f" {join.kind} JOIN {join.target_sql} ON ", join.on) for join in self._joins
+        )
+        query: ProjectedSelectQuery[Any] = ProjectedSelectQuery(
+            self._adapter,
+            from_sql=self._from_sql,
+            columns=columns,
+            where=self._where,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+            join_parts=join_parts,
+        )
+        return query
 
     def join[OtherT](
         self,

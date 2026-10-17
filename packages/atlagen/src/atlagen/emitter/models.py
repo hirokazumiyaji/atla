@@ -85,6 +85,17 @@ def _row_expr(column: ColumnIR, index: int) -> str:
     return f"({expr})"
 
 
+def _decoder_lambda(column: ColumnIR) -> str | None:
+    if column.row_codec is None:
+        return None
+    expr = column.row_codec.replace("{value}", "v")
+    if column.nullable:
+        body = f"None if v is None else ({expr})"
+    else:
+        body = expr
+    return f"(lambda v: {body})"
+
+
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
     slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
     column_names = ", ".join(repr(column.name) for column in table.columns)
@@ -104,10 +115,17 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
         f"        t = alias or {table.name.rsplit('.', 1)[-1]!r}",
     ]
     for column in table.columns:
-        lines.append(
-            f"        self.{column.attr_name}: Column[{column.python_type}] = "
-            f"Column(t, {column.name!r})"
-        )
+        decoder = _decoder_lambda(column)
+        if decoder is None:
+            lines.append(
+                f"        self.{column.attr_name}: Column[{column.python_type}] = "
+                f"Column(t, {column.name!r})"
+            )
+        else:
+            lines.append(
+                f"        self.{column.attr_name}: Column[{column.python_type}] = "
+                f"Column(t, {column.name!r}, decoder={decoder})"
+            )
     lines.extend(
         [
             "",
