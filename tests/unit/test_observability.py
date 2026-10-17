@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -133,8 +133,8 @@ async def test_otel_metrics_omit_sql_and_params_from_labels() -> None:
 
     inner = FakeAdapter()
     adapter = OTelAdapter(inner, tracer=tracer, capture_parameters=True)
-    adapter._duration = _RecordingHistogram()  # pyright: ignore[reportAttributeAccessIssue]
-    adapter._ops = _RecordingCounter()  # pyright: ignore[reportAttributeAccessIssue]
+    cast(Any, adapter)._duration = _RecordingHistogram()
+    cast(Any, adapter)._ops = _RecordingCounter()
 
     await adapter.fetch_all(
         'SELECT id FROM "users" WHERE email = $1',
