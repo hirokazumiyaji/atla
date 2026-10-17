@@ -362,7 +362,7 @@ class ProjectedSelectQuery[*Ts]:
         values: list[Any] = []
         for index, decoder in enumerate(self._decoders):
             value = row[index]
-            values.append(decoder(value) if decoder is not None else value)
+            values.append(value if decoder is None or value is None else decoder(value))
         return cast(tuple[*Ts], tuple(values))
 
     async def all(self) -> list[tuple[*Ts]]:
