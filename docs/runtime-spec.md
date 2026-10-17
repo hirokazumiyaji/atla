@@ -6,7 +6,7 @@ This document specifies the internal module design of the zero-dependency runtim
 
 ## 1. Design Principles
 
-1. **Zero External Dependencies (`dependencies = []`)**: Relies exclusively on the Python 3.11+ standard library.
+1. **Zero External Dependencies (`dependencies = []`)**: Relies exclusively on the Python 3.12+ standard library.
 2. **Mandatory `__slots__` on Every Class**: Eliminates per-instance `__dict__` allocation to maximize attribute access speed and minimize memory footprint.
 3. **Immutability**: All expression nodes and query builders are immutable and safe to reuse or branch across queries without side effects.
 4. **End-to-End Type Parameter Propagation**: Expression nodes carry their evaluated Python result type `T` via `Expr[T]`, preserving strict type inference under Pyright and Mypy.
