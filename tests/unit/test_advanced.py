@@ -146,3 +146,11 @@ async def test_projected_select_types_and_sql() -> None:
     assert rows == [(1, "a@example.com")]
     sql = adapter.calls[0][1]
     assert sql.startswith('SELECT "users"."id", "users"."email" FROM "users"')
+
+
+@pytest.mark.asyncio
+async def test_projected_select_quotes_reserved_column_names() -> None:
+    adapter = FakeAdapter()
+    order_col: Column[str] = Column("users", "order")
+    sql, _params = UserQuery(adapter).select(order_col).to_sql()
+    assert sql.startswith('SELECT "users"."order" FROM "users"')
