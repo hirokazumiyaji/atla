@@ -28,6 +28,7 @@ def test_contains_escapes_like_wildcards() -> None:
     assert isinstance(expr.right, Literal)
     assert expr.right.value == f"%{escape_like('100%_real!x')}%"
     assert expr.escape == "!"
+    assert expr.op == "LIKE"
 
     dialect = PostgresDialect()
     compiler = SQLCompiler(dialect)

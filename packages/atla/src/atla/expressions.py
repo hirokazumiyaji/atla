@@ -100,22 +100,33 @@ class Literal[T](Expr[T]):
 class BinaryOp[T](Expr[T]):
     """Binary operation node (comparison, arithmetic, LIKE, ...)."""
 
+    __slots__ = ("left", "op", "right")
+
+    def __init__(self, op: str, left: Expr[Any], right: Expr[Any]) -> None:
+        self.op = _validate_sql_op(op)
+        self.left = left
+        self.right = right
+
+
+class LikeOp(Expr[bool]):
+    """LIKE / ILIKE with a mandatory ESCAPE clause and a pre-escaped pattern."""
+
     __slots__ = ("escape", "left", "op", "right")
 
     def __init__(
         self,
-        op: str,
+        op: TypingLiteral["LIKE", "ILIKE"],
         left: Expr[Any],
-        right: Expr[Any],
+        pattern: str,
         *,
-        escape: str | None = None,
+        escape: str = _LIKE_ESCAPE,
     ) -> None:
-        self.op = _validate_sql_op(op)
-        self.left = left
-        self.right = right
-        if escape is not None and len(escape) != 1:
-            msg = f"LIKE ESCAPE must be a single character, got {escape!r}"
+        if len(escape) != 1 or "\x00" in escape:
+            msg = f"LIKE ESCAPE must be a single non-NUL character, got {escape!r}"
             raise ValueError(msg)
+        self.op = op
+        self.left = left
+        self.right = Literal(pattern)
         self.escape = escape
 
 
@@ -297,59 +308,29 @@ class Column[T](Expr[T]):
         """SQL ``ILIKE`` / lowercased ``LIKE``; same escape rules as :meth:`like`."""
         return BinaryOp("ILIKE", self, Literal(pattern))
 
-    def contains(self, substring: str) -> BinaryOp[bool]:
+    def contains(self, substring: str) -> LikeOp:
         """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return BinaryOp(
-            "LIKE",
-            self,
-            Literal(f"%{escape_like(substring)}%"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("LIKE", self, f"%{escape_like(substring)}%")
 
-    def starts_with(self, prefix: str) -> BinaryOp[bool]:
+    def starts_with(self, prefix: str) -> LikeOp:
         """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return BinaryOp(
-            "LIKE",
-            self,
-            Literal(f"{escape_like(prefix)}%"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("LIKE", self, f"{escape_like(prefix)}%")
 
-    def ends_with(self, suffix: str) -> BinaryOp[bool]:
+    def ends_with(self, suffix: str) -> LikeOp:
         """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
-        return BinaryOp(
-            "LIKE",
-            self,
-            Literal(f"%{escape_like(suffix)}"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("LIKE", self, f"%{escape_like(suffix)}")
 
-    def icontains(self, substring: str) -> BinaryOp[bool]:
+    def icontains(self, substring: str) -> LikeOp:
         """Case-insensitive substring match (``ILIKE`` / lowercased ``LIKE``)."""
-        return BinaryOp(
-            "ILIKE",
-            self,
-            Literal(f"%{escape_like(substring)}%"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("ILIKE", self, f"%{escape_like(substring)}%")
 
-    def istarts_with(self, prefix: str) -> BinaryOp[bool]:
+    def istarts_with(self, prefix: str) -> LikeOp:
         """Case-insensitive prefix match."""
-        return BinaryOp(
-            "ILIKE",
-            self,
-            Literal(f"{escape_like(prefix)}%"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("ILIKE", self, f"{escape_like(prefix)}%")
 
-    def iends_with(self, suffix: str) -> BinaryOp[bool]:
+    def iends_with(self, suffix: str) -> LikeOp:
         """Case-insensitive suffix match."""
-        return BinaryOp(
-            "ILIKE",
-            self,
-            Literal(f"%{escape_like(suffix)}"),
-            escape=_LIKE_ESCAPE,
-        )
+        return LikeOp("ILIKE", self, f"%{escape_like(suffix)}")
 
     # --- Arithmetic (e.g. UPDATE User.age + 1) ---
 

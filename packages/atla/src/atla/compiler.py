@@ -13,6 +13,7 @@ from atla.expressions import (
     Expr,
     FuncCall,
     InOp,
+    LikeOp,
     Literal,
     LogicalOp,
     OrderByClause,
@@ -47,6 +48,9 @@ class SQLCompiler:
             return
         if isinstance(node, BinaryOp):
             self._visit_binary(node)
+            return
+        if isinstance(node, LikeOp):
+            self._visit_like(node)
             return
         if isinstance(node, UnaryOp):
             self._visit_unary(node)
@@ -111,20 +115,23 @@ class SQLCompiler:
             self.write(") LIKE LOWER(")
             self.visit(node.right)
             self.write(")")
-            self._write_like_escape(node.escape)
             return
         self.visit(node.left)
         self.write(f" {node.op} ")
         self.visit(node.right)
-        self._write_like_escape(node.escape)
 
-    def _write_like_escape(self, escape: str | None) -> None:
-        if escape is None:
-            return
-        if len(escape) != 1 or "\x00" in escape:
-            msg = f"LIKE ESCAPE must be a single non-NUL character, got {escape!r}"
-            raise ValueError(msg)
-        lit = escape.replace("'", "''")
+    def _visit_like(self, node: LikeOp) -> None:
+        if node.op == "ILIKE" and not self.dialect.supports_ilike:
+            self.write("LOWER(")
+            self.visit(node.left)
+            self.write(") LIKE LOWER(")
+            self.visit(node.right)
+            self.write(")")
+        else:
+            self.visit(node.left)
+            self.write(f" {node.op} ")
+            self.visit(node.right)
+        lit = node.escape.replace("'", "''")
         self.write(f" ESCAPE '{lit}'")
 
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
@@ -133,7 +140,9 @@ class SQLCompiler:
             self.write(f" {node.op}")
             return
         self.write(node.op)
-        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, BetweenOp, InOp))
+        needs_parens = isinstance(
+            node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp)
+        )
         if needs_parens:
             self.write("(")
             self.visit(node.operand)
