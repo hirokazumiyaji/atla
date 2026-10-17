@@ -107,7 +107,14 @@ class AsyncmyAdapter:
                 self._tx_active = False
                 raise
             try:
-                await active.begin()
+                try:
+                    await active.begin()
+                except BaseException:
+                    try:
+                        await active.rollback()
+                    except BaseException:
+                        pass
+                    raise
                 pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
                 try:
                     yield pinned
@@ -117,8 +124,10 @@ class AsyncmyAdapter:
                 else:
                     await active.commit()
             finally:
-                await self._pool.release(active)
-                self._tx_active = False
+                try:
+                    await self._pool.release(active)
+                finally:
+                    self._tx_active = False
             return
 
         assert self._conn is not None
