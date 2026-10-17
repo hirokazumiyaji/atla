@@ -342,6 +342,7 @@ class Column[T](Expr[T]):
         self.name = name
         self.alias = alias
 
+
 def _flatten_logical(op: str, clauses: tuple[Expr[bool], ...]) -> tuple[Expr[bool], ...]:
     flat: list[Expr[bool]] = []
     for clause in clauses:
