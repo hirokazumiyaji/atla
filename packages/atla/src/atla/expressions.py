@@ -2,14 +2,59 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any, NoReturn, cast
+from typing import Literal as TypingLiteral
+
+OrderDirection = TypingLiteral["ASC", "DESC"]
+NullsPosition = TypingLiteral["FIRST", "LAST"]
+
+_FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_UNSAFE_OP_RE = re.compile(r"[\x00;\n\r]|--|/\*")
 
 
 def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
     if isinstance(value, Expr):
         return cast(Expr[T], value)
     return Literal(value)
+
+
+def _validate_sql_op(op: str) -> str:
+    if not op or _UNSAFE_OP_RE.search(op):
+        msg = f"invalid SQL operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_func_name(name: str) -> str:
+    if not _FUNC_NAME_RE.fullmatch(name):
+        msg = f"invalid SQL function name: {name!r}"
+        raise ValueError(msg)
+    return name
+
+
+def _normalize_order_direction(direction: str) -> OrderDirection:
+    normalized = direction.upper()
+    if normalized not in {"ASC", "DESC"}:
+        msg = f"ORDER BY direction must be ASC or DESC, got {direction!r}"
+        raise ValueError(msg)
+    return cast(OrderDirection, normalized)
+
+
+def _normalize_nulls(nulls: str | None) -> NullsPosition | None:
+    if nulls is None:
+        return None
+    normalized = nulls.upper()
+    if normalized not in {"FIRST", "LAST"}:
+        msg = f"ORDER BY nulls must be FIRST or LAST, got {nulls!r}"
+        raise ValueError(msg)
+    return cast(NullsPosition, normalized)
+
+
+def escape_like(value: str) -> str:
+    """Escape ``\\``, ``%``, and ``_`` for use inside a LIKE pattern with ESCAPE '\\'."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class Expr[T_co]:
@@ -46,12 +91,23 @@ class Literal[T](Expr[T]):
 class BinaryOp[T](Expr[T]):
     """Binary operation node (comparison, arithmetic, LIKE, ...)."""
 
-    __slots__ = ("left", "op", "right")
+    __slots__ = ("escape", "left", "op", "right")
 
-    def __init__(self, op: str, left: Expr[Any], right: Expr[Any]) -> None:
-        self.op = op
+    def __init__(
+        self,
+        op: str,
+        left: Expr[Any],
+        right: Expr[Any],
+        *,
+        escape: str | None = None,
+    ) -> None:
+        self.op = _validate_sql_op(op)
         self.left = left
         self.right = right
+        if escape is not None and len(escape) != 1:
+            msg = f"LIKE ESCAPE must be a single character, got {escape!r}"
+            raise ValueError(msg)
+        self.escape = escape
 
 
 class UnaryOp[T](Expr[T]):
@@ -60,7 +116,7 @@ class UnaryOp[T](Expr[T]):
     __slots__ = ("op", "operand", "postfix")
 
     def __init__(self, op: str, operand: Expr[Any], *, postfix: bool = False) -> None:
-        self.op = op
+        self.op = _validate_sql_op(op)
         self.operand = operand
         self.postfix = postfix
 
@@ -71,7 +127,7 @@ class LogicalOp(Expr[bool]):
     __slots__ = ("clauses", "op")
 
     def __init__(self, op: str, clauses: tuple[Expr[bool], ...]) -> None:
-        self.op = op
+        self.op = _validate_sql_op(op)
         self.clauses = clauses
 
 
@@ -109,7 +165,7 @@ class FuncCall[T](Expr[T]):
         *,
         distinct: bool = False,
     ) -> None:
-        self.name = name
+        self.name = _validate_func_name(name)
         self.args = args
         self.distinct = distinct
 
@@ -137,8 +193,8 @@ class OrderByClause:
         nulls: str | None = None,
     ) -> None:
         self.expr = expr
-        self.direction = direction
-        self.nulls = nulls
+        self.direction = _normalize_order_direction(direction)
+        self.nulls = _normalize_nulls(nulls)
 
 
 class Column[T](Expr[T]):
@@ -233,20 +289,58 @@ class Column[T](Expr[T]):
         return BinaryOp("ILIKE", self, Literal(pattern))
 
     def contains(self, substring: str) -> BinaryOp[bool]:
-        """Substring match via ``LIKE '%…%'``.
-
-        ``%`` and ``_`` in *substring* keep SQL LIKE wildcard meaning; escape
-        them (or use :meth:`like` with an ``ESCAPE`` clause) before calling.
-        """
-        return self.like(f"%{substring}%")
+        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        return BinaryOp(
+            "LIKE",
+            self,
+            Literal(f"%{escape_like(substring)}%"),
+            escape="\\",
+        )
 
     def starts_with(self, prefix: str) -> BinaryOp[bool]:
-        """Prefix match via ``LIKE '…%'``; see :meth:`contains` for wildcard escaping."""
-        return self.like(f"{prefix}%")
+        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        return BinaryOp(
+            "LIKE",
+            self,
+            Literal(f"{escape_like(prefix)}%"),
+            escape="\\",
+        )
 
     def ends_with(self, suffix: str) -> BinaryOp[bool]:
-        """Suffix match via ``LIKE '%…'``; see :meth:`contains` for wildcard escaping."""
-        return self.like(f"%{suffix}")
+        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '\\'``."""
+        return BinaryOp(
+            "LIKE",
+            self,
+            Literal(f"%{escape_like(suffix)}"),
+            escape="\\",
+        )
+
+    def icontains(self, substring: str) -> BinaryOp[bool]:
+        """Case-insensitive substring match (``ILIKE`` / lowercased ``LIKE``)."""
+        return BinaryOp(
+            "ILIKE",
+            self,
+            Literal(f"%{escape_like(substring)}%"),
+            escape="\\",
+        )
+
+    def istarts_with(self, prefix: str) -> BinaryOp[bool]:
+        """Case-insensitive prefix match."""
+        return BinaryOp(
+            "ILIKE",
+            self,
+            Literal(f"{escape_like(prefix)}%"),
+            escape="\\",
+        )
+
+    def iends_with(self, suffix: str) -> BinaryOp[bool]:
+        """Case-insensitive suffix match."""
+        return BinaryOp(
+            "ILIKE",
+            self,
+            Literal(f"%{escape_like(suffix)}"),
+            escape="\\",
+        )
 
     # --- Arithmetic (e.g. UPDATE User.age + 1) ---
 
@@ -261,10 +355,10 @@ class Column[T](Expr[T]):
 
     # --- Ordering ---
 
-    def asc(self, *, nulls: str | None = None) -> OrderByClause:
+    def asc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
         return OrderByClause(self, direction="ASC", nulls=nulls)
 
-    def desc(self, *, nulls: str | None = None) -> OrderByClause:
+    def desc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
         return OrderByClause(self, direction="DESC", nulls=nulls)
 
 

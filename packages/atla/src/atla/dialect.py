@@ -47,6 +47,12 @@ class Dialect:
             raise TypeError(msg)
 
     def quote(self, ident: str) -> str:
+        if not ident:
+            msg = "identifier must not be empty"
+            raise ValueError(msg)
+        if "\x00" in ident:
+            msg = "identifier must not contain NUL bytes"
+            raise ValueError(msg)
         q = self.quote_char
         escaped = ident.replace(q, q + q)
         return f"{q}{escaped}{q}"

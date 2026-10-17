@@ -70,6 +70,12 @@ class SQLCompiler:
         raise TypeError(msg)
 
     def visit_order_by(self, clause: OrderByClause) -> None:
+        if clause.direction not in {"ASC", "DESC"}:
+            msg = f"ORDER BY direction must be ASC or DESC, got {clause.direction!r}"
+            raise ValueError(msg)
+        if clause.nulls is not None and clause.nulls not in {"FIRST", "LAST"}:
+            msg = f"ORDER BY nulls must be FIRST or LAST, got {clause.nulls!r}"
+            raise ValueError(msg)
         if clause.nulls is not None and self.dialect.name in {"mysql", "tidb"}:
             msg = (
                 f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
@@ -105,10 +111,21 @@ class SQLCompiler:
             self.write(") LIKE LOWER(")
             self.visit(node.right)
             self.write(")")
+            self._write_like_escape(node.escape)
             return
         self.visit(node.left)
         self.write(f" {node.op} ")
         self.visit(node.right)
+        self._write_like_escape(node.escape)
+
+    def _write_like_escape(self, escape: str | None) -> None:
+        if escape is None:
+            return
+        if len(escape) != 1 or "\x00" in escape:
+            msg = f"LIKE ESCAPE must be a single non-NUL character, got {escape!r}"
+            raise ValueError(msg)
+        lit = escape.replace("'", "''")
+        self.write(f" ESCAPE '{lit}'")
 
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
         if node.postfix:

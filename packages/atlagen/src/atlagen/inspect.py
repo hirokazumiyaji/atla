@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import TextIO
 
+# user:password@ → user:***@  (also covers URL-encoded passwords without @)
+_CREDENTIAL_RE = re.compile(r"(://[^:/?#\s]+:)([^@/\s]*)(@)")
+
 
 class InspectError(RuntimeError):
     """Raised when schema input cannot be loaded."""
+
+
+def mask_credentials(text: str) -> str:
+    """Replace DSN passwords with ``***`` so logs/errors never leak secrets."""
+    return _CREDENTIAL_RE.sub(r"\1***\3", text)
 
 
 def load_schema_json(
@@ -62,10 +71,12 @@ def _inspect_with_atlas(schema: str, *, dev_url: str | None) -> str:
     except subprocess.TimeoutExpired as exc:
         raise InspectError("atlas schema inspect timed out after 120s") from exc
     except OSError as exc:
-        raise InspectError(f"failed to execute atlas: {exc}") from exc
+        raise InspectError(f"failed to execute atlas: {mask_credentials(str(exc))}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
-        raise InspectError(f"atlas schema inspect failed (exit {completed.returncode}): {detail}")
+        raise InspectError(
+            mask_credentials(f"atlas schema inspect failed (exit {completed.returncode}): {detail}")
+        )
     text = completed.stdout
     if not text.strip():
         raise InspectError("atlas schema inspect returned empty output")
