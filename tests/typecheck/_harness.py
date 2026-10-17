@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -26,6 +27,16 @@ def run_cmd(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def tool_cmd(tool: str) -> list[str]:
+    """Resolve pyright/mypy through the workspace toolchain when possible."""
+    venv_bin = ROOT / ".venv" / "bin" / tool
+    if venv_bin.is_file():
+        return [str(venv_bin)]
+    if shutil.which("uv") is not None:
+        return ["uv", "run", tool]
+    return [sys.executable, "-m", tool]
 
 
 def generate_package(out_dir: Path, *, schema: Path, dialect: str) -> None:
@@ -88,7 +99,7 @@ def write_typecheck_project(work: Path, *, package_dir: Path, sources: list[Path
 
 def run_pyright(work: Path, *paths: Path) -> subprocess.CompletedProcess[str]:
     return run_cmd(
-        [sys.executable, "-m", "pyright", "--project", str(work), *[str(p) for p in paths]],
+        [*tool_cmd("pyright"), "--project", str(work), *[str(p) for p in paths]],
         cwd=work,
     )
 
@@ -96,9 +107,7 @@ def run_pyright(work: Path, *paths: Path) -> subprocess.CompletedProcess[str]:
 def run_mypy(work: Path, *paths: Path) -> subprocess.CompletedProcess[str]:
     return run_cmd(
         [
-            sys.executable,
-            "-m",
-            "mypy",
+            *tool_cmd("mypy"),
             "--config-file",
             str(work / "mypy.ini"),
             *[str(p) for p in paths],

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+from typecheck._harness import ROOT, run_cmd, tool_cmd, write_text
 
 FIXTURE_SOURCE = '''\
 """Negative type fixture: Column[int] compared to str must fail static checks."""
@@ -28,21 +26,10 @@ _need_bool_expr(age.eq("20"))
 '''
 
 
-def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
 def test_pyright_rejects_column_int_eq_str() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        fixture = Path(tmp) / "column_eq_wrong_type.py"
-        fixture.write_text(FIXTURE_SOURCE)
-        result = _run([sys.executable, "-m", "pyright", str(fixture)], cwd=ROOT)
+        fixture = write_text(Path(tmp) / "column_eq_wrong_type.py", FIXTURE_SOURCE)
+        result = run_cmd([*tool_cmd("pyright"), str(fixture)], cwd=ROOT)
     assert result.returncode != 0, result.stdout + result.stderr
     combined = result.stdout + result.stderr
     assert "bool" in combined.lower() or "eq" in combined.lower()
@@ -50,13 +37,10 @@ def test_pyright_rejects_column_int_eq_str() -> None:
 
 def test_mypy_rejects_column_int_eq_str() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        fixture = Path(tmp) / "column_eq_wrong_type.py"
-        fixture.write_text(FIXTURE_SOURCE)
-        result = _run(
+        fixture = write_text(Path(tmp) / "column_eq_wrong_type.py", FIXTURE_SOURCE)
+        result = run_cmd(
             [
-                sys.executable,
-                "-m",
-                "mypy",
+                *tool_cmd("mypy"),
                 "--strict",
                 "--python-version=3.12",
                 str(fixture),
