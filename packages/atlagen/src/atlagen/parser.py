@@ -124,6 +124,13 @@ def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
 def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> None:
     occupied: dict[str, str] = {}
     for enum in enums:
+        prior = occupied.get(enum.class_name)
+        if prior is not None:
+            msg = (
+                f"generated enum class {enum.class_name!r} collides between "
+                f"{prior} and enum {enum.name!r}"
+            )
+            raise AtlasParseError(msg)
         occupied[enum.class_name] = f"enum {enum.name!r}"
     for table in tables:
         owners = {

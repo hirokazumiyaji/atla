@@ -78,6 +78,23 @@ def test_collision_raises() -> None:
         parse_atlas_json(schema, dialect="sqlite")
 
 
+def test_duplicate_enum_class_raises() -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "enums": [
+                    {"name": "user_role", "values": ["a", "b"]},
+                    {"name": "UserRole", "values": ["x", "y"]},
+                ],
+                "tables": [],
+            }
+        ]
+    }
+    with pytest.raises(AtlasParseError, match="enum class"):
+        parse_atlas_json(schema, dialect="postgres")
+
+
 def test_invalid_override_rejected() -> None:
     schema = {
         "schemas": [
