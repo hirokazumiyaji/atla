@@ -38,6 +38,16 @@ async def exercise(db: AtlaClient) -> None:
     preloaded = await db.user.with_posts().all()
     assert_type(preloaded, list[tuple[UserRecord, list[PostRecord]]])
 
+    filtered = await (
+        db.user.where(User.id == 1)
+        .with_posts(Post.title.eq("hello"), order_by=[Post.id.asc()])
+        .one()
+    )
+    assert_type(filtered, tuple[UserRecord, list[PostRecord]])
+
+    belongs = await db.post.with_user().all()
+    assert_type(belongs, list[tuple[PostRecord, UserRecord | None]])
+
 
 async def _entry() -> None:
     await exercise(AtlaClient(cast(DBAdapter, object())))

@@ -90,9 +90,6 @@ def write_locking(compiler: SQLCompiler, dialect: Dialect, locking: LockClause |
     if not dialect.supports_for_update:
         msg = f"{dialect.name} does not support FOR UPDATE / FOR SHARE"
         raise ValueError(msg)
-    if locking.mode == "SHARE" and not dialect.supports_for_share:
-        msg = f"{dialect.name} does not support FOR SHARE"
-        raise ValueError(msg)
     if locking.nowait and locking.skip_locked:
         msg = "nowait and skip_locked cannot both be True"
         raise ValueError(msg)
@@ -101,6 +98,13 @@ def write_locking(compiler: SQLCompiler, dialect: Dialect, locking: LockClause |
         raise ValueError(msg)
     if locking.of and not dialect.supports_lock_of:
         msg = f"{dialect.name} does not support FOR UPDATE/SHARE OF"
+        raise ValueError(msg)
+    # TiDB accepts LOCK IN SHARE MODE (ignored) but not FOR SHARE.
+    if locking.mode == "SHARE" and not dialect.supports_for_share:
+        if dialect.name == "tidb":
+            compiler.write(" LOCK IN SHARE MODE")
+            return
+        msg = f"{dialect.name} does not support FOR SHARE"
         raise ValueError(msg)
     compiler.write(" FOR ")
     compiler.write(locking.mode)

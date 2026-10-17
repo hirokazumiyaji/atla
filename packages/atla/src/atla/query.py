@@ -352,16 +352,18 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
     def preload[OtherT](
         self,
         related: TableRef[OtherT],
-        *,
+        *predicates: Expr[bool],
         fk: Column[Any],
         key: Column[Any],
         fk_attr: str,
         key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
     ) -> PreloadSelectQuery[RecordT, OtherT]:
-        """Batch-load ``related`` rows with one ``WHERE fk IN (...)`` follow-up query.
+        """Batch-load related rows (has-many) with one ``WHERE fk IN (...)`` follow-up.
 
         ``fk_attr`` / ``key_attr`` must be the generated Record attribute names
-        (from atlagen), not re-derived SQL column names.
+        (from atlagen), not re-derived SQL column names. Extra ``*predicates`` and
+        ``order_by`` apply to the related-table query.
         """
         return PreloadSelectQuery(
             self,
@@ -370,24 +372,105 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             key=key,
             fk_attr=fk_attr,
             key_attr=key_attr,
+            related_where=predicates,
+            related_order_by=tuple(order_by),
         )
 
     def with_[OtherT](
         self,
         related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+    ) -> PreloadSelectQuery[RecordT, OtherT]:
+        """Alias for :meth:`preload` (batch eager loading without N+1 queries)."""
+        return self.preload(
+            related,
+            *predicates,
+            fk=fk,
+            key=key,
+            fk_attr=fk_attr,
+            key_attr=key_attr,
+            order_by=order_by,
+        )
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
         *,
         fk: Column[Any],
         key: Column[Any],
         fk_attr: str,
         key_attr: str,
-    ) -> PreloadSelectQuery[RecordT, OtherT]:
-        """Alias for :meth:`preload` (batch eager loading without N+1 queries)."""
-        return self.preload(
-            related,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[False] = False,
+    ) -> PreloadOneSelectQuery[RecordT, OtherT]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[True],
+    ) -> PreloadOneSelectQuery[RecordT, OtherT | None]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        predicate: Expr[bool],
+        /,
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> PreloadOneSelectQuery[RecordT, OtherT | None]: ...
+
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> PreloadOneSelectQuery[RecordT, OtherT] | PreloadOneSelectQuery[RecordT, OtherT | None]:
+        """Batch-load a belongs-to parent via ``WHERE parent.pk IN (...)``.
+
+        ``fk`` / ``fk_attr`` belong to *this* table; ``key`` / ``key_attr`` belong
+        to ``related``. When ``nullable`` is true, missing parents hydrate as
+        ``None``. Parent-side ``predicates`` can filter out a real parent, so the
+        result type becomes optional whenever predicates are supplied.
+        """
+        # Predicates may exclude the parent row; treat as optional so callers
+        # get ``None`` instead of a NotFoundError / illegal ``ParentT`` hole.
+        effective_nullable = nullable or bool(predicates)
+        return PreloadOneSelectQuery(
+            self,
+            related=related,
             fk=fk,
             key=key,
             fk_attr=fk_attr,
             key_attr=key_attr,
+            related_where=predicates,
+            related_order_by=tuple(order_by),
+            nullable=effective_nullable,
         )
 
     def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
@@ -1250,10 +1333,31 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         return rows[0]
 
 
-class PreloadSelectQuery[ParentT, ChildT]:
-    """Two-query batch eager loader: parent SELECT + ``WHERE fk IN (...)``."""
+@dataclass(slots=True, frozen=True)
+class _RelationSpec[RelatedT]:
+    """One batch-loaded relation (has-many or belongs-to)."""
 
-    __slots__ = ("_fk", "_fk_attr", "_key", "_key_attr", "_parent", "_related")
+    related: TableRef[RelatedT]
+    fk: Column[Any]
+    key: Column[Any]
+    fk_attr: str
+    key_attr: str
+    related_where: tuple[Expr[bool], ...] = ()
+    related_order_by: tuple[OrderByClause, ...] = ()
+    cardinality: Literal["many", "one"] = "many"
+    nullable: bool = False
+
+
+class PreloadSelectQuery[ParentT, ChildT]:
+    """Two-query batch eager loader: parent SELECT + ``WHERE fk IN (...)`` (has-many).
+
+    ``limit`` / ``offset`` / parent ``order_by`` / ``where`` apply to the *parent*
+    query. Related-row ``order_by`` passed to :meth:`BaseSelectQuery.preload`
+    sorts the follow-up ``IN`` query; that preserves each parent's relative
+    child order without providing per-parent top-N limits.
+    """
+
+    __slots__ = ("_parent", "_spec")
 
     def __init__(
         self,
@@ -1264,75 +1368,339 @@ class PreloadSelectQuery[ParentT, ChildT]:
         key: Column[Any],
         fk_attr: str,
         key_attr: str,
+        related_where: tuple[Expr[bool], ...] = (),
+        related_order_by: tuple[OrderByClause, ...] = (),
     ) -> None:
         self._parent = parent
-        self._related = related
-        self._fk = fk
-        self._key = key
-        self._fk_attr = fk_attr
-        self._key_attr = key_attr
+        self._spec = _RelationSpec(
+            related=related,
+            fk=fk,
+            key=key,
+            fk_attr=fk_attr,
+            key_attr=key_attr,
+            related_where=related_where,
+            related_order_by=related_order_by,
+            cardinality="many",
+        )
+
+    def _clone(self, parent: BaseSelectQuery[ParentT]) -> PreloadSelectQuery[ParentT, ChildT]:
+        spec = self._spec
+        return PreloadSelectQuery(
+            parent,
+            related=spec.related,
+            fk=spec.fk,
+            key=spec.key,
+            fk_attr=spec.fk_attr,
+            key_attr=spec.key_attr,
+            related_where=spec.related_where,
+            related_order_by=spec.related_order_by,
+        )
 
     def where(self, *predicates: Expr[bool]) -> PreloadSelectQuery[ParentT, ChildT]:
-        return PreloadSelectQuery(
-            self._parent.where(*predicates),
-            related=self._related,
-            fk=self._fk,
-            key=self._key,
-            fk_attr=self._fk_attr,
-            key_attr=self._key_attr,
-        )
+        return self._clone(self._parent.where(*predicates))
 
     def order_by(self, *clauses: OrderByClause) -> PreloadSelectQuery[ParentT, ChildT]:
-        return PreloadSelectQuery(
-            self._parent.order_by(*clauses),
-            related=self._related,
-            fk=self._fk,
-            key=self._key,
-            fk_attr=self._fk_attr,
-            key_attr=self._key_attr,
-        )
+        return self._clone(self._parent.order_by(*clauses))
 
     def limit(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
-        return PreloadSelectQuery(
-            self._parent.limit(n),
-            related=self._related,
-            fk=self._fk,
-            key=self._key,
-            fk_attr=self._fk_attr,
-            key_attr=self._key_attr,
-        )
+        return self._clone(self._parent.limit(n))
 
     def offset(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
-        return PreloadSelectQuery(
-            self._parent.offset(n),
-            related=self._related,
-            fk=self._fk,
-            key=self._key,
-            fk_attr=self._fk_attr,
-            key_attr=self._key_attr,
+        return self._clone(self._parent.offset(n))
+
+    def preload[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+    ) -> MultiPreloadSelectQuery[ParentT, list[ChildT], list[OtherT]]:
+        """Chain a second has-many relation onto this preload."""
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                self._spec,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="many",
+                ),
+            ),
         )
 
     async def all(self) -> list[tuple[ParentT, list[ChildT]]]:
         parents = await self._parent.all()
         if not parents:
             return []
-        key_attr = self._key_attr
-        fk_attr = self._fk_attr
-        keys = [getattr(parent, key_attr) for parent in parents]
-        unique_keys = list(dict.fromkeys(keys))
-        children: list[ChildT] = []
-        related_query = _table_select(self._related, self._parent.adapter)
-        for start in range(0, len(unique_keys), _IN_BATCH_SIZE):
-            batch = unique_keys[start : start + _IN_BATCH_SIZE]
-            children.extend(await related_query.where(self._fk.in_(batch)).all())
-        grouped: dict[Any, list[ChildT]] = {key: [] for key in unique_keys}
-        for child in children:
-            grouped.setdefault(getattr(child, fk_attr), []).append(child)
+        grouped = await _load_many(self._parent.adapter, parents, self._spec)
+        key_attr = self._spec.key_attr
         return [(parent, list(grouped.get(getattr(parent, key_attr), []))) for parent in parents]
 
     async def first(self) -> tuple[ParentT, list[ChildT]] | None:
         rows = await self.limit(1).all()
         return rows[0] if rows else None
+
+    async def one(self) -> tuple[ParentT, list[ChildT]]:
+        rows = await self.limit(2).all()
+        if not rows:
+            raise NotFoundError("expected exactly one row, found 0")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
+
+    async def count(self) -> int:
+        return await self._parent.count()
+
+    async def exists(self) -> bool:
+        return await self._parent.limit(1).first() is not None
+
+
+class PreloadOneSelectQuery[ChildT, ParentT]:
+    """Belongs-to batch loader: child SELECT + ``WHERE parent.pk IN (...)``."""
+
+    __slots__ = ("_parent", "_spec")
+
+    def __init__(
+        self,
+        parent: BaseSelectQuery[ChildT],
+        *,
+        related: TableRef[ParentT],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        related_where: tuple[Expr[bool], ...] = (),
+        related_order_by: tuple[OrderByClause, ...] = (),
+        nullable: bool = False,
+    ) -> None:
+        self._parent = parent
+        self._spec = _RelationSpec(
+            related=related,
+            fk=fk,
+            key=key,
+            fk_attr=fk_attr,
+            key_attr=key_attr,
+            related_where=related_where,
+            related_order_by=related_order_by,
+            cardinality="one",
+            nullable=nullable,
+        )
+
+    def _clone(self, parent: BaseSelectQuery[ChildT]) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        spec = self._spec
+        return PreloadOneSelectQuery(
+            parent,
+            related=spec.related,
+            fk=spec.fk,
+            key=spec.key,
+            fk_attr=spec.fk_attr,
+            key_attr=spec.key_attr,
+            related_where=spec.related_where,
+            related_order_by=spec.related_order_by,
+            nullable=spec.nullable,
+        )
+
+    def where(self, *predicates: Expr[bool]) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        return self._clone(self._parent.where(*predicates))
+
+    def order_by(self, *clauses: OrderByClause) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        return self._clone(self._parent.order_by(*clauses))
+
+    def limit(self, n: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        return self._clone(self._parent.limit(n))
+
+    def offset(self, n: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        return self._clone(self._parent.offset(n))
+
+    async def all(self) -> list[tuple[ChildT, ParentT]]:
+        children = await self._parent.all()
+        if not children:
+            return []
+        by_key = await _load_one(self._parent.adapter, children, self._spec)
+        fk_attr = self._spec.fk_attr
+        results: list[tuple[ChildT, ParentT]] = []
+        for child in children:
+            fk_value = getattr(child, fk_attr)
+            if fk_value is None:
+                if not self._spec.nullable:
+                    msg = f"belongs-to foreign key {fk_attr!r} is NULL but relation is non-nullable"
+                    raise NotFoundError(msg)
+                results.append((child, cast(ParentT, None)))
+                continue
+            related = by_key.get(fk_value)
+            if related is None:
+                # Predicates force ``nullable`` at construction time so filtered
+                # misses hydrate as ``None`` with a matching ``ParentT | None`` type.
+                # Unfiltered non-nullable misses remain NotFoundError (dangling FK).
+                if self._spec.nullable:
+                    results.append((child, cast(ParentT, None)))
+                else:
+                    msg = f"missing related row for non-nullable belongs-to {fk_attr}={fk_value!r}"
+                    raise NotFoundError(msg)
+            else:
+                results.append((child, related))
+        return results
+
+    async def first(self) -> tuple[ChildT, ParentT] | None:
+        rows = await self.limit(1).all()
+        return rows[0] if rows else None
+
+    async def one(self) -> tuple[ChildT, ParentT]:
+        rows = await self.limit(2).all()
+        if not rows:
+            raise NotFoundError("expected exactly one row, found 0")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
+
+    async def count(self) -> int:
+        return await self._parent.count()
+
+    async def exists(self) -> bool:
+        return await self._parent.limit(1).first() is not None
+
+
+class MultiPreloadSelectQuery[ParentT, *Ts]:
+    """Parent query with two or more batch-loaded has-many relations."""
+
+    __slots__ = ("_parent", "_specs")
+
+    def __init__(
+        self,
+        parent: BaseSelectQuery[ParentT],
+        specs: tuple[_RelationSpec[Any], ...],
+    ) -> None:
+        self._parent = parent
+        self._specs = specs
+
+    def _clone(self, parent: BaseSelectQuery[ParentT]) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return MultiPreloadSelectQuery(parent, self._specs)
+
+    def where(self, *predicates: Expr[bool]) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return self._clone(self._parent.where(*predicates))
+
+    def order_by(self, *clauses: OrderByClause) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return self._clone(self._parent.order_by(*clauses))
+
+    def limit(self, n: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return self._clone(self._parent.limit(n))
+
+    def offset(self, n: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return self._clone(self._parent.offset(n))
+
+    def preload[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+    ) -> MultiPreloadSelectQuery[ParentT, *Ts, list[OtherT]]:
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                *self._specs,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="many",
+                ),
+            ),
+        )
+
+    async def all(self) -> list[tuple[ParentT, *Ts]]:
+        parents = await self._parent.all()
+        if not parents:
+            return []
+        # Load relations sequentially: the same adapter may be pinned to a
+        # transaction connection, so concurrent gathers on it are unsafe.
+        adapter = self._parent.adapter
+        grouped_list = [await _load_many(adapter, parents, spec) for spec in self._specs]
+        rows: list[tuple[ParentT, *Ts]] = []
+        for parent in parents:
+            parts: list[Any] = [parent]
+            for spec, grouped in zip(self._specs, grouped_list, strict=True):
+                parts.append(list(grouped.get(getattr(parent, spec.key_attr), [])))
+            rows.append(cast(tuple[ParentT, *Ts], tuple(parts)))
+        return rows
+
+    async def first(self) -> tuple[ParentT, *Ts] | None:
+        rows = await self.limit(1).all()
+        return rows[0] if rows else None
+
+    async def one(self) -> tuple[ParentT, *Ts]:
+        rows = await self.limit(2).all()
+        if not rows:
+            raise NotFoundError("expected exactly one row, found 0")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        return rows[0]
+
+    async def count(self) -> int:
+        return await self._parent.count()
+
+    async def exists(self) -> bool:
+        return await self._parent.limit(1).first() is not None
+
+
+async def _load_many[ParentT, RelatedT](
+    adapter: DBAdapter,
+    parents: Sequence[ParentT],
+    spec: _RelationSpec[RelatedT],
+) -> dict[Any, list[RelatedT]]:
+    keys = [getattr(parent, spec.key_attr) for parent in parents]
+    unique_keys = list(dict.fromkeys(key for key in keys if key is not None))
+    grouped: dict[Any, list[RelatedT]] = {key: [] for key in unique_keys}
+    if not unique_keys:
+        return grouped
+    related_query = _table_select(spec.related, adapter)
+    if spec.related_where:
+        related_query = related_query.where(*spec.related_where)
+    if spec.related_order_by:
+        related_query = related_query.order_by(*spec.related_order_by)
+    children: list[RelatedT] = []
+    for start in range(0, len(unique_keys), _IN_BATCH_SIZE):
+        batch = unique_keys[start : start + _IN_BATCH_SIZE]
+        children.extend(await related_query.where(spec.fk.in_(batch)).all())
+    for child in children:
+        grouped.setdefault(getattr(child, spec.fk_attr), []).append(child)
+    return grouped
+
+
+async def _load_one[ChildT, ParentT](
+    adapter: DBAdapter,
+    children: Sequence[ChildT],
+    spec: _RelationSpec[ParentT],
+) -> dict[Any, ParentT]:
+    keys = [getattr(child, spec.fk_attr) for child in children]
+    unique_keys = list(dict.fromkeys(key for key in keys if key is not None))
+    if not unique_keys:
+        return {}
+    related_query = _table_select(spec.related, adapter)
+    if spec.related_where:
+        related_query = related_query.where(*spec.related_where)
+    if spec.related_order_by:
+        related_query = related_query.order_by(*spec.related_order_by)
+    parents: list[ParentT] = []
+    for start in range(0, len(unique_keys), _IN_BATCH_SIZE):
+        batch = unique_keys[start : start + _IN_BATCH_SIZE]
+        parents.extend(await related_query.where(spec.key.in_(batch)).all())
+    return {getattr(parent, spec.key_attr): parent for parent in parents}
 
 
 # Bounded LRU: alias comes from ``table.as_("...")`` and may be user-generated, so an
