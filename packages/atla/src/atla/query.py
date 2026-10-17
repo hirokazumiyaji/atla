@@ -163,6 +163,12 @@ class BaseInsertQuery[RecordT]:
         self._returning = returning
 
     def values(self, **columns: Any) -> Self:
+        """Accumulate INSERT columns.
+
+        ``columns`` keys must be bare SQL identifiers (e.g. ``email``). They are
+        dialect-quoted once in :meth:`to_sql`. Generated repositories pass Python
+        keyword names, never pre-quoted fragments.
+        """
         pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
         return type(self)(
             self._adapter,
@@ -238,6 +244,7 @@ class BaseUpdateQuery[RecordT]:
         self._returning = returning
 
     def _set_values(self, **columns: Any) -> Self:
+        """Accumulate SET columns (bare identifiers; quoted once in ``to_sql``)."""
         pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
         return type(self)(
             self._adapter,
