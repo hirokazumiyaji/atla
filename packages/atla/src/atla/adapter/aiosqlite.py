@@ -113,7 +113,13 @@ class AiosqliteAdapter:
         readonly: bool = False,
         deferrable: bool = False,
     ) -> AsyncGenerator[AiosqliteAdapter]:
-        _ = isolation, readonly, deferrable
+        if readonly:
+            msg = "SQLite does not support readonly transactions"
+            raise ValueError(msg)
+        if deferrable:
+            msg = "SQLite does not support deferrable transactions"
+            raise ValueError(msg)
+        _ = isolation
         await self._ensure_configured()
         if self._depth == 0:
             if self._tx_active:

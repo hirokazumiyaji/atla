@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import random
+import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -11,7 +12,7 @@ from typing import Any, Literal
 from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import Dialect
 
-_WriteKind = Literal["execute", "execute_many", "transaction"]
+_LOCK_CLAUSE = re.compile(r"\bFOR\s+(UPDATE|SHARE)\b", re.IGNORECASE)
 
 
 class RoutingAdapter:
@@ -47,8 +48,7 @@ class RoutingAdapter:
         return self._replicas[next(self._rr)]
 
     def _read_target(self, sql: str) -> DBAdapter:
-        upper = sql.upper()
-        if " FOR UPDATE" in upper or " FOR SHARE" in upper:
+        if _LOCK_CLAUSE.search(sql):
             return self._primary
         return self._pick_replica()
 
