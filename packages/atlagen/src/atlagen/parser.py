@@ -339,8 +339,11 @@ def _parse_primary_key(raw_pk: object) -> tuple[str, ...]:
 
 def _parse_foreign_key(raw_fk: JsonDict) -> ForeignKeyIR | None:
     columns = _column_name_tuple(raw_fk.get("columns"))
+    ref_obj = _as_dict(raw_fk.get("ref"))
     ref_columns = _column_name_tuple(raw_fk.get("ref_columns") or raw_fk.get("referenced_columns"))
-    ref_table = _extract_ref_table(raw_fk)
+    if not ref_columns and ref_obj is not None:
+        ref_columns = _column_name_tuple(ref_obj.get("columns") or ref_obj.get("ref_columns"))
+    ref_table = _extract_ref_table(raw_fk, ref_obj)
     symbol = str(raw_fk.get("name") or raw_fk.get("symbol") or "")
     if not columns or not ref_columns or not ref_table:
         return None
@@ -354,29 +357,41 @@ def _parse_foreign_key(raw_fk: JsonDict) -> ForeignKeyIR | None:
     )
 
 
-def _extract_ref_table(raw_fk: JsonDict) -> str:
+def _extract_ref_table(raw_fk: JsonDict, ref_obj: JsonDict | None = None) -> str:
     for key in ("ref_table", "referenced_table", "table"):
         value = raw_fk.get(key)
-        if isinstance(value, str) and value:
-            return value
-        value_obj = _as_dict(value)
-        if value_obj is not None:
-            name = value_obj.get("name")
-            if isinstance(name, str) and name:
-                return name
+        resolved = _table_name_from_value(value)
+        if resolved:
+            return resolved
     ref = raw_fk.get("ref")
     if isinstance(ref, str) and ref:
         return ref.rsplit(".", 1)[-1]
-    ref_obj = _as_dict(ref)
+    if ref_obj is None:
+        ref_obj = _as_dict(ref)
     if ref_obj is not None:
-        table = ref_obj.get("table") or ref_obj.get("name")
-        if isinstance(table, str) and table:
-            return table.rsplit(".", 1)[-1]
-        table_obj = _as_dict(table)
-        if table_obj is not None:
-            name = table_obj.get("name")
-            if isinstance(name, str) and name:
-                return name
+        for key in ("table", "name", "t"):
+            resolved = _table_name_from_value(ref_obj.get(key))
+            if resolved:
+                return resolved
+    return ""
+
+
+def _table_name_from_value(value: object) -> str:
+    if isinstance(value, str) and value:
+        return value.rsplit(".", 1)[-1]
+    value_obj = _as_dict(value)
+    if value_obj is None:
+        return ""
+    name = value_obj.get("name")
+    if isinstance(name, str) and name:
+        return name
+    # Nested schema-qualified table objects: {"schema": {...}, "name": "users"}
+    nested = value_obj.get("table")
+    nested_obj = _as_dict(nested)
+    if nested_obj is not None:
+        nested_name = nested_obj.get("name")
+        if isinstance(nested_name, str) and nested_name:
+            return nested_name
     return ""
 
 

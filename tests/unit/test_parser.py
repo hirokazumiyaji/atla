@@ -87,6 +87,47 @@ def test_parse_mysql_fixture() -> None:
     assert categories.columns[0].has_default is True
 
 
+def test_parse_foreign_key_nested_ref_object() -> None:
+    schema = parse_atlas_json(
+        {
+            "schemas": [
+                {
+                    "name": "public",
+                    "tables": [
+                        {
+                            "name": "posts",
+                            "columns": [
+                                {"name": "id", "type": "int", "null": False},
+                                {"name": "user_id", "type": "int", "null": False},
+                            ],
+                            "primary_key": {"columns": [{"name": "id"}]},
+                            "foreign_keys": [
+                                {
+                                    "name": "posts_user_fk",
+                                    "columns": [{"name": "user_id"}],
+                                    "ref": {
+                                        "table": {
+                                            "name": "users",
+                                            "schema": {"name": "public"},
+                                        },
+                                        "columns": [{"name": "id"}],
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        dialect="postgres",
+    )
+    fk = schema.tables[0].foreign_keys[0]
+    assert fk.symbol == "posts_user_fk"
+    assert fk.columns == ("user_id",)
+    assert fk.ref_table == "users"
+    assert fk.ref_columns == ("id",)
+
+
 def test_parse_index_parts_variants() -> None:
     schema = parse_atlas_json(
         {
