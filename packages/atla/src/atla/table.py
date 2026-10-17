@@ -16,6 +16,9 @@ class TableRef[RecordT]:
     __table_name__: ClassVar[str]
     _COLUMNS: ClassVar[tuple[str, ...]]
     _ROW_MAPPER: ClassVar[Any]
+    # Primary-key column indexes for O(1) LEFT JOIN null checks.
+    # Empty tuple falls back to scanning the whole row slice (custom descriptors).
+    _PK_INDEXES: ClassVar[tuple[int, ...]] = ()
 
     def __init__(self, alias: str | None = None) -> None:
         self._alias = alias
@@ -49,6 +52,21 @@ class TableRef[RecordT]:
         return cast(RecordT, self.get_row_mapper()(row))
 
     def map_row_optional(self, row: Sequence[Any]) -> RecordT | None:
-        if all(value is None for value in row):
+        """Hydrate a LEFT JOIN slice, or return ``None`` when the right side is absent.
+
+        With a single-column ``_PK_INDEXES`` entry, absence is detected by that key
+        being NULL (O(1)). **Only set ``_PK_INDEXES`` for a non-nullable single-column
+        PK** — a nullable PK (e.g. SQLite TEXT PRIMARY KEY) must leave it empty so a
+        matched row with a NULL key is not misreported as absent. Composite keys and
+        custom descriptors without key metadata also leave it empty and fall back to
+        scanning the whole slice.
+        """
+        pk_indexes = type(self)._PK_INDEXES
+        # Single-column non-nullable PK only (emitter omits indexes when schema-nullable).
+        # Composite / nullable / unknown keys: scan the whole slice.
+        if len(pk_indexes) == 1:
+            if row[pk_indexes[0]] is None:
+                return None
+        elif all(value is None for value in row):
             return None
         return self.map_row(row)

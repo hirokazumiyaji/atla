@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_generate(config)
         if args.command == "check":
             return _cmd_check(config)
+    except ConfigError as exc:
+        print(f"atlagen: {exc}", file=sys.stderr)
+        return 2
     except (InspectError, AtlasParseError, OSError) as exc:
         print(f"atlagen: {exc}", file=sys.stderr)
         return 1
@@ -71,6 +74,7 @@ def _render(config: AtlagenConfig) -> dict[str, str]:
         raw,
         dialect=config.dialect,
         schema_name=config.schema_name,
+        table_overrides=config.table_overrides,
     )
     mapped = map_schema(schema)
     return generate_files(mapped, frozen=config.frozen)
