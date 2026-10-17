@@ -69,41 +69,46 @@ class AsyncpgAdapter:
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         ensure_not_checked_out(self._checkout_owners)
+        encoded = self._dialect.encode_params(params)
         if self._pool_mode:
             async with self._target.acquire() as conn:
-                return cast(Sequence[Sequence[Any]], await conn.fetch(sql, *params))
-        return cast(Sequence[Sequence[Any]], await self._target.fetch(sql, *params))
+                return cast(Sequence[Sequence[Any]], await conn.fetch(sql, *encoded))
+        return cast(Sequence[Sequence[Any]], await self._target.fetch(sql, *encoded))
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         ensure_not_checked_out(self._checkout_owners)
+        encoded = self._dialect.encode_params(params)
         if self._pool_mode:
             async with self._target.acquire() as conn:
-                return cast(Sequence[Any] | None, await conn.fetchrow(sql, *params))
-        return cast(Sequence[Any] | None, await self._target.fetchrow(sql, *params))
+                return cast(Sequence[Any] | None, await conn.fetchrow(sql, *encoded))
+        return cast(Sequence[Any] | None, await self._target.fetchrow(sql, *encoded))
 
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         ensure_not_checked_out(self._checkout_owners)
+        encoded = self._dialect.encode_params(params)
         if self._pool_mode:
             async with self._target.acquire() as conn:
-                return await conn.fetchval(sql, *params)
-        return await self._target.fetchval(sql, *params)
+                return await conn.fetchval(sql, *encoded)
+        return await self._target.fetchval(sql, *encoded)
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         ensure_not_checked_out(self._checkout_owners)
+        encoded = self._dialect.encode_params(params)
         if self._pool_mode:
             async with self._target.acquire() as conn:
-                status = await conn.execute(sql, *params)
+                status = await conn.execute(sql, *encoded)
         else:
-            status = await self._target.execute(sql, *params)
+            status = await self._target.execute(sql, *encoded)
         return _parse_status(str(status))
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         ensure_not_checked_out(self._checkout_owners)
+        encoded_seq = self._dialect.encode_params_seq(params_seq)
         if self._pool_mode:
             async with self._target.acquire() as conn:
-                await conn.executemany(sql, params_seq)
+                await conn.executemany(sql, encoded_seq)
             return
-        await self._target.executemany(sql, params_seq)
+        await self._target.executemany(sql, encoded_seq)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncpgAdapter]:

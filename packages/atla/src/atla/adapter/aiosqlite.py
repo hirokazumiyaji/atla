@@ -90,7 +90,8 @@ class AiosqliteAdapter:
         async with self._lock:
             self._ensure_not_in_active_transaction()
             await self._ensure_configured_unlocked()
-            cursor = await self._conn.execute(sql, tuple(params))
+            encoded = self._dialect.encode_params(params)
+            cursor = await self._conn.execute(sql, encoded)
             try:
                 rows: Sequence[Sequence[Any]] = await cursor.fetchall()
                 return rows
@@ -101,7 +102,8 @@ class AiosqliteAdapter:
         async with self._lock:
             self._ensure_not_in_active_transaction()
             await self._ensure_configured_unlocked()
-            cursor = await self._conn.execute(sql, tuple(params))
+            encoded = self._dialect.encode_params(params)
+            cursor = await self._conn.execute(sql, encoded)
             try:
                 row: Sequence[Any] | None = await cursor.fetchone()
                 return row
@@ -118,7 +120,8 @@ class AiosqliteAdapter:
         async with self._lock:
             self._ensure_not_in_active_transaction()
             await self._ensure_configured_unlocked()
-            cursor = await self._conn.execute(sql, tuple(params))
+            encoded = self._dialect.encode_params(params)
+            cursor = await self._conn.execute(sql, encoded)
             try:
                 rowcount = int(cursor.rowcount)
             finally:
@@ -130,7 +133,8 @@ class AiosqliteAdapter:
         async with self._lock:
             self._ensure_not_in_active_transaction()
             await self._ensure_configured_unlocked()
-            await self._conn.executemany(sql, [tuple(params) for params in params_seq])
+            encoded_seq = self._dialect.encode_params_seq(params_seq)
+            await self._conn.executemany(sql, encoded_seq)
             await self._commit_if_autocommit()
 
     async def _exec_control(self, sql: str) -> None:

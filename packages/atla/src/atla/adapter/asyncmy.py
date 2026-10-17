@@ -72,20 +72,22 @@ class AsyncmyAdapter:
             await self._pool.release(conn)
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
+        encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
         try:
             async with conn.cursor() as cursor:
-                await cursor.execute(sql, params)
+                await cursor.execute(sql, encoded)
                 rows = await cursor.fetchall()
                 return cast(Sequence[Sequence[Any]], rows)
         finally:
             await self._release(conn)
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
+        encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
         try:
             async with conn.cursor() as cursor:
-                await cursor.execute(sql, params)
+                await cursor.execute(sql, encoded)
                 return cast(Sequence[Any] | None, await cursor.fetchone())
         finally:
             await self._release(conn)
@@ -97,18 +99,20 @@ class AsyncmyAdapter:
         return row[0]
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
         try:
             async with conn.cursor() as cursor:
-                return int(await cursor.execute(sql, params))
+                return int(await cursor.execute(sql, encoded))
         finally:
             await self._release(conn)
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
+        encoded_seq = self._dialect.encode_params_seq(params_seq)
         conn = await self._acquire()
         try:
             async with conn.cursor() as cursor:
-                await cursor.executemany(sql, params_seq)
+                await cursor.executemany(sql, encoded_seq)
         finally:
             await self._release(conn)
 

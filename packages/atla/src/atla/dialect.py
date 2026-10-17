@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+import json
+from collections.abc import Sequence
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
+from typing import Any, ClassVar, Literal, cast
+from uuid import UUID
 
 _REQUIRED_DIALECT_ATTRS = (
     "name",
@@ -29,6 +35,13 @@ class Dialect:
     supports_ilike: ClassVar[bool]
     positional_style: ClassVar[str]  # "dollar" | "format" | "qmark"
     upsert_style: ClassVar[Literal["conflict", "duplicate"]] = "conflict"
+    # Driver natively accepts these Python types as bind parameters.
+    native_uuid: ClassVar[bool] = False
+    native_decimal: ClassVar[bool] = False
+    native_datetime: ClassVar[bool] = False
+    # Driver maps Python ``list`` to native SQL arrays (Postgres/Cockroach).
+    # When False, lists are JSON-encoded. ``dict`` is always JSON-encoded.
+    native_array: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -80,6 +93,65 @@ class Dialect:
         msg = f"unsupported positional_style: {self.positional_style!r}"
         raise ValueError(msg)
 
+    def encode_param(self, value: Any) -> Any:
+        """Normalize a bind parameter for this dialect's driver.
+
+        Hot path: ``None`` and plain primitives are returned unchanged (no
+        copies). Non-native types (``UUID``, ``Decimal``, ``datetime``, JSON
+        containers, ``Enum``) are converted to driver-safe forms. ``list`` is
+        passed through unchanged when ``native_array`` is set (Postgres/CockroachDB
+        arrays) and JSON-encoded otherwise.
+
+        Encoding is idempotent and runs in two places on purpose: the compiler
+        encodes values as they are bound so compiled ``(sql, params)`` pairs are
+        driver-safe on their own (e.g. for inspection or ``RawSQL``-style reuse),
+        and adapters encode again at the execution boundary so params supplied
+        directly to ``fetch_*``/``execute*`` get the same treatment. A second pass
+        is a no-op because already-encoded values (``str``, numbers, native types)
+        are returned unchanged.
+        """
+        # Fast path — keep zero overhead for the common case.
+        # Check Enum before ``str`` so StrEnum unwraps to ``.value``.
+        if value is None or isinstance(value, (bool, int, float, bytes, bytearray)):
+            return value
+        if isinstance(value, Enum):
+            inner = value.value
+            if isinstance(inner, (bool, int, float, str, bytes, bytearray)) or inner is None:
+                return inner
+            return self._encode_param_slow(inner)
+        if isinstance(value, str):
+            return value
+        return self._encode_param_slow(value)
+
+    def _encode_param_slow(self, value: Any) -> Any:
+        if isinstance(value, UUID):
+            return value if self.native_uuid else str(value)
+        if isinstance(value, Decimal):
+            return value if self.native_decimal else str(value)
+        if isinstance(value, datetime):
+            return value if self.native_datetime else value.isoformat()
+        if isinstance(value, date):
+            return value if self.native_datetime else value.isoformat()
+        if isinstance(value, time):
+            return value if self.native_datetime else value.isoformat()
+        if isinstance(value, list):
+            if self.native_array:
+                return cast(list[Any], value)
+            return json.dumps(value, separators=(",", ":"), default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, separators=(",", ":"), default=str)
+        return value
+
+    def encode_params(self, params: Sequence[Any]) -> tuple[Any, ...]:
+        """Encode a positional parameter sequence (idempotent for already-encoded values)."""
+        if not params:
+            return ()
+        return tuple(self.encode_param(value) for value in params)
+
+    def encode_params_seq(self, params_seq: Sequence[Sequence[Any]]) -> list[tuple[Any, ...]]:
+        """Encode each row for ``executemany``-style APIs."""
+        return [self.encode_params(row) for row in params_seq]
+
 
 class PostgresDialect(Dialect):
     """PostgreSQL dialect."""
@@ -90,6 +162,10 @@ class PostgresDialect(Dialect):
     supports_returning = True
     supports_ilike = True
     positional_style = "dollar"
+    native_uuid = True
+    native_decimal = True
+    native_datetime = True
+    native_array = True
 
 
 class CockroachDialect(PostgresDialect):
@@ -109,6 +185,10 @@ class MySQLDialect(Dialect):
     supports_ilike = False
     positional_style = "format"
     upsert_style = "duplicate"
+    native_uuid = False
+    native_decimal = False
+    native_datetime = True
+    native_array = False
 
 
 class TiDBDialect(MySQLDialect):
@@ -127,3 +207,7 @@ class SQLiteDialect(Dialect):
     supports_returning = True
     supports_ilike = False
     positional_style = "qmark"
+    native_uuid = False
+    native_decimal = False
+    native_datetime = False
+    native_array = False
