@@ -165,6 +165,18 @@ def test_raw_sql_format_ignores_modulo_identifiers() -> None:
     assert params == [3]
 
 
+def test_raw_sql_ignores_postgres_dollar_quoted_strings() -> None:
+    sql, params = compile_expr(
+        PostgresDialect(),
+        and_(
+            Column[int]("users", "age") == 1,
+            raw_sql("body = $$keep $1$$ AND x = $1", 9),
+        ),
+    )
+    assert sql == '("users"."age" = $1 AND body = $$keep $1$$ AND x = $2)'
+    assert params == [1, 9]
+
+
 def test_raw_sql_ignores_placeholders_inside_literals() -> None:
     sql, params = compile_expr(
         SQLiteDialect(),

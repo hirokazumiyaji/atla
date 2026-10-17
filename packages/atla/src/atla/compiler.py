@@ -196,6 +196,8 @@ _STRING_OR_COMMENT = re.compile(
     r"('(?:''|[^'])*')"  # single-quoted literal
     r"|(\"(?:\"\"|[^\"])*\")"  # double-quoted identifier/literal
     r"|(`(?:``|[^`])*`)"  # MySQL identifier
+    r"|(\$[A-Za-z_][A-Za-z0-9_]*\$).*?\1"  # PostgreSQL tagged dollar-quote
+    r"|(\$\$).*?\5"  # PostgreSQL $$ dollar-quote
     r"|(--[^\n]*)"  # line comment
     r"|(/\*.*?\*/)",  # block comment
     re.DOTALL,
