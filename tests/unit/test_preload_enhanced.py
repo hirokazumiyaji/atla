@@ -278,6 +278,30 @@ async def test_belongs_to_nullable_missing_parent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_belongs_to_filtered_missing_parent_returns_none() -> None:
+    """Parent-side predicates can exclude a real parent; that is not NotFoundError."""
+    adapter = FakeAdapter()
+    adapter.fetch_all_responses = [
+        [(10, 1, "p1", True)],
+        [],  # filter excluded the user row
+    ]
+    rows = await (
+        PostQuery(adapter)
+        .preload_one(
+            User,
+            User.email.eq("nobody@example.com"),
+            fk=Post.user_id,
+            key=User.id,
+            fk_attr="user_id",
+            key_attr="id",
+            nullable=False,
+        )
+        .all()
+    )
+    assert rows == [(PostRecord(10, 1, "p1", True), None)]
+
+
+@pytest.mark.asyncio
 async def test_multi_relation_preload() -> None:
     adapter = FakeAdapter()
     adapter.fetch_all_responses = [

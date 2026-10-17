@@ -389,9 +389,9 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
         if method in used_names:
             method = f"{method}_{fk_attr}"
         used_names.add(method)
-        parent_type = (
-            f"{parent.model_name}Record | None" if nullable else f"{parent.model_name}Record"
-        )
+        # Always ``Parent | None``: ``*predicates`` can filter out the parent even
+        # when the FK column itself is non-nullable.
+        parent_type = f"{parent.model_name}Record | None"
         lines.extend(
             [
                 "",

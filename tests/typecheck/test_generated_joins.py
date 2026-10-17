@@ -46,7 +46,7 @@ async def exercise(db: AtlaClient) -> None:
     assert_type(filtered, tuple[UserRecord, list[PostRecord]])
 
     belongs = await db.post.with_user().all()
-    assert_type(belongs, list[tuple[PostRecord, UserRecord]])
+    assert_type(belongs, list[tuple[PostRecord, UserRecord | None]])
 
 
 async def _entry() -> None:

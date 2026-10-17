@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Self, cast, overload
@@ -314,7 +313,8 @@ class BaseSelectQuery[RecordT]:
     def preload_one[OtherT](
         self,
         related: TableRef[OtherT],
-        *predicates: Expr[bool],
+        /,
+        *,
         fk: Column[Any],
         key: Column[Any],
         fk_attr: str,
@@ -327,13 +327,28 @@ class BaseSelectQuery[RecordT]:
     def preload_one[OtherT](
         self,
         related: TableRef[OtherT],
-        *predicates: Expr[bool],
+        /,
+        *,
         fk: Column[Any],
         key: Column[Any],
         fk_attr: str,
         key_attr: str,
         order_by: Sequence[OrderByClause] = (),
         nullable: Literal[True],
+    ) -> PreloadOneSelectQuery[RecordT, OtherT | None]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        predicate: Expr[bool],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
     ) -> PreloadOneSelectQuery[RecordT, OtherT | None]: ...
 
     def preload_one[OtherT](
@@ -351,8 +366,12 @@ class BaseSelectQuery[RecordT]:
 
         ``fk`` / ``fk_attr`` belong to *this* table; ``key`` / ``key_attr`` belong
         to ``related``. When ``nullable`` is true, missing parents hydrate as
-        ``None``.
+        ``None``. Parent-side ``predicates`` can filter out a real parent, so the
+        result type becomes optional whenever predicates are supplied.
         """
+        # Predicates may exclude the parent row; treat as optional so callers
+        # get ``None`` instead of a NotFoundError / illegal ``ParentT`` hole.
+        effective_nullable = nullable or bool(predicates)
         return PreloadOneSelectQuery(
             self,
             related=related,
@@ -362,7 +381,7 @@ class BaseSelectQuery[RecordT]:
             key_attr=key_attr,
             related_where=predicates,
             related_order_by=tuple(order_by),
-            nullable=nullable,
+            nullable=effective_nullable,
         )
 
     @overload
@@ -1284,10 +1303,10 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
                 continue
             related = by_key.get(fk_value)
             if related is None:
-                # Predicates on the parent query can filter out a real parent —
-                # that is not the same as a dangling FK. Only raise when the
-                # relation is non-nullable and no parent-side filters were applied.
-                if self._spec.nullable or self._spec.related_where:
+                # Predicates force ``nullable`` at construction time so filtered
+                # misses hydrate as ``None`` with a matching ``ParentT | None`` type.
+                # Unfiltered non-nullable misses remain NotFoundError (dangling FK).
+                if self._spec.nullable:
                     results.append((child, cast(ParentT, None)))
                 else:
                     msg = f"missing related row for non-nullable belongs-to {fk_attr}={fk_value!r}"
@@ -1374,10 +1393,10 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
         parents = await self._parent.all()
         if not parents:
             return []
+        # Load relations sequentially: the same adapter may be pinned to a
+        # transaction connection, so concurrent gathers on it are unsafe.
         adapter = self._parent.adapter
-        grouped_list = list(
-            await asyncio.gather(*(_load_many(adapter, parents, spec) for spec in self._specs))
-        )
+        grouped_list = [await _load_many(adapter, parents, spec) for spec in self._specs]
         rows: list[tuple[ParentT, *Ts]] = []
         for parent in parents:
             parts: list[Any] = [parent]
