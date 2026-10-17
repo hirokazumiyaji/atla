@@ -14,17 +14,44 @@ from atla.dialect import Dialect
 
 _LOCK_CLAUSE = re.compile(r"\bFOR\s+(UPDATE|SHARE)\b", re.IGNORECASE)
 _WRITE_PREFIX = re.compile(
-    r"^\s*(INSERT|UPDATE|DELETE|MERGE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b",
+    r"^(INSERT|UPDATE|DELETE|MERGE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b",
     re.IGNORECASE,
 )
 _WRITE_IN_CTE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
 
 
+def _strip_leading_sql_comments(sql: str) -> str:
+    """Remove leading whitespace and ``--`` / ``/* */`` comments before verb matching."""
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            nl = sql.find("\n", i)
+            i = n if nl < 0 else nl + 1
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                return ""
+            i = end + 2
+            continue
+        break
+    return sql[i:]
+
+
 def _is_write_sql(sql: str) -> bool:
-    """Return True for DML/DDL, including ``WITH … INSERT/UPDATE/DELETE``."""
-    if _WRITE_PREFIX.search(sql):
+    """Return True for DML/DDL, including ``WITH … INSERT/UPDATE/DELETE``.
+
+    Leading SQL comments are stripped so ``/* … */ INSERT`` / ``-- …\\nUPDATE`` still
+    route to primary.
+    """
+    stripped = _strip_leading_sql_comments(sql)
+    if _WRITE_PREFIX.search(stripped):
         return True
-    stripped = sql.lstrip()
     return stripped.upper().startswith("WITH") and _WRITE_IN_CTE.search(stripped) is not None
 
 

@@ -236,6 +236,18 @@ async def test_aiosqlite_rejects_reentrant_transaction_on_same_adapter() -> None
 
 
 @pytest.mark.asyncio
+async def test_aiosqlite_rejects_unsupported_isolation() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        with pytest.raises(ValueError, match="does not support isolation"):
+            async with adapter.transaction(isolation="serializable"):
+                pass
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_aiosqlite_clears_tx_active_when_begin_fails() -> None:
     class BoomConn:
         def __init__(self) -> None:

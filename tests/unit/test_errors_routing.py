@@ -117,6 +117,19 @@ async def test_routing_adapter_sends_returning_writes_to_primary() -> None:
     assert replica.calls == []
 
 
+@pytest.mark.asyncio
+async def test_routing_adapter_strips_leading_comments_for_writes() -> None:
+    primary = RecordingAdapter("primary")
+    replica = RecordingAdapter("replica")
+    router = RoutingAdapter(primary, [replica])
+    block = "/* audit */\nINSERT INTO t VALUES (1) RETURNING id"
+    line = "-- write\nUPDATE t SET x = 1 RETURNING x"
+    await router.fetch_one(block)
+    await router.fetch_all(line)
+    assert primary.calls == [("fetch_one", block), ("fetch_all", line)]
+    assert replica.calls == []
+
+
 def test_translate_ignores_non_driver_exceptions() -> None:
     class AppSerializationFailure(Exception):
         pass
