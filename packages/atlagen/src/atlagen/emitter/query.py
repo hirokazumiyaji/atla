@@ -150,7 +150,8 @@ def _emit_mapped_call(
 
 
 def _quote_table(name: str, *, dialect: str) -> str:
-    return _quote_ident(name, dialect=dialect)
+    # Schema-qualified names (public.users) must quote each component.
+    return ".".join(_quote_ident(part, dialect=dialect) for part in name.split("."))
 
 
 def _quote_ident(name: str, *, dialect: str) -> str:
