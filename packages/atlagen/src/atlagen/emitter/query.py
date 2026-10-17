@@ -29,6 +29,7 @@ def emit_query(schema: SchemaIR) -> str:
         "",
         "from atla.adapter.base import DBAdapter",
         "from atla.advanced import BaseInsertManyQuery, insert_many_rows",
+        "from atla.errors import NotFoundError",
         "from atla.expressions import Expr",
         "from atla.query import (",
         *[f"    {name}," for name in query_imports],
@@ -200,6 +201,14 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             f"        return BaseDeleteQuery(self._adapter, table_name={quoted_table!r})",
         ]
     )
+    lines.extend(
+        _emit_pk_lookup_methods(
+            table,
+            dialect=dialect,
+            select_cols=select_cols,
+            quoted_table=quoted_table,
+        )
+    )
     lines.extend(_emit_with_methods(table, schema=schema))
     many_cls = f"{table.model_name}InsertManyBuilder"
     insert_many_cls = [
@@ -293,6 +302,116 @@ def _emit_mapped_call(
     for column in columns:
         lines.append(f"{indent}    {column.name!r}: {column.attr_name},")
     lines.append(f"{indent}}})")
+    return lines
+
+
+def _placeholder(dialect: str, index: int) -> str:
+    if dialect in {"mysql", "tidb"}:
+        return "%s"
+    if dialect == "sqlite":
+        return "?"
+    return f"${index}"
+
+
+def _emit_pk_lookup_methods(
+    table: TableIR,
+    *,
+    dialect: str,
+    select_cols: str,
+    quoted_table: str,
+) -> list[str]:
+    """Emit AOT ``get`` / ``get_one`` / ``get_many`` for tables with a primary key."""
+    if not table.primary_key:
+        return []
+    pk_columns: list[ColumnIR] = []
+    for name in table.primary_key:
+        column = next((c for c in table.columns if c.name == name), None)
+        if column is None:
+            return []
+        pk_columns.append(column)
+
+    where_parts: list[str] = []
+    for index, column in enumerate(pk_columns, start=1):
+        col_sql = f"{quoted_table}.{_quote_ident(column.name, dialect=dialect)}"
+        where_parts.append(f"{col_sql} = {_placeholder(dialect, index)}")
+    get_sql = f"SELECT {select_cols} FROM {quoted_table} WHERE {' AND '.join(where_parts)} LIMIT 1"
+    record = f"{table.model_name}Record"
+    mapper = f"{record}._from_row"
+    lines = [
+        "",
+        f"    _GET_BY_PK_SQL = {get_sql!r}",
+        "",
+    ]
+
+    if len(pk_columns) == 1:
+        pk = pk_columns[0]
+        pk_type = pk.base_python_type
+        pk_qual = f"{quoted_table}.{_quote_ident(pk.name, dialect=dialect)}"
+        get_many_prefix = (
+            f"SELECT {select_cols} FROM {quoted_table} WHERE {pk_qual} IN ("
+        )
+        lines.extend(
+            [
+                f"    _GET_MANY_PREFIX = {get_many_prefix!r}",
+                "",
+                f"    async def get(self, {pk.attr_name}: {pk_type}) -> {record} | None:",
+                "        row = await self._adapter.fetch_one("
+                f"self._GET_BY_PK_SQL, ({pk.attr_name},))",
+                f"        return None if row is None else {mapper}(row)"
+                "  # pyright: ignore[reportPrivateUsage]",
+                "",
+                f"    async def get_one(self, {pk.attr_name}: {pk_type}) -> {record}:",
+                f"        row = await self.get({pk.attr_name})",
+                "        if row is None:",
+                f'            raise NotFoundError("{table.model_name} not found")',
+                "        return row",
+                "",
+                f"    async def get_many(self, keys: Sequence[{pk_type}]) -> list[{record}]:",
+                "        if not keys:",
+                "            return []",
+                "        dialect = self._adapter.dialect",
+                '        placeholders = ", ".join('
+                "dialect.placeholder(i) for i in range(1, len(keys) + 1))",
+                '        sql = f"{self._GET_MANY_PREFIX}{placeholders})"',
+                "        rows = await self._adapter.fetch_all(sql, list(keys))",
+                f"        return [{mapper}(row) for row in rows]"
+                "  # pyright: ignore[reportPrivateUsage]",
+            ]
+        )
+        return lines
+
+    # Composite primary key.
+    pk_params = ", ".join(f"{column.attr_name}: {column.base_python_type}" for column in pk_columns)
+    pk_tuple_type = "tuple[" + ", ".join(c.base_python_type for c in pk_columns) + "]"
+    pk_args = ", ".join(column.attr_name for column in pk_columns)
+    get_kwargs = ", ".join(f"{column.attr_name}={column.attr_name}" for column in pk_columns)
+    many_kwargs = ", ".join(
+        f"{column.attr_name}=key[{index}]" for index, column in enumerate(pk_columns)
+    )
+    lines.extend(
+        [
+            f"    async def get(self, *, {pk_params}) -> {record} | None:",
+            f"        row = await self._adapter.fetch_one(self._GET_BY_PK_SQL, ({pk_args}))",
+            f"        return None if row is None else {mapper}(row)"
+            "  # pyright: ignore[reportPrivateUsage]",
+            "",
+            f"    async def get_one(self, *, {pk_params}) -> {record}:",
+            f"        row = await self.get({get_kwargs})",
+            "        if row is None:",
+            f'            raise NotFoundError("{table.model_name} not found")',
+            "        return row",
+            "",
+            f"    async def get_many(self, keys: Sequence[{pk_tuple_type}]) -> list[{record}]:",
+            "        if not keys:",
+            "            return []",
+            f"        results: list[{record}] = []",
+            "        for key in keys:",
+            f"            row = await self.get({many_kwargs})",
+            "            if row is not None:",
+            "                results.append(row)",
+            "        return results",
+        ]
+    )
     return lines
 
 

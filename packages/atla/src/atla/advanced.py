@@ -70,6 +70,9 @@ class BaseInsertManyQuery[RecordT]:
         rows = self._rows
         return [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
 
+    def _rows_are_literals(self, rows: tuple[tuple[tuple[str, Any], ...], ...]) -> bool:
+        return all(not isinstance(value, Expr) for row in rows for _, value in row)
+
     def _sql_for_rows(
         self,
         rows: tuple[tuple[tuple[str, Any], ...], ...],
@@ -77,8 +80,31 @@ class BaseInsertManyQuery[RecordT]:
     ) -> tuple[str, list[Any]]:
         dialect = self._adapter.dialect
         cols_sql = ", ".join(dialect.quote(name) for name in columns)
+        if self._rows_are_literals(rows):
+            # Expand placeholders without per-value Expr dispatch.
+            params: list[Any] = []
+            value_groups: list[str] = []
+            for row in rows:
+                start = len(params) + 1
+                ph = (
+                    "("
+                    + ", ".join(
+                        dialect.placeholder(start + offset) for offset in range(len(columns))
+                    )
+                    + ")"
+                )
+                value_groups.append(ph)
+                params.extend(value for _, value in row)
+            sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
+            if self._returning:
+                if not dialect.supports_returning:
+                    msg = f"{dialect.name} does not support RETURNING"
+                    raise ValueError(msg)
+                sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
+            return sql, params
+
         compiler = SQLCompiler(dialect)
-        value_groups: list[str] = []
+        value_groups = []
         for row in rows:
             placeholders = [_compile_value(compiler, value) for _, value in row]
             value_groups.append(f"({', '.join(placeholders)})")
@@ -90,12 +116,24 @@ class BaseInsertManyQuery[RecordT]:
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
         return sql, compiler.params
 
+    def _single_row_insert_sql(self, columns: list[str]) -> str:
+        dialect = self._adapter.dialect
+        cols_sql = ", ".join(dialect.quote(name) for name in columns)
+        placeholders = ", ".join(dialect.placeholder(i + 1) for i in range(len(columns)))
+        return f"INSERT INTO {self._table_name} ({cols_sql}) VALUES ({placeholders})"
+
     def to_sql(self) -> tuple[str, list[Any]]:
         columns = self._validated_columns()
         return self._sql_for_rows(self._rows, columns)
 
     async def execute(self) -> int:
         columns = self._validated_columns()
+        if not self._returning and self._rows_are_literals(self._rows) and len(self._rows) > 1:
+            # Prefer driver executemany (prepared / pipelined) over giant multi-VALUES SQL.
+            sql = self._single_row_insert_sql(columns)
+            param_rows = [[value for _, value in row] for row in self._rows]
+            await self._adapter.execute_many(sql, param_rows)
+            return len(param_rows)
         total = 0
         for chunk in self._chunk_rows():
             sql, params = self._sql_for_rows(chunk, columns)
