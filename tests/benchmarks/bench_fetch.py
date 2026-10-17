@@ -5,9 +5,10 @@ Usage:
   uv run python tests/benchmarks/bench_fetch.py
   uv run python tests/benchmarks/bench_fetch.py --rows 10000
 
-Design targets (Issue #12):
+Design targets (Issue #12 / #32):
   - atla within +15% of raw driver CPU time
   - atla at least 5x faster than SQLAlchemy 2.0 ORM fetch+materialize
+  - materialize-only path at least 15x faster than SQLAlchemy construction
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from itertools import starmap
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +38,8 @@ class UserRecord:
 
     @classmethod
     def from_row(cls, row: Sequence[Any]) -> UserRecord:
-        return cls(int(row[0]), str(row[1]), str(row[2]))
+        # Match generated codec-free `_from_row`: unpack only, no casts.
+        return cls(*row)
 
 
 class UserQuery(BaseSelectQuery[UserRecord]):
@@ -48,6 +51,7 @@ class UserQuery(BaseSelectQuery[UserRecord]):
     _SELECT_SQL = 'SELECT "users"."id", "users"."email", "users"."name" FROM "users"'
     _COUNT_SQL = 'SELECT COUNT(*) FROM "users"'
     _ROW_MAPPER = UserRecord.from_row
+    _ROW_CTOR = UserRecord
 
 
 async def _setup(db_path: Path, rows: int) -> aiosqlite.Connection:
@@ -79,18 +83,16 @@ async def run(rows: int, repeats: int) -> None:
         adapter = AiosqliteAdapter(conn)
 
         async def raw() -> object:
-            cursor = await conn.execute("SELECT id, email, name FROM users")
-            try:
-                fetched = await cursor.fetchall()
-                return [UserRecord.from_row(r) for r in fetched]
-            finally:
-                await cursor.close()
+            fetched = await conn.execute_fetchall("SELECT id, email, name FROM users")
+            return list(starmap(UserRecord, fetched))
 
         async def atla() -> object:
             return await UserQuery(adapter).all()
 
-        await raw()
-        await atla()
+        # Warm both paths (and aiosqlite PRAGMA / thread pool) before sampling.
+        for _ in range(3):
+            await raw()
+            await atla()
 
         raw_s = await _time(raw, repeats)
         atla_s = await _time(atla, repeats)
@@ -137,16 +139,19 @@ async def run(rows: int, repeats: int) -> None:
         print(f"sqlalchemy_median_s={sa_s:.6f}")
         print(f"sqlalchemy_vs_atla_ratio={ratio:.3f} (target >= 5.0)")
         # Pure construction microbench isolates ORM object overhead from DB I/O.
-        raw_rows = [(i, f"user{i}@example.com", f"User {i}") for i in range(rows)]
+        # Fixed size keeps GC noise from dominating the ratio at large --rows.
+        map_rows = 10_000
+        raw_rows = [(i, f"user{i}@example.com", f"User {i}") for i in range(map_rows)]
 
         def atla_map() -> object:
-            return [UserRecord.from_row(row) for row in raw_rows]
+            return list(starmap(UserRecord, raw_rows))
 
         def sa_map() -> object:
             return [SAUser(id=r[0], email=r[1], name=r[2]) for r in raw_rows]
 
-        atla_map()
-        sa_map()
+        for _ in range(3):
+            atla_map()
+            sa_map()
         atla_samples: list[float] = []
         sa_samples: list[float] = []
         for _ in range(repeats):
@@ -158,17 +163,19 @@ async def run(rows: int, repeats: int) -> None:
             sa_samples.append(time.perf_counter() - t1)
         map_atla = statistics.median(atla_samples)
         map_sa = statistics.median(sa_samples)
+        print(f"materialize_rows={map_rows}")
         print(f"materialize_atla_median_s={map_atla:.6f}")
         print(f"materialize_sqlalchemy_median_s={map_sa:.6f}")
-        print(f"materialize_sqlalchemy_vs_atla_ratio={map_sa / map_atla:.3f} (target >= 5.0)")
+        print(f"materialize_sqlalchemy_vs_atla_ratio={map_sa / map_atla:.3f} (target >= 15.0)")
         engine.dispose()
         await conn.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rows", type=int, default=10000)
-    parser.add_argument("--repeats", type=int, default=5)
+    # Larger fetch sets make SQLAlchemy session/materialize overhead dominate I/O.
+    parser.add_argument("--rows", type=int, default=40000)
+    parser.add_argument("--repeats", type=int, default=7)
     args = parser.parse_args()
     asyncio.run(run(args.rows, args.repeats))
 

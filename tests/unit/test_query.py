@@ -38,8 +38,9 @@ class FakeAdapter:
         self.scalar: Any = 2
         self.execute_count = 1
 
-    async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
-        self.calls.append(("fetch_all", sql, list(params)))
+    def _apply_limit_offset(
+        self, sql: str, params: Sequence[Any]
+    ) -> list[Sequence[Any]]:
         rows = list(self.rows)
         offset = 0
         if " OFFSET $" in sql:
@@ -55,14 +56,24 @@ class FakeAdapter:
         elif " LIMIT ?" in sql or " LIMIT %s" in sql:
             limit_value = params[-2] if " OFFSET " in sql else params[-1]
             rows = rows[: int(limit_value)]
+        elif sql.rstrip().endswith(" LIMIT 1"):
+            rows = rows[:1]
         return rows
+
+    async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
+        self.calls.append(("fetch_all", sql, list(params)))
+        return self._apply_limit_offset(sql, params)
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         self.calls.append(("fetch_one", sql, list(params)))
-        return self.rows[0] if self.rows else None
+        rows = self._apply_limit_offset(sql, params)
+        return rows[0] if rows else None
 
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
         self.calls.append(("fetch_val", sql, list(params)))
+        if "SELECT 1 " in sql or sql.startswith("SELECT 1"):
+            rows = self._apply_limit_offset(sql, params)
+            return None if not rows else 1
         return self.scalar
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
@@ -160,7 +171,9 @@ async def test_first_and_one_preserve_existing_offset() -> None:
     ]
     first = await UserQuery(adapter).offset(5).first()
     assert first == UserRecord(6, "f@example.com")
-    last_fetch = next(call for call in reversed(adapter.calls) if call[0] == "fetch_all")
+    last_fetch = next(
+        call for call in reversed(adapter.calls) if call[0] in {"fetch_one", "fetch_all"}
+    )
     assert "OFFSET $2" in last_fetch[1] or "OFFSET $1" in last_fetch[1]
     assert 5 in last_fetch[2]
     assert "LIMIT $" in last_fetch[1]

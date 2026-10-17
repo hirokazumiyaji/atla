@@ -70,13 +70,15 @@ def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:
     if all(column.row_codec is None for column in table.columns):
         lines.append("        return cls(*row)")
     else:
+        locals_ = ", ".join(f"c{index}" for index in range(len(table.columns)))
+        lines.append(f"        {locals_} = row")
         args = ", ".join(_row_expr(column, index) for index, column in enumerate(table.columns))
         lines.append(f"        return cls({args})")
     return lines
 
 
 def _row_expr(column: ColumnIR, index: int) -> str:
-    value = f"row[{index}]"
+    value = f"c{index}"
     if column.row_codec is None:
         return value
     expr = column.row_codec.replace("{value}", value)
@@ -88,6 +90,10 @@ def _row_expr(column: ColumnIR, index: int) -> str:
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
     slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
     column_names = ", ".join(repr(column.name) for column in table.columns)
+    pk_index: int | None = next(
+        (index for index, column in enumerate(table.columns) if column.is_primary_key),
+        None,
+    )
     lines = [
         f"class {table_cls}(TableRef[{table.model_name}Record]):",
         f"    __slots__ = ({slot_names})",
@@ -97,6 +103,7 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"
             "  # pyright: ignore[reportPrivateUsage]"
         ),
+        f"    _PK_INDEX = {pk_index!r}",
         "",
         "    def __init__(self, alias: str | None = None) -> None:",
         "        super().__init__(alias)",

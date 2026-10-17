@@ -56,17 +56,22 @@ class AiosqliteAdapter:
             await self._conn.commit()
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
-        await self._ensure_configured()
-        cursor = await self._conn.execute(sql, tuple(params))
-        try:
-            rows: Sequence[Sequence[Any]] = await cursor.fetchall()
-            return rows
-        finally:
-            await cursor.close()
+        if self._needs_configure:
+            await self._ensure_configured()
+        if params:
+            rows: Sequence[Sequence[Any]] = await self._conn.execute_fetchall(
+                sql, params if isinstance(params, tuple) else tuple(params)
+            )
+        else:
+            rows = await self._conn.execute_fetchall(sql)
+        return rows
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
-        await self._ensure_configured()
-        cursor = await self._conn.execute(sql, tuple(params))
+        if self._needs_configure:
+            await self._ensure_configured()
+        cursor = await self._conn.execute(
+            sql, params if isinstance(params, tuple) else tuple(params)
+        )
         try:
             row: Sequence[Any] | None = await cursor.fetchone()
             return row
