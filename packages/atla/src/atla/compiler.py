@@ -32,7 +32,7 @@ class SQLCompiler:
         self.params: list[Any] = []
 
     def add_param(self, value: Any) -> str:
-        self.params.append(value)
+        self.params.append(self.dialect.encode_param(value))
         return self.dialect.placeholder(len(self.params))
 
     def write(self, fragment: str) -> None:
