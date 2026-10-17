@@ -49,6 +49,13 @@ def _cmd_generate(config: AtlagenConfig) -> int:
 
 
 def _cmd_check(config: AtlagenConfig) -> int:
+    """Verify generated output matches the schema and contains no unexpected files.
+
+    The output directory is treated as generated-only: any file not produced by
+    ``generate`` (including hand-written helpers, ``*.pyi``, ``py.typed``,
+    leftover ``.sql`` / ``.json``, etc.) is reported as ``unexpected:``.
+    ``__pycache__`` directories and their contents are ignored.
+    """
     files = _render(config)
     mismatches: list[str] = []
     for relative, expected in files.items():
@@ -59,6 +66,14 @@ def _cmd_check(config: AtlagenConfig) -> int:
         actual = target.read_text(encoding="utf-8")
         if actual != expected:
             mismatches.append(f"drift: {relative}")
+    expected_paths = set(files)
+    if config.out.is_dir():
+        for path in config.out.rglob("*"):
+            if "__pycache__" in path.parts or not path.is_file():
+                continue
+            relative = path.relative_to(config.out).as_posix()
+            if relative not in expected_paths:
+                mismatches.append(f"unexpected: {relative}")
     if mismatches:
         print("atlagen check failed:", file=sys.stderr)
         for item in mismatches:

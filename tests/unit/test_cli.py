@@ -150,6 +150,43 @@ def test_generate_and_check_roundtrip(tmp_path: Path) -> None:
     )
 
 
+def test_check_detects_unexpected_orphan_files(tmp_path: Path) -> None:
+    out = tmp_path / "generated"
+    schema = str(FIXTURE)
+    assert (
+        main(
+            [
+                "generate",
+                "--dialect",
+                "postgres",
+                "--schema",
+                schema,
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    (out / "orphan.py").write_text("# leftover\n", encoding="utf-8")
+    (out / "stale.pyi").write_text("# leftover stub\n", encoding="utf-8")
+    (out / "py.typed").write_text("", encoding="utf-8")
+    (out / "old.json").write_text("{}\n", encoding="utf-8")
+    assert (
+        main(
+            [
+                "check",
+                "--dialect",
+                "postgres",
+                "--schema",
+                schema,
+                "--out",
+                str(out),
+            ]
+        )
+        == 1
+    )
+
+
 def test_generate_keyword_columns_use_safe_python_names(tmp_path: Path) -> None:
     out = tmp_path / "generated"
     schema = str(Path(__file__).resolve().parents[1] / "fixtures" / "atlas" / "mysql_users.json")

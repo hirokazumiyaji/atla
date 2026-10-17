@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from itertools import starmap
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 
@@ -87,7 +87,7 @@ async def run(rows: int, repeats: int) -> None:
             return list(starmap(UserRecord, fetched))
 
         async def atla() -> object:
-            return await UserQuery(adapter).all()
+            return await UserQuery(cast(Any, adapter)).all()
 
         # Warm both paths (and aiosqlite PRAGMA / thread pool) before sampling.
         for _ in range(3):
@@ -129,12 +129,12 @@ async def run(rows: int, repeats: int) -> None:
                 return [(user.id, user.email, user.name) for user in users]
 
         sa()
-        samples = []
+        samples: list[float] = []
         for _ in range(repeats):
             start = time.perf_counter()
             sa()
             samples.append(time.perf_counter() - start)
-        sa_s = statistics.median(samples)
+        sa_s = float(statistics.median(samples))
         ratio = sa_s / atla_s
         print(f"sqlalchemy_median_s={sa_s:.6f}")
         print(f"sqlalchemy_vs_atla_ratio={ratio:.3f} (target >= 5.0)")
