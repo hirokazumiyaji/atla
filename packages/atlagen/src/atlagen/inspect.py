@@ -9,15 +9,21 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-# ``user:password@`` -> ``user:***@``. The userinfo starts right after ``://`` or,
+# ``user:password@`` -> ``user:***@``. Userinfo starts right after ``://`` or,
 # for schemeless DSNs (e.g. MySQL ``user:pass@tcp(host)/db``), at the start of a
-# token. Username may be empty (``:pass@host``). The password is matched greedily
-# up to the *last* ``@`` before the first ``/``, ``?``, or whitespace so passwords
-# that contain ``@`` or ``#`` (legal in Go MySQL/TiDB DSNs) do not leak.
-_CREDENTIAL_RE = re.compile(
-    r"(?:(?<=://)|(?<![\w@:/.%+-]))"
-    r"(?P<user>[^\s:/?#@'\"]*):"
-    r"(?P<password>[^\s/?]*)@"
+# token. Username may be empty (``:pass@host``). Password is everything after the
+# first ``:`` up to the *last* ``@`` that is followed by a host-like authority
+# (so ``/``, ``?``, ``@``, and ``#`` inside the password do not break masking,
+# while query values like ``?x=a@b`` stay intact).
+_USERINFO_START_RE = re.compile(r"(?:(?<=://)|(?<![\w@:/.%+-]))(?P<user>[^\s:/?#@'\"]*):")
+_HOST_AFTER_AT_RE = re.compile(
+    r"(?:"
+    r"tcp\("
+    r"|unix\("
+    r"|\[[0-9A-Fa-f:.]+\]"  # IPv6
+    r"|(?:\d{1,3}\.){3}\d{1,3}"  # IPv4
+    r"|(?=.{2})[A-Za-z0-9][A-Za-z0-9._-]*"  # hostname (len >= 2)
+    r")"
 )
 
 
@@ -27,7 +33,43 @@ class InspectError(RuntimeError):
 
 def mask_credentials(text: str) -> str:
     """Replace DSN passwords with ``***`` so logs/errors never leak secrets."""
-    return _CREDENTIAL_RE.sub(lambda m: f"{m.group('user')}:***@", text)
+    parts: list[str] = []
+    cursor = 0
+    for match in _USERINFO_START_RE.finditer(text):
+        if match.start() < cursor:
+            continue
+        user = match.group("user")
+        pass_start = match.end()
+        # Reject the scheme name itself (``postgres:`` in ``postgres://...``).
+        if text.startswith("//", pass_start):
+            continue
+        token_end = pass_start
+        while token_end < len(text) and text[token_end] not in " \t\n\r'\"":
+            token_end += 1
+        segment = text[pass_start:token_end]
+        at_index = _userinfo_at_index(segment)
+        if at_index is None:
+            continue
+        parts.append(text[cursor : match.start()])
+        parts.append(f"{user}:***@")
+        parts.append(segment[at_index + 1 :])
+        cursor = token_end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _userinfo_at_index(segment: str) -> int | None:
+    """Index of the ``@`` that ends userinfo (last ``@`` before a host-like authority)."""
+    chosen: int | None = None
+    start = 0
+    while True:
+        at = segment.find("@", start)
+        if at < 0:
+            break
+        if _HOST_AFTER_AT_RE.match(segment, at + 1) is not None:
+            chosen = at
+        start = at + 1
+    return chosen
 
 
 def load_schema_json(

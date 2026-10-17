@@ -158,6 +158,26 @@ def test_mask_credentials_redacts_password() -> None:
             "mysql://:***@127.0.0.1/db",
             "emptyuserpass",
         ),
+        (
+            "postgres://alice:p/ass@db.example:5432/app",
+            "postgres://alice:***@db.example:5432/app",
+            "p/ass",
+        ),
+        (
+            "postgres://alice:p?ass@db.example:5432/app",
+            "postgres://alice:***@db.example:5432/app",
+            "p?ass",
+        ),
+        (
+            "user:p/a?ss@tcp(127.0.0.1:3306)/db",
+            "user:***@tcp(127.0.0.1:3306)/db",
+            "p/a?ss",
+        ),
+        (
+            "mysql://root:p%2Fss%3F@127.0.0.1:3306/db",
+            "mysql://root:***@127.0.0.1:3306/db",
+            "p%2Fss%3F",
+        ),
     ],
 )
 def test_mask_credentials_handles_at_in_password_and_schemeless(
