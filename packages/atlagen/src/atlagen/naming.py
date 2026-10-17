@@ -10,6 +10,9 @@ _CAMEL_1 = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_2 = re.compile(r"([a-z0-9])([A-Z])")
 
 # Words that look plural but must not be singularized by the simple suffix rules.
+# Includes singulars of irregular plurals that themselves end in ``s`` (so the
+# trailing-``s`` heuristic does not turn ``thesis`` into ``thesi``, ``bus`` into
+# ``bu``, etc.).
 _UNCHANGING = frozenset(
     {
         "series",
@@ -25,6 +28,17 @@ _UNCHANGING = frozenset(
         "analysis",
         "basis",
         "crisis",
+        "thesis",
+        "diagnosis",
+        "oasis",
+        "bus",
+        "gas",
+        "alias",
+        "atlas",
+        "virus",
+        "bonus",
+        "campus",
+        "class",
     }
 )
 
@@ -78,7 +92,9 @@ _IRREGULAR_SINGULAR: dict[str, str] = {
     "oases": "oasis",
 }
 
-# AtlaClient members that must not be overwritten by table accessors.
+# AtlaClient members that must not be overwritten by table accessors only.
+# Intentionally *not* folded into column reserved attrs — a column named
+# ``transaction`` should stay ``transaction`` on Record/Table.
 _CLIENT_RESERVED = frozenset(
     {
         "transaction",
@@ -90,7 +106,7 @@ _CLIENT_RESERVED = frozenset(
 # Builtins / soft-keyword-adjacent names that should not become attributes as-is.
 # Note: ``id`` is intentionally allowed (common primary-key column).
 # Also reserve names emitted on generated Record / Table classes.
-_RESERVED_ATTRS = frozenset(
+_RESERVED_COLUMN_ATTRS = frozenset(
     {
         "type",
         "list",
@@ -121,9 +137,11 @@ _RESERVED_ATTRS = frozenset(
         "get_row_mapper",
         "map_row",
         "map_row_optional",
-        *_CLIENT_RESERVED,
     }
 )
+
+# Back-compat alias used by callers that mean "column/table-member attrs".
+_RESERVED_ATTRS = _RESERVED_COLUMN_ATTRS
 
 
 def unqualified_table_name(table_name: str) -> str:
@@ -199,23 +217,33 @@ def table_accessor_name(table_name: str) -> str:
     singular = singularize_identifier(unqualified_table_name(table_name))
     if not singular:
         return singular
-    return safe_attr_name(singular)
+    return safe_accessor_name(singular)
+
+
+def _escape_ident(name: str, *, reserved: frozenset[str]) -> str:
+    """Normalize *name* to a safe identifier, appending ``_`` while reserved."""
+    text = to_snake_case(name) if not name.isidentifier() else name
+    if not text.isidentifier():
+        cleaned = "".join(ch if ch.isalnum() else "_" for ch in text)
+        if not cleaned or cleaned[0].isdigit():
+            cleaned = f"col_{cleaned}"
+        text = cleaned
+    # Prefer snake_case for CamelCase identifiers used as attrs.
+    if any(ch.isupper() for ch in text[1:]):
+        text = to_snake_case(text)
+    while keyword.iskeyword(text) or keyword.issoftkeyword(text) or text in reserved:
+        text = f"{text}_"
+    return text
 
 
 def safe_attr_name(column_name: str) -> str:
-    """Return a Python-safe attribute name (append ``_`` for keywords / reserved)."""
-    name = to_snake_case(column_name) if not column_name.isidentifier() else column_name
-    if not name.isidentifier():
-        cleaned = "".join(ch if ch.isalnum() else "_" for ch in name)
-        if not cleaned or cleaned[0].isdigit():
-            cleaned = f"col_{cleaned}"
-        name = cleaned
-    # Prefer snake_case for CamelCase identifiers used as attrs.
-    if any(ch.isupper() for ch in name[1:]):
-        name = to_snake_case(name)
-    while keyword.iskeyword(name) or keyword.issoftkeyword(name) or name in _RESERVED_ATTRS:
-        name = f"{name}_"
-    return name
+    """Return a Python-safe column/Table attribute name (keywords / Record members)."""
+    return _escape_ident(column_name, reserved=_RESERVED_COLUMN_ATTRS)
+
+
+def safe_accessor_name(name: str) -> str:
+    """Return a Python-safe AtlaClient accessor name (includes client members)."""
+    return _escape_ident(name, reserved=_RESERVED_COLUMN_ATTRS | _CLIENT_RESERVED)
 
 
 def unique_attr_names(column_names: list[str]) -> list[str]:
@@ -226,7 +254,7 @@ def unique_attr_names(column_names: list[str]) -> list[str]:
         base = safe_attr_name(column_name)
         candidate = base
         index = 2
-        while candidate in used or candidate in _RESERVED_ATTRS:
+        while candidate in used or candidate in _RESERVED_COLUMN_ATTRS:
             candidate = f"{base}_{index}"
             index += 1
         used.add(candidate)

@@ -51,6 +51,8 @@ def test_singularize_cases(plural: str, singular: str) -> None:
 
 
 def test_snake_case_and_accessor_escaping() -> None:
+    from atlagen.naming import safe_attr_name
+
     assert to_snake_case("UserAccounts") == "user_accounts"
     assert singularize_identifier("UserAccounts") == "user_account"
     assert table_model_name("UserAccounts") == "UserAccount"
@@ -60,11 +62,24 @@ def test_snake_case_and_accessor_escaping() -> None:
     assert table_accessor_name("transactions") == "transaction_"
     assert table_accessor_name("classes") == "class_"
     assert table_accessor_name("returns") == "return_"
+    # Client-reserved names apply to accessors only, not column attrs.
+    assert safe_attr_name("transaction") == "transaction"
+    assert safe_attr_name("adapter") == "adapter"
     assert table_model_name("movies") == "Movie"
     assert table_model_name("cookies") == "Cookie"
     assert table_model_name("buses") == "Bus"
     assert table_model_name("people") == "Person"
     assert singularize_identifier("user_accounts") == "user_account"
+    # Singular forms of irregular plurals must not be mangled by trailing-s.
+    assert singularize("thesis") == "thesis"
+    assert singularize("bus") == "bus"
+    assert singularize("diagnosis") == "diagnosis"
+    assert singularize("oasis") == "oasis"
+    assert singularize("alias") == "alias"
+    assert singularize("campus") == "campus"
+    assert table_model_name("thesis") == "Thesis"
+    assert table_model_name("buses") == "Bus"
+    assert table_model_name("bus") == "Bus"
 
 
 def test_collision_raises() -> None:
@@ -159,6 +174,20 @@ def test_default_name_colliding_with_reserved_symbol_is_rejected() -> None:
         ]
     }
     with pytest.raises(AtlasParseError, match="AtlaClient"):
+        parse_atlas_json(schema, dialect="sqlite")
+
+
+@pytest.mark.parametrize("table_name", ["columns", "table_refs", "decimals"])
+def test_generated_import_colliding_model_name_is_rejected(table_name: str) -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "tables": [{"name": table_name, "columns": [{"name": "id", "type": "INTEGER"}]}],
+            }
+        ]
+    }
+    with pytest.raises(AtlasParseError, match=r"collides|reserved"):
         parse_atlas_json(schema, dialect="sqlite")
 
 

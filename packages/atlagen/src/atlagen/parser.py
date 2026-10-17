@@ -21,7 +21,7 @@ from atlagen.naming import (
     enum_class_name,
     mysql_inline_enum_class_name,
     mysql_inline_enum_name,
-    safe_attr_name,
+    safe_accessor_name,
     table_accessor_name,
     table_model_name,
     unique_attr_names,
@@ -95,11 +95,37 @@ def parse_atlas_json(
     )
 
 
+# Symbols imported or emitted at module scope in generated packages. A table
+# whose model_name collides (e.g. ``columns`` -> ``Column``) would shadow the
+# import used by every generated ``__init__`` / ``*Table.__init__``.
 _RESERVED_MODEL_NAMES = frozenset(
     {
         "AtlaClient",
         "UNSET",
         "UnsetType",
+        # models.py imports / bases
+        "Column",
+        "TableRef",
+        "Any",
+        "Sequence",
+        # query.py / client.py imports
+        "Expr",
+        "Mapping",
+        "DBAdapter",
+        "AsyncGenerator",
+        "BaseSelectQuery",
+        "BaseInsertQuery",
+        "BaseUpdateQuery",
+        "BaseDeleteQuery",
+        "BaseInsertManyQuery",
+        "PreloadSelectQuery",
+        # common column-type imports from atlagen.mapper
+        "Decimal",
+        "UUID",
+        "date",
+        "time",
+        "datetime",
+        "timedelta",
     }
 )
 
@@ -265,7 +291,7 @@ def _parse_table(
                 table_name=table_name,
             )
             # Still escape AtlaClient-reserved names (e.g. transaction -> transaction_).
-            accessor_name = safe_attr_name(accessor_name)
+            accessor_name = safe_accessor_name(accessor_name)
     primary_key = _parse_primary_key(table_raw.get("primary_key"))
     pk_set = set(primary_key)
 
