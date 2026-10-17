@@ -241,11 +241,12 @@ class OTelAdapter:
         )
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
+        # execute_many returns None; do not invent db.response.returned_rows from
+        # len(params_seq) — that is submitted batch size, not rows affected.
         await self._run(
             sql,
             None,
             lambda annotated: self._inner.execute_many(annotated, params_seq),
-            row_count=lambda _result: len(params_seq),
         )
 
     @asynccontextmanager
