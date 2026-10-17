@@ -119,6 +119,11 @@ class _ProjectableSelect:
 
         Supports up to 8 typed columns/expressions (overloads); more than 8 are
         accepted at runtime but are not statically typed.
+
+        Row codecs (UUID/Decimal/datetime/...) are applied only for the generated
+        table column descriptors (e.g. ``users.id``), which carry a ``decoder``.
+        Hand-built ``Column("users", "id")`` objects and other expressions return
+        the adapter's raw values.
         """
         if not columns:
             msg = "select() requires at least one column"
