@@ -333,6 +333,11 @@ async def test_asyncpg_pool_allows_concurrent_tasks() -> None:
         def acquire(self) -> CountingAcquireCM:
             return CountingAcquireCM(self)
 
+        async def fetch(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
+            # Pools expose fetch directly; count the implicit acquire here.
+            async with self.acquire() as conn:
+                return await conn.fetch(sql, *params)
+
     class CountingAcquireCM:
         def __init__(self, pool: CountingPool) -> None:
             self.pool = pool

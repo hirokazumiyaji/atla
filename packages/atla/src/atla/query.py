@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import starmap
 from typing import Any, ClassVar, Literal, Self, cast, overload
 
 from atla.adapter.base import DBAdapter
@@ -139,6 +141,8 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
     _SELECT_SQL: str
     _COUNT_SQL: str
     _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    # When set (codec-free tables), ``all()`` uses ``starmap`` for C-level hydration.
+    _ROW_CTOR: ClassVar[type[Any] | None] = None
     _SELECT_COLS: str
     _COLUMN_COUNT: int
     _FROM_SQL: str
@@ -323,14 +327,28 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             compiler.write(compiler.add_param(self._offset))
         return compiler.build()
 
+    def _is_static_select(self) -> bool:
+        """True when the AOT ``_SELECT_SQL`` can be used verbatim (no builder clauses).
+
+        Single source of truth for ``all()`` / ``first()`` fast paths. Any new clause
+        that alters the SELECT text (GROUP BY, DISTINCT, ...) must be checked here.
+        """
+        return (
+            not self._where and not self._order_by and self._limit is None and self._offset is None
+        )
+
     async def all(self) -> list[RecordT]:
-        if not self._where and not self._order_by and self._limit is None and self._offset is None:
-            sql = type(self)._SELECT_SQL
+        cls = type(self)
+        if self._is_static_select():
+            sql = cls._SELECT_SQL
             params: list[Any] = []
         else:
             sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
-        mapper = type(self)._ROW_MAPPER
+        ctor = cls._ROW_CTOR
+        if ctor is not None:
+            return list(starmap(ctor, rows))
+        mapper = cls._ROW_MAPPER
         return [mapper(row) for row in rows]
 
     def _with_fetch_limit(self, maximum: int) -> Self:
@@ -340,8 +358,15 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         return self.limit(maximum)
 
     async def first(self) -> RecordT | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        if self._is_static_select():
+            sql = f"{type(self)._SELECT_SQL} LIMIT 1"
+            params: list[Any] = []
+        else:
+            sql, params = self._with_fetch_limit(1).to_sql()
+        row = await self._adapter.fetch_one(sql, params)
+        if row is None:
+            return None
+        return type(self)._ROW_MAPPER(row)
 
     async def one(self) -> RecordT:
         rows = await self._with_fetch_limit(2).all()
@@ -362,7 +387,28 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         return int(value)
 
     async def exists(self) -> bool:
-        return (await self.first()) is not None
+        """Return whether any matching row exists without hydrating records.
+
+        Preserves the caller's LIMIT/OFFSET pagination (e.g. ``offset(100).exists()``
+        is false when fewer than 101 matching rows exist).
+        """
+        if self._limit == 0:
+            return False
+        compiler = SQLCompiler(
+            self._adapter.dialect,
+            initial_sql=f"SELECT 1 FROM {type(self)._FROM_SQL}",
+        )
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        # ``_limit == 0`` returned above, so the probe is always a single row.
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(1))
+        if self._offset is not None:
+            compiler.write(" OFFSET ")
+            compiler.write(compiler.add_param(self._offset))
+        sql, params = compiler.build()
+        return (await self._adapter.fetch_val(sql, params)) is not None
 
 
 class BaseInsertQuery[RecordT]:
@@ -872,19 +918,32 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         return compiler.build()
 
     def _hydrate(self, row: Sequence[Any]) -> tuple[*Ts]:
+        segments = self._segments
+        if len(segments) == 2:
+            left, right = segments
+            n0 = left.column_count
+            return cast(tuple[*Ts], (left.mapper(row[:n0]), right.mapper(row[n0:])))
+        if len(segments) == 3:
+            a, b, c = segments
+            n0 = a.column_count
+            n1 = n0 + b.column_count
+            return cast(
+                tuple[*Ts],
+                (a.mapper(row[:n0]), b.mapper(row[n0:n1]), c.mapper(row[n1:])),
+            )
         values: list[Any] = []
         offset = 0
-        for segment in self._segments:
+        for segment in segments:
             end = offset + segment.column_count
-            slice_row = row[offset:end]
+            values.append(segment.mapper(row[offset:end]))
             offset = end
-            values.append(segment.mapper(slice_row))
         return cast(tuple[*Ts], tuple(values))
 
     async def all(self) -> list[tuple[*Ts]]:
         sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
-        return [self._hydrate(row) for row in rows]
+        hydrate = self._hydrate
+        return [hydrate(row) for row in rows]
 
     def _with_fetch_limit(self, maximum: int) -> JoinedSelectQuery[*Ts]:
         if self._limit is not None and self._limit <= maximum:
@@ -892,8 +951,11 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         return self.limit(maximum)
 
     async def first(self) -> tuple[*Ts] | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        sql, params = self._with_fetch_limit(1).to_sql()
+        row = await self._adapter.fetch_one(sql, params)
+        if row is None:
+            return None
+        return self._hydrate(row)
 
     async def one(self) -> tuple[*Ts]:
         rows = await self._with_fetch_limit(2).all()
@@ -989,24 +1051,44 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return rows[0] if rows else None
 
 
+# Bounded LRU: alias comes from ``table.as_("...")`` and may be user-generated, so an
+# unbounded dict could grow without limit. Eviction only costs one class rebuild.
+_ADHOC_SELECT_CACHE_MAX = 256
+_ADHOC_SELECT_CACHE: OrderedDict[tuple[type[Any], str, str | None], type[BaseSelectQuery[Any]]] = (
+    OrderedDict()
+)
+
+
 def _table_select[RecordT](
     table: TableRef[RecordT],
     adapter: DBAdapter,
 ) -> BaseSelectQuery[RecordT]:
     """Build an ad-hoc ``BaseSelectQuery`` for a ``TableRef`` (preload follow-up)."""
     dialect = adapter.dialect
-    select_cols = table.select_list(dialect)
-    from_sql = table.join_target(dialect)
-    count_sql = f"SELECT COUNT(*) FROM {from_sql}"
+    alias = getattr(table, "_alias", None)
+    cache_key = (type(table), dialect.name, alias)
+    query_cls = _ADHOC_SELECT_CACHE.get(cache_key)
+    if query_cls is not None:
+        _ADHOC_SELECT_CACHE.move_to_end(cache_key)
+    else:
+        select_cols = table.select_list(dialect)
+        from_sql = table.join_target(dialect)
+        count_sql = f"SELECT COUNT(*) FROM {from_sql}"
+        row_mapper = table.get_row_mapper()
+        column_count = table.column_count
 
-    class _AdHocQuery(BaseSelectQuery[RecordT]):
-        __slots__ = ()
-        _TABLE_NAME = from_sql
-        _SELECT_COLS = select_cols
-        _FROM_SQL = from_sql
-        _SELECT_SQL = f"SELECT {select_cols} FROM {from_sql}"
-        _COUNT_SQL = count_sql
-        _COLUMN_COUNT = table.column_count
-        _ROW_MAPPER = table.get_row_mapper()
+        class _AdHocQuery(BaseSelectQuery[RecordT]):
+            __slots__ = ()
+            _TABLE_NAME = from_sql
+            _SELECT_COLS = select_cols
+            _FROM_SQL = from_sql
+            _SELECT_SQL = f"SELECT {select_cols} FROM {from_sql}"
+            _COUNT_SQL = count_sql
+            _COLUMN_COUNT = column_count
+            _ROW_MAPPER = row_mapper
 
-    return _AdHocQuery(adapter)
+        query_cls = _AdHocQuery
+        _ADHOC_SELECT_CACHE[cache_key] = query_cls
+        if len(_ADHOC_SELECT_CACHE) > _ADHOC_SELECT_CACHE_MAX:
+            _ADHOC_SELECT_CACHE.popitem(last=False)
+    return cast(BaseSelectQuery[RecordT], query_cls(adapter))

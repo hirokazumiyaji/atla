@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from atla.dialect import Dialect
@@ -41,6 +42,11 @@ class SQLCompiler:
         self.buf.append(fragment)
 
     def visit(self, node: Expr[Any]) -> None:
+        handler = _VISIT_BY_TYPE.get(type(node))
+        if handler is not None:
+            handler(self, node)
+            return
+        # Subclass fallback (rare); keep isinstance chain for extensibility.
         if isinstance(node, Literal):
             self.write(self.add_param(node.value))
             return
@@ -76,6 +82,9 @@ class SQLCompiler:
             return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
+
+    def _visit_literal(self, node: Literal[Any]) -> None:
+        self.write(self.add_param(node.value))
 
     def visit_order_by(self, clause: OrderByClause) -> None:
         # direction/nulls are validated once in ``OrderByClause.__init__``.
@@ -434,6 +443,21 @@ def _scan_code_span(span: str, style: str, placeholders: list[int]) -> None:
         return
     msg = f"unsupported positional_style: {style!r}"
     raise ValueError(msg)
+
+
+# Dispatch table lives at module level so ``visit`` avoids per-node isinstance chains;
+# it intentionally binds the compiler's own protected ``_visit_*`` methods.
+_VISIT_BY_TYPE: dict[type[Any], Callable[[SQLCompiler, Any], None]] = {
+    Literal: SQLCompiler._visit_literal,  # pyright: ignore[reportPrivateUsage]
+    Column: SQLCompiler._visit_column,  # pyright: ignore[reportPrivateUsage]
+    BinaryOp: SQLCompiler._visit_binary,  # pyright: ignore[reportPrivateUsage]
+    UnaryOp: SQLCompiler._visit_unary,  # pyright: ignore[reportPrivateUsage]
+    LogicalOp: SQLCompiler._visit_logical,  # pyright: ignore[reportPrivateUsage]
+    InOp: SQLCompiler._visit_in,  # pyright: ignore[reportPrivateUsage]
+    BetweenOp: SQLCompiler._visit_between,  # pyright: ignore[reportPrivateUsage]
+    FuncCall: SQLCompiler._visit_func,  # pyright: ignore[reportPrivateUsage]
+    RawSQL: SQLCompiler._visit_raw,  # pyright: ignore[reportPrivateUsage]
+}
 
 
 def compile_expr(dialect: Dialect, expr: Expr[Any]) -> tuple[str, list[Any]]:

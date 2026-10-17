@@ -71,6 +71,10 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"    _ROW_MAPPER = {table.model_name}Record._from_row"
         "  # pyright: ignore[reportPrivateUsage]"
     )
+    codec_free = all(column.row_codec is None for column in table.columns)
+    query_extras = [row_mapper]
+    if codec_free:
+        query_extras.append(f"    _ROW_CTOR = {table.model_name}Record")
     attr_map_items = ", ".join(f"{column.attr_name!r}: {column.name!r}" for column in table.columns)
     lines = [
         f"class {table.model_name}Query(BaseSelectQuery[{table.model_name}Record]):",
@@ -81,7 +85,7 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"    _COLUMN_COUNT = {len(table.columns)}",
         f"    _SELECT_SQL = {('SELECT ' + select_cols + ' FROM ' + quoted_table)!r}",
         f"    _COUNT_SQL = {('SELECT COUNT(*) FROM ' + quoted_table)!r}",
-        row_mapper,
+        *query_extras,
         "",
         f"class {table.model_name}UpsertBuilder(UpsertQuery[{table.model_name}Record]):",
         "    __slots__ = ()",

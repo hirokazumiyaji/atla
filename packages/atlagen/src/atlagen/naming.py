@@ -99,6 +99,7 @@ _CLIENT_RESERVED = frozenset(
         "transaction",
         "_adapter",
         "adapter",
+        "run_in_transaction",
     }
 )
 
@@ -128,6 +129,7 @@ _RESERVED_COLUMN_ATTRS = frozenset(
         "_from_row",
         "_COLUMNS",
         "_ROW_MAPPER",
+        "_PK_INDEXES",
         "__table_name__",
         "sql_alias",
         "join_target",

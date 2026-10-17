@@ -70,6 +70,10 @@ def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:
     if all(column.row_codec is None for column in table.columns):
         lines.append("        return cls(*row)")
     else:
+        # Always tuple-unpack so a single column becomes ``(c0,) = row``, not
+        # ``c0 = row`` (which would bind the whole sequence).
+        locals_ = ", ".join(f"c{index}" for index in range(len(table.columns)))
+        lines.append(f"        ({locals_},) = row")
         args = ", ".join(_row_expr(column, index) for index, column in enumerate(table.columns))
         lines.append(f"        return cls({args})")
     return lines
@@ -78,7 +82,7 @@ def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:
 def _decode_expr(column: ColumnIR, value: str) -> str:
     """Python expression decoding *value* (an expression string) for *column*.
 
-    Shared by ``Record._from_row`` (``row[i]``) and ``Column`` decoders (``v``).
+    Shared by ``Record._from_row`` (``c<i>`` locals) and ``Column`` decoders (``v``).
     """
     if column.row_codec is None:
         return value
@@ -89,7 +93,7 @@ def _decode_expr(column: ColumnIR, value: str) -> str:
 
 
 def _row_expr(column: ColumnIR, index: int) -> str:
-    return _decode_expr(column, f"row[{index}]")
+    return _decode_expr(column, f"c{index}")
 
 
 def _decoder_lambda(column: ColumnIR) -> str | None:
@@ -101,6 +105,16 @@ def _decoder_lambda(column: ColumnIR) -> str | None:
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
     slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
     column_names = ", ".join(repr(column.name) for column in table.columns)
+    # O(1) LEFT JOIN null check is only safe for a single non-nullable PK.
+    # Schema-nullable PKs (e.g. SQLite TEXT PRIMARY KEY) keep an empty tuple
+    # so map_row_optional falls back to a full-row NULL scan.
+    pk_cols = [
+        (index, column) for index, column in enumerate(table.columns) if column.is_primary_key
+    ]
+    if len(pk_cols) == 1 and not pk_cols[0][1].schema_nullable:
+        pk_indexes: tuple[int, ...] = (pk_cols[0][0],)
+    else:
+        pk_indexes = ()
     lines = [
         f"class {table_cls}(TableRef[{table.model_name}Record]):",
         f"    __slots__ = ({slot_names})",
@@ -110,6 +124,7 @@ def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"
             "  # pyright: ignore[reportPrivateUsage]"
         ),
+        f"    _PK_INDEXES = {pk_indexes!r}",
         "",
         "    def __init__(self, alias: str | None = None) -> None:",
         "        super().__init__(alias)",

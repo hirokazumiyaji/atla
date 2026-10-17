@@ -91,12 +91,11 @@ class AiosqliteAdapter:
             self._ensure_not_in_active_transaction()
             await self._ensure_configured_unlocked()
             encoded = self._dialect.encode_params(params)
-            cursor = await self._conn.execute(sql, encoded)
-            try:
-                rows: Sequence[Sequence[Any]] = await cursor.fetchall()
-                return rows
-            finally:
-                await cursor.close()
+            if encoded:
+                rows: Sequence[Sequence[Any]] = await self._conn.execute_fetchall(sql, encoded)
+            else:
+                rows = await self._conn.execute_fetchall(sql)
+            return rows
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         async with self._lock:
