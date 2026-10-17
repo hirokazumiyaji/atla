@@ -508,3 +508,17 @@ async def test_aiosqlite_peer_task_rejected_during_transaction() -> None:
         assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 1
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_pool_checkout_is_per_adapter_instance() -> None:
+    """Checkout ownership lives on the adapter, not in a shared registry."""
+    conn = FakeAsyncpgConnection()
+    pool = FakeAsyncpgPool(conn)
+    first = AsyncpgAdapter(pool, dialect=PostgresDialect())
+    second = AsyncpgAdapter(pool, dialect=PostgresDialect())
+
+    async with first.transaction():
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await first.fetch_all("SELECT 1")
+        assert await second.fetch_all("SELECT 1") == [(1, "alice")]

@@ -6,7 +6,11 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
-from atla.adapter._checkout import checkout_scope, ensure_not_checked_out
+from atla.adapter._checkout import (
+    checkout_scope,
+    ensure_not_checked_out,
+    new_checkout_owners,
+)
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
 
 
@@ -18,9 +22,17 @@ class AsyncmyAdapter:
     the yielded adapter (not the outer pool adapter). Peer tasks — including
     children created with ``asyncio.create_task`` — may still acquire from the
     pool.
+
+    .. warning::
+        With a small pool (e.g. ``maxsize=1``), a parent that holds a
+        transaction and awaits a child task which uses the *outer* adapter can
+        hang indefinitely waiting for a free connection. Previously this raised
+        ``RuntimeError``; now the child blocks in ``pool.acquire()`` until the
+        parent releases its connection. Size the pool for nested concurrency or
+        pass the yielded adapter to children instead.
     """
 
-    __slots__ = ("_conn", "_depth", "_dialect", "_pool", "_savepoint")
+    __slots__ = ("_checkout_owners", "_conn", "_depth", "_dialect", "_pool", "_savepoint")
 
     def __init__(
         self,
@@ -35,6 +47,7 @@ class AsyncmyAdapter:
             msg = "AsyncmyAdapter requires MySQLDialect or TiDBDialect"
             raise TypeError(msg)
         self._depth = _depth
+        self._checkout_owners = new_checkout_owners()
         self._savepoint = _savepoint
         if hasattr(pool_or_conn, "acquire") and not hasattr(pool_or_conn, "cursor"):
             self._pool = pool_or_conn
@@ -48,7 +61,7 @@ class AsyncmyAdapter:
         return self._dialect
 
     async def _acquire(self) -> Any:
-        ensure_not_checked_out(self)
+        ensure_not_checked_out(self._checkout_owners)
         if self._conn is not None:
             return self._conn
         assert self._pool is not None
@@ -103,7 +116,7 @@ class AsyncmyAdapter:
     async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
         if self._pool is not None and self._conn is None:
             # Per-task checkout: peers may still acquire from the same pool.
-            with checkout_scope(self):
+            with checkout_scope(self._checkout_owners):
                 active: Any = await self._pool.acquire()
                 try:
                     try:
