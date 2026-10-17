@@ -150,6 +150,32 @@ def test_generate_and_check_roundtrip(tmp_path: Path) -> None:
     )
 
 
+def test_generate_keyword_columns_use_safe_python_names(tmp_path: Path) -> None:
+    out = tmp_path / "generated"
+    schema = str(
+        Path(__file__).resolve().parents[1] / "fixtures" / "atlas" / "mysql_users.json"
+    )
+    assert (
+        main(
+            [
+                "generate",
+                "--dialect",
+                "mysql",
+                "--schema",
+                schema,
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    query = (out / "query.py").read_text(encoding="utf-8")
+    assert "class_: str | UnsetType = UNSET" in query
+    assert "'class': class_" in query
+    insert_block = query.split("def insert", 1)[1].split("def update", 1)[0]
+    assert "class=" not in insert_block
+
+
 def test_generate_from_stdin_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = tmp_path / "generated"
     monkeypatch.setattr(
