@@ -127,6 +127,19 @@ class BaseInsertManyQuery[RecordT]:
         return self._sql_for_rows(self._rows, columns)
 
     async def execute(self) -> int:
+        """Insert all rows and return the number of rows submitted.
+
+        Atomicity: with more than one literal row (and no ``RETURNING``) rows are sent
+        through the driver's ``execute_many``. Drivers such as aiosqlite and asyncmy run
+        these one statement at a time under autocommit, so a failure on row N can leave
+        rows ``1..N-1`` committed. Call this inside ``adapter.transaction()`` when
+        all-or-nothing behavior is required. ``RETURNING`` or ``Expr`` values use
+        multi-VALUES statements, chunked to the bind-parameter limit (each chunk is one
+        atomic statement, but chunks are not atomic together outside a transaction).
+
+        Return value: ``len(rows)`` on the ``execute_many`` path, otherwise the sum of
+        the driver rowcounts across chunks. For plain INSERTs the two are equal.
+        """
         columns = self._validated_columns()
         if not self._returning and self._rows_are_literals(self._rows) and len(self._rows) > 1:
             # Prefer driver executemany (prepared / pipelined) over giant multi-VALUES SQL.

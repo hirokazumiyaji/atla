@@ -347,9 +347,7 @@ def _emit_pk_lookup_methods(
         pk = pk_columns[0]
         pk_type = pk.base_python_type
         pk_qual = f"{quoted_table}.{_quote_ident(pk.name, dialect=dialect)}"
-        get_many_prefix = (
-            f"SELECT {select_cols} FROM {quoted_table} WHERE {pk_qual} IN ("
-        )
+        get_many_prefix = f"SELECT {select_cols} FROM {quoted_table} WHERE {pk_qual} IN ("
         lines.extend(
             [
                 f"    _GET_MANY_PREFIX = {get_many_prefix!r}",
@@ -367,6 +365,12 @@ def _emit_pk_lookup_methods(
                 "        return row",
                 "",
                 f"    async def get_many(self, keys: Sequence[{pk_type}]) -> list[{record}]:",
+                '        """Fetch rows for ``keys`` with batched ``WHERE pk IN (...)`` queries.',
+                "",
+                "        Result order follows the database row order, not ``keys`` order.",
+                "        Duplicate keys collapse to one row, and missing keys are omitted.",
+                "        Keys are chunked (500 per query) to stay under bind-parameter limits.",
+                '        """',
                 "        if not keys:",
                 "            return []",
                 "        dialect = self._adapter.dialect",
@@ -391,9 +395,10 @@ def _emit_pk_lookup_methods(
     pk_tuple_type = "tuple[" + ", ".join(c.base_python_type for c in pk_columns) + "]"
     pk_args = ", ".join(column.attr_name for column in pk_columns)
     get_kwargs = ", ".join(f"{column.attr_name}={column.attr_name}" for column in pk_columns)
-    many_kwargs = ", ".join(
-        f"{column.attr_name}=key[{index}]" for index, column in enumerate(pk_columns)
+    composite_cols = ", ".join(
+        f"{quoted_table}.{_quote_ident(column.name, dialect=dialect)}" for column in pk_columns
     )
+    composite_prefix = f"SELECT {select_cols} FROM {quoted_table} WHERE ({composite_cols}) IN ("
     lines.extend(
         [
             f"    async def get(self, *, {pk_params}) -> {record} | None:",
@@ -407,14 +412,36 @@ def _emit_pk_lookup_methods(
             f'            raise NotFoundError("{table.model_name} not found")',
             "        return row",
             "",
+            f"    _GET_MANY_PREFIX = {composite_prefix!r}",
+            "",
             f"    async def get_many(self, keys: Sequence[{pk_tuple_type}]) -> list[{record}]:",
+            '        """Fetch rows for composite ``keys`` via batched row-value ``IN`` queries.',
+            "",
+            "        Issues ``WHERE (a, b) IN ((?, ?), ...)`` (PostgreSQL, MySQL 8+, SQLite 3.15+)",
+            "        in chunks that stay under the driver bind-parameter limit.",
+            "        Result order follows the database row order, not ``keys`` order.",
+            "        Duplicate keys collapse to one row, and missing keys are omitted.",
+            '        """',
             "        if not keys:",
             "            return []",
+            "        dialect = self._adapter.dialect",
+            f"        width = {len(pk_columns)}",
+            "        batch_size = max(1, 500 // width)",
             f"        results: list[{record}] = []",
-            "        for key in keys:",
-            f"            row = await self.get({many_kwargs})",
-            "            if row is not None:",
-            "                results.append(row)",
+            "        key_list = list(keys)",
+            "        for start in range(0, len(key_list), batch_size):",
+            "            batch = key_list[start : start + batch_size]",
+            "            groups: list[str] = []",
+            "            params: list[Any] = []",
+            "            for key in batch:",
+            "                base = len(params)",
+            "                marks = [dialect.placeholder(base + i + 1) for i in range(width)]",
+            '                groups.append("(" + ", ".join(marks) + ")")',
+            "                params.extend(key)",
+            '            sql = self._GET_MANY_PREFIX + ", ".join(groups) + ")"',
+            "            rows = await self._adapter.fetch_all(sql, params)",
+            f"            results.extend({mapper}(row) for row in rows)"
+            "  # pyright: ignore[reportPrivateUsage]",
             "        return results",
         ]
     )
