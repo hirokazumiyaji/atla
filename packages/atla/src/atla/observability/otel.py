@@ -52,24 +52,26 @@ def _record_error(span: Any, exc: BaseException) -> None:
     span.set_status(Status(StatusCode.ERROR, exc_type.__name__))
 
 
-def _sqlcomment_for_span(sql: str, span: Any, *, dialect_name: str | None) -> str:
-    """Append OpenTelemetry SQLCommenter ``traceparent`` as a trailing block comment.
+def _attach_trace_context(span: Any) -> None:
+    """Copy W3C trace context onto span attributes (not into SQL text).
 
-    Supported on Postgres / MySQL / TiDB / Cockroach. Skipped for SQLite, where
-    trailing ``/* … */`` comments are not reliably accepted by all prepared paths.
+    A per-span ``traceparent`` SQLCommenter suffix would uniquify every query
+    string and defeat prepared-statement caching, so we keep SQL stable and
+    expose ``trace_id`` / ``span_id`` on the active span instead.
     """
-    if dialect_name == "sqlite":
-        return sql
     ctx = span.get_span_context()
     if not ctx.is_valid:
-        return sql
-    flags = f"{ctx.trace_flags:02x}"
-    traceparent = f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{flags}"
-    return f"{sql} /*traceparent='{traceparent}'*/"
+        return
+    span.set_attribute("trace_id", f"{ctx.trace_id:032x}")
+    span.set_attribute("span_id", f"{ctx.span_id:016x}")
 
 
 class OTelAdapter:
-    """Decorate a ``DBAdapter`` with OpenTelemetry spans, metrics, and SQLCommenter.
+    """Decorate a ``DBAdapter`` with OpenTelemetry spans and metrics.
+
+    When ``sqlcommenter=True``, trace context is recorded on span attributes
+    only — SQL text is left unchanged so prepared-statement caches stay hot.
+    (Injecting a unique ``traceparent`` comment per span would defeat caching.)
 
     Failed operations record only the exception *type* on the span (no message or
     stack trace), because driver errors frequently echo bound parameter values.
@@ -202,13 +204,12 @@ class OTelAdapter:
         ) as span:
             for key, value in span_attrs.items():
                 span.set_attribute(key, value)
-            annotated = (
-                _sqlcomment_for_span(sql, span, dialect_name=self._dialect_name)
-                if self._sqlcommenter
-                else sql
-            )
+            # sqlcommenter: attach trace context to the span, never mutate SQL
+            # (per-span traceparent comments break prepared-statement caching).
+            if self._sqlcommenter:
+                _attach_trace_context(span)
             try:
-                result = await coro_factory(annotated)
+                result = await coro_factory(sql)
             except BaseException as exc:
                 _record_error(span, exc)
                 self._ops.add(1, {**metric_attrs, "error.type": type(exc).__name__})

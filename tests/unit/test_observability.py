@@ -105,8 +105,13 @@ async def test_otel_adapter_records_span_without_params() -> None:
     assert attrs["db.collection.name"] == "users"
     assert "db.query.parameter" not in attrs
     assert "secret@example.com" not in str(attrs.get("db.query.text", ""))
-    # SQLCommenter appends traceparent after the original SQL.
-    assert "traceparent=" in inner.calls[0][1]
+    # Omitting per-span traceparent from SQL keeps prepared-statement caches hot;
+    # trace context is on span attributes instead.
+    sql = 'SELECT id FROM "users" WHERE email = $1'
+    assert inner.calls[0][1] == sql
+    assert "traceparent" not in inner.calls[0][1]
+    assert "trace_id" in attrs
+    assert "span_id" in attrs
 
 
 @pytest.mark.asyncio
