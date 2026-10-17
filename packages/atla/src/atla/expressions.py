@@ -11,7 +11,25 @@ OrderDirection = TypingLiteral["ASC", "DESC"]
 NullsPosition = TypingLiteral["FIRST", "LAST"]
 
 _FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
-_UNSAFE_OP_RE = re.compile(r"[\x00;\n\r]|--|/\*")
+
+# Exact tokens emitted by the expression API / compiler (no free-form SQL).
+_BINARY_OPS = frozenset(
+    {
+        "=",
+        "<>",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "+",
+        "-",
+        "*",
+        "LIKE",
+        "ILIKE",
+    }
+)
+_UNARY_OPS = frozenset({"NOT ", "IS NULL", "IS NOT NULL"})
+_LOGICAL_OPS = frozenset({"AND", "OR"})
 
 
 def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
@@ -20,9 +38,23 @@ def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
     return Literal(value)
 
 
-def _validate_sql_op(op: str) -> str:
-    if not op or _UNSAFE_OP_RE.search(op):
-        msg = f"invalid SQL operator: {op!r}"
+def _validate_binary_op(op: str) -> str:
+    if op not in _BINARY_OPS:
+        msg = f"invalid SQL binary operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_unary_op(op: str) -> str:
+    if op not in _UNARY_OPS:
+        msg = f"invalid SQL unary operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_logical_op(op: str) -> str:
+    if op not in _LOGICAL_OPS:
+        msg = f"invalid SQL logical operator: {op!r}"
         raise ValueError(msg)
     return op
 
@@ -103,7 +135,7 @@ class BinaryOp[T](Expr[T]):
     __slots__ = ("left", "op", "right")
 
     def __init__(self, op: str, left: Expr[Any], right: Expr[Any]) -> None:
-        self.op = _validate_sql_op(op)
+        self.op = _validate_binary_op(op)
         self.left = left
         self.right = right
 
@@ -136,7 +168,7 @@ class UnaryOp[T](Expr[T]):
     __slots__ = ("op", "operand", "postfix")
 
     def __init__(self, op: str, operand: Expr[Any], *, postfix: bool = False) -> None:
-        self.op = _validate_sql_op(op)
+        self.op = _validate_unary_op(op)
         self.operand = operand
         self.postfix = postfix
 
@@ -147,7 +179,7 @@ class LogicalOp(Expr[bool]):
     __slots__ = ("clauses", "op")
 
     def __init__(self, op: str, clauses: tuple[Expr[bool], ...]) -> None:
-        self.op = _validate_sql_op(op)
+        self.op = _validate_logical_op(op)
         self.clauses = clauses
 
 

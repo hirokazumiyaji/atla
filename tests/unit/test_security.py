@@ -76,6 +76,14 @@ def test_func_call_rejects_unsafe_names() -> None:
         FuncCall("pg_sleep\x00", ())
 
 
+def test_binary_op_rejects_injected_operator() -> None:
+    from atla.expressions import BinaryOp
+
+    col = Column[int]("users", "id")
+    with pytest.raises(ValueError, match="binary operator"):
+        BinaryOp("= 1 OR 1=1", col, Literal(1))
+
+
 def test_mask_credentials_redacts_password() -> None:
     raw = "postgres://alice:s3cret-pass@db.example:5432/app"
     assert mask_credentials(raw) == "postgres://alice:***@db.example:5432/app"
