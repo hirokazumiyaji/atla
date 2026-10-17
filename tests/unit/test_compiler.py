@@ -196,6 +196,24 @@ def test_raw_sql_ignores_placeholders_inside_literals() -> None:
     assert pg_params == [1, 2]
 
 
+def test_raw_sql_mysql_backslash_string_not_placeholder() -> None:
+    sql, params = compile_expr(
+        MySQLDialect(),
+        raw_sql("note = 'it\\'s %s' AND id = %s", 7),
+    )
+    assert sql == "note = 'it\\'s %s' AND id = %s"
+    assert params == [7]
+
+
+def test_raw_sql_postgres_nested_block_comment() -> None:
+    sql, params = compile_expr(
+        PostgresDialect(),
+        raw_sql("/* outer /* inner $1 */ still $1 */ x = $1", 9),
+    )
+    assert sql == "/* outer /* inner $1 */ still $1 */ x = $1"
+    assert params == [9]
+
+
 def test_mysql_nulls_rejection_does_not_mutate_compiler() -> None:
     created = Column[object]("users", "created_at")
     compiler = SQLCompiler(MySQLDialect())

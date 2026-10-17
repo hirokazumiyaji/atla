@@ -19,9 +19,9 @@ from atlagen.naming import (
     enum_class_name,
     mysql_inline_enum_class_name,
     mysql_inline_enum_name,
-    safe_attr_name,
     table_accessor_name,
     table_model_name,
+    unique_attr_names,
 )
 
 JsonDict = dict[str, Any]
@@ -142,17 +142,23 @@ def _parse_table(table_raw: JsonDict, *, dialect: str) -> tuple[TableIR, list[En
     pk_set = set(primary_key)
 
     inline_enums: list[EnumIR] = []
-    columns: list[ColumnIR] = []
+    column_objs: list[JsonDict] = []
     for column_raw in _as_list(table_raw.get("columns")):
         column_obj = _as_dict(column_raw)
-        if column_obj is None:
-            continue
+        if column_obj is not None:
+            column_objs.append(column_obj)
+    attr_names = unique_attr_names(
+        [str(column_obj.get("name") or "") for column_obj in column_objs]
+    )
+    columns: list[ColumnIR] = []
+    for column_obj, attr_name in zip(column_objs, attr_names, strict=True):
         column, inline_enum = _parse_column(
             column_obj,
             dialect=dialect,
             table_name=table_name,
             model_name=model_name,
             primary_key_names=pk_set,
+            attr_name=attr_name,
         )
         columns.append(column)
         if inline_enum is not None:
@@ -197,6 +203,7 @@ def _parse_column(
     table_name: str,
     model_name: str,
     primary_key_names: set[str],
+    attr_name: str,
 ) -> tuple[ColumnIR, EnumIR | None]:
     name = str(column_raw.get("name") or "")
     if not name:
@@ -223,7 +230,7 @@ def _parse_column(
     return (
         ColumnIR(
             name=name,
-            attr_name=safe_attr_name(name),
+            attr_name=attr_name,
             raw_type=raw_type,
             # Type mapping / codecs are resolved by atlagen.mapper (Issue #7).
             python_type="",
@@ -308,26 +315,39 @@ def _parse_mysql_enum_values(body: str) -> tuple[str, ...]:
     in_quote = False
     quote_char = ""
     escape = False
-    for char in body:
+    index = 0
+    length = len(body)
+    while index < length:
+        char = body[index]
         if in_quote:
             if escape:
                 current.append(char)
                 escape = False
+                index += 1
                 continue
             if char == "\\":
                 escape = True
+                index += 1
                 continue
             if char == quote_char:
+                # SQL standard: doubled quote inside a literal is an escaped quote.
+                if index + 1 < length and body[index + 1] == quote_char:
+                    current.append(quote_char)
+                    index += 2
+                    continue
                 values.append("".join(current))
                 current = []
                 in_quote = False
                 quote_char = ""
+                index += 1
                 continue
             current.append(char)
+            index += 1
             continue
         if char in {"'", '"'}:
             in_quote = True
             quote_char = char
+        index += 1
     return tuple(values)
 
 
