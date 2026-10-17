@@ -92,12 +92,29 @@ def parse_atlas_json(
     )
 
 
+_RESERVED_MODEL_NAMES = frozenset(
+    {
+        "AtlaClient",
+        "UNSET",
+        "UnsetType",
+    }
+)
+
+
 def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
     text = value.strip()
     if not text.isidentifier() or keyword.iskeyword(text):
         msg = (
             f"override {kind} {value!r} for table {table_name!r} "
             "must be a valid non-keyword Python identifier"
+        )
+        raise AtlasParseError(msg)
+    if kind == "model_name" and (
+        text in _RESERVED_MODEL_NAMES or text.endswith(("Record", "Repository", "Query", "Table"))
+    ):
+        msg = (
+            f"override model_name {value!r} for table {table_name!r} "
+            "collides with a generated export suffix or reserved symbol"
         )
         raise AtlasParseError(msg)
     return text
