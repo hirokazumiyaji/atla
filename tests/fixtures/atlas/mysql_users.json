@@ -1,0 +1,66 @@
+{
+  "schemas": [
+    {
+      "name": "app",
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {
+              "name": "id",
+              "type": "bigint",
+              "null": false,
+              "auto_increment": true
+            },
+            {
+              "name": "email",
+              "type": "varchar(255)",
+              "null": false
+            },
+            {
+              "name": "status",
+              "type": "enum('active','inactive','banned')",
+              "null": false,
+              "default": "'active'"
+            },
+            {
+              "name": "class",
+              "type": "varchar(64)",
+              "null": true
+            }
+          ],
+          "primary_key": {
+            "columns": [{ "name": "id" }]
+          },
+          "indexes": [
+            {
+              "name": "idx_users_email",
+              "unique": true,
+              "columns": [{ "name": "email" }]
+            }
+          ],
+          "foreign_keys": []
+        },
+        {
+          "name": "categories",
+          "columns": [
+            {
+              "name": "id",
+              "type": "int",
+              "null": false,
+              "attrs": [{ "type": "auto_increment", "auto_increment": true }]
+            },
+            {
+              "name": "name",
+              "type": "varchar(100)",
+              "null": false
+            }
+          ],
+          "primary_key": {
+            "columns": ["id"]
+          }
+        }
+      ]
+    }
+  ]
+}
