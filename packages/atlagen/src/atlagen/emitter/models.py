@@ -75,8 +75,11 @@ def _emit_record(table: TableIR, *, frozen: bool) -> list[str]:
     return lines
 
 
-def _row_expr(column: ColumnIR, index: int) -> str:
-    value = f"row[{index}]"
+def _decode_expr(column: ColumnIR, value: str) -> str:
+    """Python expression decoding *value* (an expression string) for *column*.
+
+    Shared by ``Record._from_row`` (``row[i]``) and ``Column`` decoders (``v``).
+    """
     if column.row_codec is None:
         return value
     expr = column.row_codec.replace("{value}", value)
@@ -85,15 +88,14 @@ def _row_expr(column: ColumnIR, index: int) -> str:
     return f"({expr})"
 
 
+def _row_expr(column: ColumnIR, index: int) -> str:
+    return _decode_expr(column, f"row[{index}]")
+
+
 def _decoder_lambda(column: ColumnIR) -> str | None:
     if column.row_codec is None:
         return None
-    expr = column.row_codec.replace("{value}", "v")
-    if column.nullable:
-        body = f"None if v is None else ({expr})"
-    else:
-        body = expr
-    return f"(lambda v: {body})"
+    return f"(lambda v: {_decode_expr(column, 'v')})"
 
 
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:

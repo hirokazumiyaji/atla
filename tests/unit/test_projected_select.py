@@ -96,6 +96,17 @@ def test_projected_select_compiles_aggregates() -> None:
 async def test_projected_select_scalars() -> None:
     adapter = _FakeAdapter(rows=[(1,), (2,), (3,)])
     id_col = Column[int]("items", "id")
-    values = await ItemQuery(adapter).select(id_col).scalars()
+    values: list[int] = await ItemQuery(adapter).select(id_col).scalars()
     assert values == [1, 2, 3]
-    assert await ItemQuery(adapter).select(id_col).scalar_first() == 1
+    first: int | None = await ItemQuery(adapter).select(id_col).scalar_first()
+    assert first == 1
+
+
+@pytest.mark.asyncio
+async def test_projected_select_scalar_one_and_multi_column_error() -> None:
+    adapter = _FakeAdapter(rows=[(7,)])
+    id_col = Column[int]("items", "id")
+    only: int = await ItemQuery(adapter).select(id_col).scalar_one()
+    assert only == 7
+    with pytest.raises(ValueError, match="single-column"):
+        await ItemQuery(adapter).select(id_col, id_col).scalars()  # type: ignore[misc]

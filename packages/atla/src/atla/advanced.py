@@ -387,29 +387,29 @@ class ProjectedSelectQuery[*Ts]:
             raise MultipleResultsError("expected exactly one row, found multiple")
         return rows[0]
 
-    async def scalars(self) -> list[Any]:
+    async def scalars[T](self: ProjectedSelectQuery[T]) -> list[T]:
         """Unwrap a single-column projection into a flat list."""
         if len(self._columns) != 1:
             msg = "scalars() requires a single-column projection"
             raise ValueError(msg)
         rows = await self.all()
-        return [cast(tuple[Any, ...], row)[0] for row in rows]
+        return [row[0] for row in rows]
 
-    async def scalar_first(self) -> Any | None:
+    async def scalar_first[T](self: ProjectedSelectQuery[T]) -> T | None:
         """Return the first scalar from a single-column projection, or ``None``."""
         if len(self._columns) != 1:
             msg = "scalar_first() requires a single-column projection"
             raise ValueError(msg)
         row = await self.first()
-        return None if row is None else cast(tuple[Any, ...], row)[0]
+        return None if row is None else row[0]
 
-    async def scalar_one(self) -> Any:
+    async def scalar_one[T](self: ProjectedSelectQuery[T]) -> T:
         """Return the only scalar from a single-column projection."""
         if len(self._columns) != 1:
             msg = "scalar_one() requires a single-column projection"
             raise ValueError(msg)
         row = await self.one()
-        return cast(tuple[Any, ...], row)[0]
+        return row[0]
 
 
 def insert_many_rows(
