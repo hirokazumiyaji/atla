@@ -13,6 +13,7 @@ from atla.expressions import (
     CaseExpr,
     CastExpr,
     Column,
+    ExistsOp,
     Expr,
     FuncCall,
     InOp,
@@ -20,6 +21,7 @@ from atla.expressions import (
     LogicalOp,
     OrderByClause,
     RawSQL,
+    SubqueryExpr,
     UnaryOp,
 )
 
@@ -77,6 +79,12 @@ class SQLCompiler:
             return
         if isinstance(node, CaseExpr):
             self._visit_case(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
+        if isinstance(node, SubqueryExpr):
+            self._visit_subquery(node)
+            return
+        if isinstance(node, ExistsOp):
+            self._visit_exists(node)
             return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
@@ -182,6 +190,11 @@ class SQLCompiler:
         self.write(")")
 
     def _visit_in(self, node: InOp[Any]) -> None:
+        if node.subquery is not None:
+            self.visit(node.expr)
+            self.write(" NOT IN " if node.negated else " IN ")
+            self._visit_subquery(node.subquery)
+            return
         if not node.values:
             # Avoid invalid `IN ()` SQL; keep bind-parameter free for the fallback.
             self.write("1 = 1" if node.negated else "1 = 0")
@@ -193,6 +206,25 @@ class SQLCompiler:
                 self.write(", ")
             self.write(self.add_param(value))
         self.write(")")
+
+    def _visit_subquery(self, node: SubqueryExpr[Any]) -> None:
+        self.write("(")
+        if not node.params:
+            self.write(node.sql)
+            self.write(")")
+            return
+        # Re-bind nested query parameters at the current compiler offset.
+        rebound = [self.add_param(value) for value in node.params]
+        if self.dialect.positional_style == "dollar":
+            self.write(_rebind_dollar_placeholders(node.sql, rebound, self.dialect))
+        else:
+            # ``%s`` / ``?`` placeholders are position-independent.
+            self.write(node.sql)
+        self.write(")")
+
+    def _visit_exists(self, node: ExistsOp) -> None:
+        self.write("NOT EXISTS " if node.negated else "EXISTS ")
+        self._visit_subquery(node.subquery)
 
     def _visit_between(self, node: BetweenOp[Any]) -> None:
         self.visit(node.expr)

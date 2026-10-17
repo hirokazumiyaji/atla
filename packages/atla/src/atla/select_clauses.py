@@ -1,0 +1,103 @@
+"""Shared SELECT clause helpers for query builders."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from atla.compiler import SQLCompiler
+from atla.dialect import Dialect
+from atla.expressions import Expr, OrderByClause, and_
+from atla.table import TableRef
+
+
+@dataclass(slots=True, frozen=True)
+class LockClause:
+    mode: Literal["UPDATE", "SHARE"]
+    nowait: bool = False
+    skip_locked: bool = False
+    of: tuple[str, ...] = ()
+
+
+def lock_of_targets(tables: Sequence[TableRef[Any]], dialect: Dialect) -> tuple[str, ...]:
+    return tuple(table.join_target(dialect).split(" AS ", 1)[0] for table in tables)
+
+
+def write_distinct(
+    compiler: SQLCompiler,
+    dialect: Dialect,
+    *,
+    distinct: bool,
+    distinct_on: tuple[Expr[Any], ...],
+) -> None:
+    if distinct_on:
+        if not dialect.supports_distinct_on:
+            msg = f"{dialect.name} does not support DISTINCT ON"
+            raise ValueError(msg)
+        compiler.write("DISTINCT ON (")
+        for index, expr in enumerate(distinct_on):
+            if index:
+                compiler.write(", ")
+            compiler.visit(expr)
+        compiler.write(") ")
+    elif distinct:
+        compiler.write("DISTINCT ")
+
+
+def write_group_having(
+    compiler: SQLCompiler,
+    *,
+    group_by: tuple[Expr[Any], ...],
+    having: tuple[Expr[bool], ...],
+) -> None:
+    if group_by:
+        compiler.write(" GROUP BY ")
+        for index, expr in enumerate(group_by):
+            if index:
+                compiler.write(", ")
+            compiler.visit(expr)
+    if having:
+        compiler.write(" HAVING ")
+        compiler.visit(and_(*having))
+
+
+def write_order_limit_offset(
+    compiler: SQLCompiler,
+    *,
+    order_by: tuple[OrderByClause, ...],
+    limit: int | None,
+    offset: int | None,
+) -> None:
+    if order_by:
+        compiler.write(" ORDER BY ")
+        for index, clause in enumerate(order_by):
+            if index:
+                compiler.write(", ")
+            compiler.visit_order_by(clause)
+    if limit is not None:
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(limit))
+    if offset is not None:
+        compiler.write(" OFFSET ")
+        compiler.write(compiler.add_param(offset))
+
+
+def write_locking(compiler: SQLCompiler, dialect: Dialect, locking: LockClause | None) -> None:
+    if locking is None:
+        return
+    if not dialect.supports_for_update:
+        msg = f"{dialect.name} does not support FOR UPDATE / FOR SHARE"
+        raise ValueError(msg)
+    if locking.nowait and locking.skip_locked:
+        msg = "nowait and skip_locked cannot both be True"
+        raise ValueError(msg)
+    compiler.write(" FOR ")
+    compiler.write(locking.mode)
+    if locking.of:
+        compiler.write(" OF ")
+        compiler.write(", ".join(locking.of))
+    if locking.nowait:
+        compiler.write(" NOWAIT")
+    elif locking.skip_locked:
+        compiler.write(" SKIP LOCKED")

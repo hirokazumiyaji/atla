@@ -16,6 +16,28 @@ def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
     return Literal(value)
 
 
+def _try_subquery(value: object) -> SubqueryExpr[Any] | None:
+    """Convert a compiled query (``to_sql()``) or :class:`SubqueryExpr` into a subquery."""
+    if isinstance(value, SubqueryExpr):
+        return typing_cast(SubqueryExpr[Any], value)
+    to_sql = getattr(value, "to_sql", None)
+    if callable(to_sql) and not isinstance(value, (str, bytes, bytearray)):
+        result = typing_cast(tuple[str, Sequence[Any]], to_sql())
+        sql, params = result
+        return SubqueryExpr(sql, params)
+    return None
+
+
+def _coerce_in_values(values: object) -> Sequence[Any] | SubqueryExpr[Any]:
+    subquery = _try_subquery(values)
+    if subquery is not None:
+        return subquery
+    if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
+        msg = "in_() expects a sequence of values or a subquery with to_sql()"
+        raise TypeError(msg)
+    return typing_cast(Sequence[Any], values)
+
+
 class Expr[T_co]:
     """Base class for all SQL expression AST nodes."""
 
@@ -119,11 +141,11 @@ class Expr[T_co]:
     def is_not_null(self) -> UnaryOp[bool]:
         return UnaryOp("IS NOT NULL", self, postfix=True)
 
-    def in_(self, values: Sequence[Any]) -> InOp[Any]:
-        return InOp(self, tuple(values), negated=False)
+    def in_(self, values: Sequence[Any] | SubqueryExpr[Any] | object) -> InOp[Any]:
+        return InOp(self, _coerce_in_values(values), negated=False)
 
-    def not_in(self, values: Sequence[Any]) -> InOp[Any]:
-        return InOp(self, tuple(values), negated=True)
+    def not_in(self, values: Sequence[Any] | SubqueryExpr[Any] | object) -> InOp[Any]:
+        return InOp(self, _coerce_in_values(values), negated=True)
 
     def between(self, low: Any, high: Any) -> BetweenOp[Any]:
         return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
@@ -231,15 +253,46 @@ class LogicalOp(Expr[bool]):
         self.clauses = clauses
 
 
+class SubqueryExpr[T](Expr[T]):
+    """Compiled ``(SELECT ...)`` fragment embeddable in ``IN`` / ``EXISTS``."""
+
+    __slots__ = ("params", "sql")
+
+    def __init__(self, sql: str, params: Sequence[Any] = ()) -> None:
+        self.sql = sql
+        self.params = tuple(params)
+
+
+class ExistsOp(Expr[bool]):
+    """``EXISTS (SELECT ...)`` / ``NOT EXISTS (SELECT ...)`` predicate."""
+
+    __slots__ = ("negated", "subquery")
+
+    def __init__(self, subquery: SubqueryExpr[Any], *, negated: bool = False) -> None:
+        self.subquery = subquery
+        self.negated = negated
+
+
 class InOp[T](Expr[bool]):
     """IN / NOT IN predicate. Empty values compile to a safe tautology/contradiction later."""
 
-    __slots__ = ("expr", "negated", "values")
+    __slots__ = ("expr", "negated", "subquery", "values")
 
-    def __init__(self, expr: Expr[T], values: tuple[T, ...], *, negated: bool) -> None:
+    def __init__(
+        self,
+        expr: Expr[T],
+        values: Sequence[Any] | SubqueryExpr[Any],
+        *,
+        negated: bool,
+    ) -> None:
         self.expr = expr
-        self.values = values
         self.negated = negated
+        if isinstance(values, SubqueryExpr):
+            self.subquery = values
+            self.values: tuple[Any, ...] = ()
+        else:
+            self.subquery = None
+            self.values = tuple(values)
 
 
 class BetweenOp[T](Expr[bool]):
@@ -496,6 +549,24 @@ def now() -> FuncCall[Any]:
     ``raw_sql("datetime('now')")`` instead.
     """
     return FuncCall("NOW", ())
+
+
+def exists(subquery: SubqueryExpr[Any] | object) -> ExistsOp:
+    """SQL ``EXISTS (subquery)``."""
+    node = _try_subquery(subquery)
+    if node is None:
+        msg = "exists() expects a subquery with to_sql() or a SubqueryExpr"
+        raise TypeError(msg)
+    return ExistsOp(node, negated=False)
+
+
+def not_exists(subquery: SubqueryExpr[Any] | object) -> ExistsOp:
+    """SQL ``NOT EXISTS (subquery)``."""
+    node = _try_subquery(subquery)
+    if node is None:
+        msg = "not_exists() expects a subquery with to_sql() or a SubqueryExpr"
+        raise TypeError(msg)
+    return ExistsOp(node, negated=True)
 
 
 def raw_sql(sql: str, *params: Any) -> RawSQL[Any]:

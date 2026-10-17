@@ -10,6 +10,8 @@ _REQUIRED_DIALECT_ATTRS = (
     "supports_returning",
     "supports_ilike",
     "positional_style",
+    "supports_for_update",
+    "supports_distinct_on",
 )
 
 
@@ -28,6 +30,8 @@ class Dialect:
     supports_returning: ClassVar[bool]
     supports_ilike: ClassVar[bool]
     positional_style: ClassVar[str]  # "dollar" | "format" | "qmark"
+    supports_for_update: ClassVar[bool]
+    supports_distinct_on: ClassVar[bool]
     upsert_style: ClassVar[Literal["conflict", "duplicate"]] = "conflict"
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -71,6 +75,8 @@ class PostgresDialect(Dialect):
     supports_returning = True
     supports_ilike = True
     positional_style = "dollar"
+    supports_for_update = True
+    supports_distinct_on = True
 
 
 class CockroachDialect(PostgresDialect):
@@ -90,6 +96,8 @@ class MySQLDialect(Dialect):
     supports_ilike = False
     positional_style = "format"
     upsert_style = "duplicate"
+    supports_for_update = True
+    supports_distinct_on = False
 
 
 class TiDBDialect(MySQLDialect):
@@ -108,3 +116,5 @@ class SQLiteDialect(Dialect):
     supports_returning = True
     supports_ilike = False
     positional_style = "qmark"
+    supports_for_update = False
+    supports_distinct_on = False
