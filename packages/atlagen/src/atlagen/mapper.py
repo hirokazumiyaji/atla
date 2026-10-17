@@ -13,7 +13,9 @@ _MYSQL_ENUM_RE = re.compile(r"^enum\s*\(", re.IGNORECASE)
 _NATIVE_DATETIME_DIALECTS = frozenset({"postgres", "cockroach", "mysql", "tidb"})
 _NATIVE_UUID_DIALECTS = frozenset({"postgres", "cockroach"})
 _NATIVE_BOOL_DIALECTS = frozenset({"postgres", "cockroach", "sqlite"})
-_NATIVE_JSON_DIALECTS = frozenset({"postgres", "cockroach", "mysql", "tidb"})
+# asyncpg returns json/jsonb as str unless set_type_codec is registered; asyncmy
+# similarly yields text. Always decode with json.loads (idempotent for dict/list).
+_NATIVE_JSON_DIALECTS: frozenset[str] = frozenset()
 _NATIVE_DECIMAL_DIALECTS = frozenset({"postgres", "cockroach"})
 
 
@@ -97,7 +99,8 @@ def resolve_sql_type(
         array_codec: str | None = None
         if mapping.row_codec is not None:
             element_expr = mapping.row_codec.replace("{value}", "v")
-            array_codec = f"[({element_expr}) for v in ({{value}} or ())]"
+            # Preserve SQL NULL; do not coerce it to an empty list.
+            array_codec = f"None if {{value}} is None else [({element_expr}) for v in {{value}}]"
         return TypeMapping(
             base_python_type=f"list[{mapping.base_python_type}]",
             import_symbol=mapping.import_symbol,
@@ -222,12 +225,15 @@ def _map_postgres_family(normalized: str, *, dialect: str) -> TypeMapping:
         return TypeMapping("int")
     if normalized in {"real", "double precision", "float4", "float8", "float"}:
         return TypeMapping("float")
-    if normalized in {"numeric", "decimal", "money"}:
+    if normalized in {"numeric", "decimal"}:
         return TypeMapping(
             "Decimal",
             import_symbol=("decimal", "Decimal"),
             row_codec=None if dialect in _NATIVE_DECIMAL_DIALECTS else "Decimal({value})",
         )
+    if normalized == "money":
+        # asyncpg MONEYOID returns formatted text (e.g. "$1,234.56"), not Decimal.
+        return TypeMapping("str")
     if normalized in {"boolean", "bool"}:
         return TypeMapping("bool")
     if normalized in {
@@ -298,10 +304,7 @@ def _map_mysql_family(normalized: str, *, dialect: str) -> TypeMapping:
             row_codec=(
                 None
                 if dialect in _NATIVE_BOOL_DIALECTS
-                else (
-                    "{value} if isinstance({value}, bool) "
-                    "else bool(int({value}))"
-                )
+                else ("{value} if isinstance({value}, bool) else bool(int({value}))")
             ),
         )
     if normalized in {
