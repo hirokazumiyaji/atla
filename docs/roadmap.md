@@ -1,124 +1,124 @@
-# 実装ロードマップ & タスク計画 (Implementation Roadmap)
+# Implementation Roadmap
 
-本ドキュメントでは、`atla` および `atlagen` の開発フェーズ分割、各マイルストーンの到達目標、および GitHub Issues で管理するタスク一覧を定義します。
+This document outlines the phased implementation plan, milestones, deliverables, and corresponding GitHub tracking issues for `atla` and `atlagen`.
 
 ---
 
-## フェーズ全体像 (Milestone Overview)
+## Milestone Overview
 
 ```mermaid
 flowchart LR
-    P0["Phase 0\nMonorepo & CI 基盤"]
-    P1["Phase 1\natla ランタイムコア"]
-    P2["Phase 2\natlagen パーサ & 型マッパ"]
-    P3["Phase 3\nコード生成器 & 型検証"]
-    P4["Phase 4\nJOIN・Eager Load・Upsert"]
-    P5["Phase 5\n実DB結合テスト & ベンチマーク"]
+    P0["Phase 0\nMonorepo & CI Foundation"]
+    P1["Phase 1\natla Runtime Core"]
+    P2["Phase 2\natlagen Parser & Mapper"]
+    P3["Phase 3\nCode Emitters & Type Tests"]
+    P4["Phase 4\nJoins, Eager Load & Upsert"]
+    P5["Phase 5\nIntegration Tests & Benchmarks"]
 
     P0 --> P1 --> P2 --> P3 --> P4 --> P5
 ```
 
 ---
 
-## GitHub Issues 一覧 (Tracking Issues)
+## GitHub Tracking Issues
 
-| Issue | フェーズ | タイトル |
+| Issue | Phase | Title |
 | :--- | :--- | :--- |
-| [#1](https://github.com/hirokazumiyaji/atla/issues/1) | Phase 0 | モノレポ構成 (`uv` workspace) と開発ツールチェーン・CI 基盤の構築 |
-| [#2](https://github.com/hirokazumiyaji/atla/issues/2) | Phase 1 | `atla`: 式木 (Expression Tree) AST (`Expr[T]`, `Column[T]`, 演算子・集約関数) の実装 |
-| [#3](https://github.com/hirokazumiyaji/atla/issues/3) | Phase 1 | `atla`: Dialect 抽象化と単一パス `SQLCompiler` の実装 |
-| [#4](https://github.com/hirokazumiyaji/atla/issues/4) | Phase 1 | `atla`: `DBAdapter` プロトコル・トランザクション管理・各ドライバアダプタ (`asyncpg` / `asyncmy` / `aiosqlite`) の実装 |
-| [#5](https://github.com/hirokazumiyaji/atla/issues/5) | Phase 1 | `atla`: イミュータブル `BaseQuery` / `Mutation` ランタイムクラスの実装 |
-| [#6](https://github.com/hirokazumiyaji/atla/issues/6) | Phase 2 | `atlagen`: Atlas JSON スキーマパーサと内部中間表現 (`SchemaIR`) の実装 |
-| [#7](https://github.com/hirokazumiyaji/atla/issues/7) | Phase 2 | `atlagen`: RDBMS 別 SQL 型 -> Python 型マッパーと Row Codec 解決器の実装 |
-| [#8](https://github.com/hirokazumiyaji/atla/issues/8) | Phase 2 | `atlagen`: CLI インターフェース (`generate` / `check`) と設定ローダの実装 |
-| [#9](https://github.com/hirokazumiyaji/atla/issues/9) | Phase 3 | `atlagen`: コードエミッタ (`enums.py`, `models.py`, `query.py`, `client.py`) の実装 |
-| [#10](https://github.com/hirokazumiyaji/atla/issues/10) | Phase 3 | 生成コードに対する静的型検証テストスイート (Pyright / Mypy strict mode) の構築 |
-| [#11](https://github.com/hirokazumiyaji/atla/issues/11) | Phase 4 | 型安全な JOIN (`inner` / `left join` / 自己結合エイリアス) と Batch Eager Loading の実装 |
-| [#12](https://github.com/hirokazumiyaji/atla/issues/12) | Phase 4 & 5 | Bulk Insert / Upsert / 部分選択の実装とマルチ RDBMS 結合テスト・ベンチマーク構築 |
+| [#1](https://github.com/hirokazumiyaji/atla/issues/1) | Phase 0 | Monorepo setup (`uv` workspace), developer toolchain, and CI pipeline |
+| [#2](https://github.com/hirokazumiyaji/atla/issues/2) | Phase 1 | `atla`: Implement Expression Tree AST (`Expr[T]`, `Column[T]`, operators, and aggregate helpers) |
+| [#3](https://github.com/hirokazumiyaji/atla/issues/3) | Phase 1 | `atla`: Implement Dialect abstraction and single-pass `SQLCompiler` |
+| [#4](https://github.com/hirokazumiyaji/atla/issues/4) | Phase 1 | `atla`: Implement `DBAdapter` protocol, transaction management, and driver adapters (`asyncpg` / `asyncmy` / `aiosqlite`) |
+| [#5](https://github.com/hirokazumiyaji/atla/issues/5) | Phase 1 | `atla`: Implement immutable `BaseQuery` and `Mutation` runtime classes |
+| [#6](https://github.com/hirokazumiyaji/atla/issues/6) | Phase 2 | `atlagen`: Implement Atlas JSON schema parser and normalized Internal Representation (`SchemaIR`) |
+| [#7](https://github.com/hirokazumiyaji/atla/issues/7) | Phase 2 | `atlagen`: Implement multi-dialect SQL-to-Python Type Mapper and row codec resolver |
+| [#8](https://github.com/hirokazumiyaji/atla/issues/8) | Phase 2 | `atlagen`: Implement CLI interface (`generate` / `check`) and configuration loader |
+| [#9](https://github.com/hirokazumiyaji/atla/issues/9) | Phase 3 | `atlagen`: Implement code emitters (`enums.py`, `models.py`, `query.py`, `client.py`) |
+| [#10](https://github.com/hirokazumiyaji/atla/issues/10) | Phase 3 | Build end-to-end static type verification suite (`pyright --strict` & `mypy --strict`) |
+| [#11](https://github.com/hirokazumiyaji/atla/issues/11) | Phase 4 | Implement type-safe Joins (`inner` / `left join` / self-join aliasing) and Batch Eager Loading |
+| [#12](https://github.com/hirokazumiyaji/atla/issues/12) | Phase 4 & 5 | Implement Bulk Insert, Upsert, Partial Projections, and multi-RDBMS integration & benchmark suites |
 
 ---
 
-## Phase 0: プロジェクト基盤 & モノレポ構築 (Project Scaffolding)
+## Phase 0: Project Scaffolding & Monorepo Setup
 
-`atla`（依存ゼロランタイム）と `atlagen`（コード生成 CLI）を同一リポジトリで開発・テストするための `uv` ワークスペース基盤と品質ゲートを構築します。
+Establish the `uv` workspace monorepo and strict quality gates to develop and test `atla` (zero-dependency runtime) and `atlagen` (AOT code generator CLI) side-by-side.
 
-### タスク:
-- **[#1](https://github.com/hirokazumiyaji/atla/issues/1) モノレポ構成と開発ツールチェーンのセットアップ**
-  - `packages/atla` および `packages/atlagen` の `pyproject.toml` 作成 (`uv` workspace)
-  - `ruff` (lint/format), `pyright --strict`, `mypy --strict`, `pytest`, `pytest-asyncio` の設定
-  - GitHub Actions CI ワークフロー（Lint / Typecheck / Unit Test）の構成
-
----
-
-## Phase 1: `atla` ランタイムコア実装 (Runtime Core Foundation)
-
-外部依存ゼロ・全クラス `__slots__` ベースの超軽量ランタイムを実装します。
-
-### タスク:
-- **[#2](https://github.com/hirokazumiyaji/atla/issues/2) 式木 (Expression Tree) AST の実装 (`atla/expressions.py`)**
-  - `Expr[T_co]`, `Column[T]`, `Literal[T]`, `BinaryOp[T]`, `UnaryOp[T]`, `LogicalOp`, `InOp[T]`, `BetweenOp[T]`, `FuncCall[T]`, `RawSQL[T]`, `OrderByClause` の実装
-  - `Expr.__bool__` による誤用防止ガード、空 `IN ()` の安全なフォールバック (`1 = 0` / `1 = 1`)
-  - 論理ヘルパー (`and_`, `or_`, `not_`) および集約関数 (`count`, `sum_`, `avg`, `min_`, `max_`) の実装
-- **[#3](https://github.com/hirokazumiyaji/atla/issues/3) Dialect と単一パス SQL コンパイラの実装 (`atla/dialect.py`, `atla/compiler.py`)**
-  - `PostgresDialect`, `CockroachDialect`, `MySQLDialect`, `TiDBDialect`, `SQLiteDialect` の実装
-  - 識別子クォート、プレースホルダ採番 (`$n`, `%s`, `?`)、`ILIKE` の方言別展開ロジック
-  - `SQLCompiler` による中間文字列生成を抑えた単一パス AST コンパイル
-- **[#4](https://github.com/hirokazumiyaji/atla/issues/4) `DBAdapter` プロトコルと各 DB ドライバアダプタの実装 (`atla/adapter/`)**
-  - `DBAdapter` プロトコル定義 (`fetch_all`, `fetch_one`, `fetch_val`, `execute`, `execute_many`, `transaction`)
-  - `AsyncpgAdapter` (PostgreSQL / CockroachDB)、`AsyncmyAdapter` (MySQL / TiDB)、`AiosqliteAdapter` (SQLite) の実装
-  - ネスト対応（SAVEPOINT）の非同期トランザクションコンテキストマネージャ実装
-- **[#5](https://github.com/hirokazumiyaji/atla/issues/5) イミュータブル BaseQuery / Mutation ランタイムクラスの実装 (`atla/query.py`, `atla/errors.py`)**
-  - `BaseSelectQuery[RecordT]` (`where`, `order_by`, `limit`, `offset`, `all`, `first`, `one`, `count`, `exists`, `to_sql`)
-  - `BaseInsertQuery[RecordT]`, `BaseUpdateQuery[RecordT]`, `BaseDeleteQuery` の実装
-  - `UnsafeMutationError`（WHERE 句なし UPDATE/DELETE 防止ガード）、`NotFoundError`、`MultipleResultsError` の実装
+### Tasks:
+- **[#1](https://github.com/hirokazumiyaji/atla/issues/1) Monorepo Structure & Developer Toolchain**
+  - Create root `pyproject.toml` along with `packages/atla/pyproject.toml` (`dependencies = []`) and `packages/atlagen/pyproject.toml`
+  - Configure `ruff` (lint/format), `pyright --strict`, `mypy --strict`, `pytest`, and `pytest-asyncio`
+  - Set up GitHub Actions CI workflow for linting, strict type checking, and unit tests
 
 ---
 
-## Phase 2: `atlagen` CLI & スキーマ解析基盤 (CLI & Schema Parsing)
+## Phase 1: `atla` Runtime Core Foundation
 
-Atlas CLI が出力する JSON スキーマを読み取り、RDBMS ごとの差異を吸収した内部表現 (`SchemaIR`) と型マッピングを構築します。
+Implement the zero-dependency, `__slots__`-based runtime core.
 
-### タスク:
-- **[#6](https://github.com/hirokazumiyaji/atla/issues/6) Atlas JSON スキーマパーサと内部 IR (`SchemaIR`) の実装 (`atlagen/ir.py`, `atlagen/parser.py`)**
-  - Atlas `schema inspect` JSON 構造 (`schemas`, `tables`, `columns`, `primary_key`, `foreign_keys`, `indexes`, `enums`) のデシリアライズと検証
-  - テーブル名・カラム名から Python 識別子（PascalCase モデル名、snake_case 属性名、Python 予約語回避）への正規化
-  - `default` 属性や `auto_increment` / `identity` の検出による必須・任意カラム判定
-- **[#7](https://github.com/hirokazumiyaji/atla/issues/7) RDBMS 別 SQL 型 -> Python 型マッパーと Row Codec 解決器の実装 (`atlagen/mapper.py`)**
-  - PostgreSQL / CockroachDB / MySQL / TiDB / SQLite の全標準 SQL 型（サイズ指定・unsigned・配列・Enum・UUID・JSON 含む）の型マッピング
-  - `null: true` に基づく `T | None` ラッピングと必要 import シンボルの収集
-  - SQLite / MySQL 等でタプルから Python 型への軽量デコードが必要なカラム向けの静的 `_from_row` 変換式生成
-- **[#8](https://github.com/hirokazumiyaji/atla/issues/8) `atlagen` CLI インターフェースと設定ローダの実装 (`atlagen/cli.py`, `atlagen/config.py`, `atlagen/inspect.py`)**
-  - `atlagen generate` および CI 用 `atlagen check` サブコマンドの実装
-  - 標準入力パイプ (`-`)、JSON ファイルパス、および `atlas schema inspect` サブプロセス呼び出しの3入力モード対応
-  - `pyproject.toml` の `[tool.atlagen]` セクション読み取り対応
-
----
-
-## Phase 3: コードエミッタ実装 & 静的型検証 (Code Emission & Type Verification)
-
-`SchemaIR` から実際に Python コード群 (`enums.py`, `models.py`, `query.py`, `client.py`, `__init__.py`) を出力し、Pyright / Mypy で厳密に検証します。
-
-### タスク:
-- **[#9](https://github.com/hirokazumiyaji/atla/issues/9) コードエミッタ (`enums.py`, `models.py`, `query.py`, `client.py`) の実装 (`atlagen/emitter/`)**
-  - `enums.py`: `StrEnum` クラスの出力
-  - `models.py`: `@dataclass(slots=True, frozen=True)` モデル、`_from_row`、および `as_()` エイリアス対応 `{Table}Table` クラスの出力
-  - `query.py`: 事前計算済み `_SELECT_SQL` 定数を持つ `{Table}Query`、必須/任意引数を区別した `insert()`、式木を受け取れる `update().set()` の出力
-  - `client.py` & `__init__.py`: `AtlaClient` とトランザクションメソッドの出力
-- **[#10](https://github.com/hirokazumiyaji/atla/issues/10) 静的型チェック検証スイート (`tests/typecheck/`) の構築**
-  - テスト用スキーマ（PG / MySQL / SQLite）から生成したコードに対する `pyright --strict` / `mypy --strict` 自動テスト
-  - 型エラーになるべき不正コード（型不一致の比較、必須カラム欠落の `insert`、存在しないカラム指定）が確実に弾かれることを検証するネガティブテスト
+### Tasks:
+- **[#2](https://github.com/hirokazumiyaji/atla/issues/2) Expression Tree AST (`atla/expressions.py`)**
+  - Implement `Expr[T_co]`, `Column[T]`, `Literal[T]`, `BinaryOp[T]`, `UnaryOp[T]`, `LogicalOp`, `InOp[T]`, `BetweenOp[T]`, `FuncCall[T]`, `RawSQL[T]`, and `OrderByClause`
+  - Implement `Expr.__bool__` guard to prevent accidental Python `and`/`or` usage, and safe empty `IN ()` fallback (`1 = 0` / `1 = 1`)
+  - Implement logical combinators (`and_`, `or_`, `not_`) and aggregate functions (`count`, `sum_`, `avg`, `min_`, `max_`)
+- **[#3](https://github.com/hirokazumiyaji/atla/issues/3) Dialects & Single-Pass SQL Compiler (`atla/dialect.py`, `atla/compiler.py`)**
+  - Implement `PostgresDialect`, `CockroachDialect`, `MySQLDialect`, `TiDBDialect`, and `SQLiteDialect`
+  - Handle identifier quoting, positional placeholders (`$n`, `%s`, `?`), and dialect-aware `ILIKE` expansion
+  - Implement `SQLCompiler` for single-pass AST traversal without intermediate string concatenation
+- **[#4](https://github.com/hirokazumiyaji/atla/issues/4) `DBAdapter` Protocol & Driver Adapters (`atla/adapter/`)**
+  - Define `DBAdapter` protocol (`fetch_all`, `fetch_one`, `fetch_val`, `execute`, `execute_many`, `transaction`)
+  - Implement `AsyncpgAdapter` (PostgreSQL / CockroachDB), `AsyncmyAdapter` (MySQL / TiDB), and `AiosqliteAdapter` (SQLite)
+  - Support connection-pinned async transactions and nested `SAVEPOINT` transactions
+- **[#5](https://github.com/hirokazumiyaji/atla/issues/5) Immutable `BaseQuery` & `Mutation` Classes (`atla/query.py`, `atla/errors.py`)**
+  - Implement `BaseSelectQuery[RecordT]` (`where`, `order_by`, `limit`, `offset`, `all`, `first`, `one`, `count`, `exists`, `to_sql`)
+  - Implement `BaseInsertQuery[RecordT]`, `BaseUpdateQuery[RecordT]`, and `BaseDeleteQuery`
+  - Implement `UnsafeMutationError` (protecting against accidental full-table `UPDATE`/`DELETE`), `NotFoundError`, and `MultipleResultsError`
 
 ---
 
-## Phase 4 & 5: リレーション・高度なデータ操作・結合テスト・ベンチマーク
+## Phase 2: `atlagen` CLI & Schema Parsing
 
-実務アプリケーションで不可欠な JOIN、Eager Loading（N+1 回避）、バルク操作、Upsert を型安全に実装し、実 DB での E2E 検証とベンチマークを実施します。
+Parse the JSON schema emitted by `atlas schema inspect` into a normalized Internal Representation (`SchemaIR`) and resolve dialect-specific Python types.
 
-### タスク:
-- **[#11](https://github.com/hirokazumiyaji/atla/issues/11) 型安全な JOIN (`join` / `left_join`)・自己結合エイリアス・Batch Eager Loading の実装**
-  - `db.user.query().join(Post, Post.user_id == User.id)` が `list[tuple[UserRecord, PostRecord]]` を返し、`left_join` が `list[tuple[UserRecord, PostRecord | None]]` を返すタプルスライス・ハイドレーション機構
-  - `WHERE fk IN (...)` を用いた 2 クエリバッチプリロード機構の実装
-- **[#12](https://github.com/hirokazumiyaji/atla/issues/12) バルク Insert・Upsert・部分選択 (`select`) の実装とマルチ RDBMS 結合テスト・ベンチマークの構築**
-  - 複数行の一括挿入 (`insert_many`)、Dialect 別の Upsert (`ON CONFLICT` / `ON DUPLICATE KEY UPDATE`)、`TypeVarTuple` を用いた部分選択
-  - SQLite (`aiosqlite`)、PostgreSQL (`asyncpg`)、MySQL (`asyncmy`) の結合テストおよび SQLAlchemy 2.0 との速度比較ベンチマーク
+### Tasks:
+- **[#6](https://github.com/hirokazumiyaji/atla/issues/6) Atlas JSON Schema Parser & `SchemaIR` (`atlagen/ir.py`, `atlagen/parser.py`)**
+  - Deserialize and validate Atlas `schema inspect` JSON structures (`schemas`, `tables`, `columns`, `primary_key`, `foreign_keys`, `indexes`, `enums`)
+  - Normalize table and column names into valid Python identifiers (PascalCase singular model names, snake_case attributes, keyword collision escaping)
+  - Detect `default` expressions, `auto_increment`, `serial`, and `identity` attributes to classify required vs. optional insert columns
+- **[#7](https://github.com/hirokazumiyaji/atla/issues/7) Multi-Dialect SQL-to-Python Type Mapper & Row Codec Resolver (`atlagen/mapper.py`)**
+  - Map all standard SQL types across PostgreSQL, CockroachDB, MySQL, TiDB, and SQLite (including length/precision modifiers, unsigned integers, arrays, Enums, UUID, and JSON/JSONB)
+  - Wrap nullable columns in `T | None` and collect required standard library imports
+  - Generate static inline row decoding expressions (`row_codec`) for dialects/columns requiring conversion from raw tuple values
+- **[#8](https://github.com/hirokazumiyaji/atla/issues/8) `atlagen` CLI Interface & Configuration Loader (`atlagen/cli.py`, `atlagen/config.py`, `atlagen/inspect.py`)**
+  - Implement `atlagen generate` and CI-oriented `atlagen check` subcommands
+  - Support stdin piping (`-`), local JSON files, and automatic `atlas schema inspect` subprocess execution
+  - Support reading configuration from `[tool.atlagen]` in `pyproject.toml` via standard library `tomllib`
+
+---
+
+## Phase 3: Code Emission & Static Type Verification
+
+Emit deterministic Python modules (`enums.py`, `models.py`, `query.py`, `client.py`, `__init__.py`) from `SchemaIR` and verify them under strict static type checking.
+
+### Tasks:
+- **[#9](https://github.com/hirokazumiyaji/atla/issues/9) Code Emitters (`atlagen/emitter/`)**
+  - `enums.py`: Emit `StrEnum` classes
+  - `models.py`: Emit `@dataclass(slots=True, frozen=True)` records, static `_from_row` hydrators, and alias-capable `{Table}Table` descriptors
+  - `query.py`: Emit `{Table}Query` with pre-computed `_SELECT_SQL` constants, `{Table}Repository.insert()` distinguishing required vs. optional columns, and `{Table}UpdateBuilder.set()` accepting both literals and `Expr[T]`
+  - `client.py` & `__init__.py`: Emit `AtlaClient` with table repositories and `transaction()` context manager
+- **[#10](https://github.com/hirokazumiyaji/atla/issues/10) Static Type Verification Test Suite (`tests/typecheck/`)**
+  - Automated `pyright --strict` and `mypy --strict` tests over generated code for PostgreSQL, MySQL, and SQLite schemas
+  - Negative type tests verifying that invalid type comparisons, missing required `insert()` arguments, and invalid column references fail type checking
+
+---
+
+## Phase 4 & 5: Relations, Advanced Mutations, Integration Tests & Benchmarks
+
+Implement type-safe joins, N+1-free batch eager loading, bulk inserts, and upserts, backed by multi-RDBMS integration tests and performance benchmarks.
+
+### Tasks:
+- **[#11](https://github.com/hirokazumiyaji/atla/issues/11) Type-Safe Joins (`join` / `left_join`), Self-Join Aliasing, and Batch Eager Loading**
+  - Tuple-slicing row hydration where `db.user.query().join(Post, ...)` returns `list[tuple[UserRecord, PostRecord]]` and `left_join` returns `list[tuple[UserRecord, PostRecord | None]]`
+  - 2-query batch eager loading (`WHERE fk IN (...)`) using foreign key metadata to eliminate N+1 queries without lazy-loading proxies
+- **[#12](https://github.com/hirokazumiyaji/atla/issues/12) Bulk Insert, Upsert, Partial Projections, Integration Tests & Benchmarks**
+  - `insert_many()`, dialect-specific Upsert builders (`ON CONFLICT` / `ON DUPLICATE KEY UPDATE`), and `TypeVarTuple`-based partial column selection (`select(User.id, User.email) -> list[tuple[int, str]]`)
+  - End-to-end integration tests (`aiosqlite`, `asyncpg`, `asyncmy`) and benchmark suite (`tests/benchmarks/`) comparing against raw drivers and SQLAlchemy 2.0

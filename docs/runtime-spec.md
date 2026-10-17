@@ -1,23 +1,23 @@
-# `atla` ランタイムコア詳細仕様 (Runtime Specification)
+# `atla` Runtime Core Specification
 
-本ドキュメントでは、外部依存ゼロのランタイムパッケージ `atla` のモジュール設計、式木 (Expression Tree) AST、単一パス SQL コンパイラ、方言 (Dialect)、および DB アダプタのプロトコル仕様を定義します。
-
----
-
-## 1. 設計原則
-
-1. **外部依存ゼロ (`dependencies = []`)**: Python 3.11+ 標準ライブラリのみに依存。
-2. **全クラス `__slots__` 必須**: 動的辞書 (`__dict__`) のアロケーションを排除し、属性アクセス速度とメモリ効率を最大化。
-3. **不変性 (Immutability)**: すべての式ノードとクエリビルダはイミュータブルであり、再利用しても副作用を起こさない。
-4. **完全な型パラメータ伝播**: 式木は評価結果の型 `T` を保持する `Expr[T]` として定義され、Pyright / Mypy の strict モードで型推論が途切れない。
+This document specifies the internal module design of the zero-dependency runtime package `atla`, covering the Expression Tree AST, the single-pass SQL compiler, database dialects, the `DBAdapter` protocol, transaction management, and safety exceptions.
 
 ---
 
-## 2. 式木 (Expression Tree) 仕様 (`atla/expressions.py`)
+## 1. Design Principles
 
-### 2.1 基底クラス `Expr[T]`
+1. **Zero External Dependencies (`dependencies = []`)**: Relies exclusively on the Python 3.11+ standard library.
+2. **Mandatory `__slots__` on Every Class**: Eliminates per-instance `__dict__` allocation to maximize attribute access speed and minimize memory footprint.
+3. **Immutability**: All expression nodes and query builders are immutable and safe to reuse or branch across queries without side effects.
+4. **End-to-End Type Parameter Propagation**: Expression nodes carry their evaluated Python result type `T` via `Expr[T]`, preserving strict type inference under Pyright and Mypy.
 
-すべての SQL 式ノードは `Expr[T_co]` を継承します。`T_co` はその式が SQL 上で評価された際の Python 型（例: 条件式なら `bool`、数値演算なら `int` / `float`）を表します。
+---
+
+## 2. Expression Tree Specification (`atla/expressions.py`)
+
+### 2.1 Base Class `Expr[T]`
+
+All SQL expression AST nodes inherit from `Expr[T_co]`, where `T_co` represents the Python type produced when the expression is evaluated in SQL (e.g., `bool` for predicates, `int` / `float` for numeric expressions).
 
 ```python
 from __future__ import annotations
@@ -36,7 +36,7 @@ class Expr(Generic[T_co]):
             "and '.is_null()' / '.is_not_null()' instead of 'is None'."
         )
 
-    # 論理演算子 (Expr[bool] 同士の結合)
+    # Logical operators for combining Expr[bool] predicates
     def __and__(self: Expr[bool], other: Expr[bool]) -> LogicalOp:
         return LogicalOp("AND", (self, other))
 
@@ -48,12 +48,12 @@ class Expr(Generic[T_co]):
 ```
 
 > [!IMPORTANT]
-> **`__bool__` による安全性保証**
-> Python の `and` / `or` キーワードや `is None` はオーバーロードできません。もしユーザーが誤って `.where(User.age >= 20 and User.is_active == True)` と記述した場合、`Expr.__bool__` が即座に明快な `TypeError` を送出するため、片方の条件が暗黙に無視される重大なバグを未然に防ぎます。
+> **Preventing Silent Short-Circuit Bugs via `__bool__`**
+> Python does not allow overloading the `and`, `or`, `not`, or `is` keywords. If a developer accidentally writes `.where(User.age >= 20 and User.is_active == True)`, `Expr.__bool__` immediately raises a clear `TypeError` instead of silently short-circuiting and dropping the first condition.
 
-### 2.2 カラム表現 `Column[T]`
+### 2.2 Column Descriptor `Column[T]`
 
-テーブルの各カラムは `Column[T]` インスタンスとして定義されます。
+Each table column is represented as a typed `Column[T]` instance:
 
 ```python
 class Column(Expr[T]):
@@ -64,7 +64,7 @@ class Column(Expr[T]):
         self.name = name
         self.alias = alias
 
-    # --- 比較演算子 (Operator Overloads) ---
+    # --- Comparison Operators (Operator Overloads) ---
     def __eq__(self, other: T | Expr[T]) -> BinaryOp[bool]:  # type: ignore[override]
         if other is None:
             return UnaryOp("IS NULL", self, postfix=True)  # type: ignore[return-value]
@@ -87,7 +87,7 @@ class Column(Expr[T]):
     def __ge__(self, other: T | Expr[T]) -> BinaryOp[bool]:
         return BinaryOp(">=", self, _coerce_literal(other))
 
-    # --- 明示的比較メソッド (Linter フレンドリー & 型安全) ---
+    # --- Explicit Comparison Methods (Linter-Friendly & Type-Safe) ---
     def eq(self, other: T | Expr[T]) -> Expr[bool]:
         return self == other
 
@@ -106,14 +106,14 @@ class Column(Expr[T]):
     def ge(self, other: T | Expr[T]) -> BinaryOp[bool]:
         return self >= other
 
-    # --- NULL 判定 ---
+    # --- NULL Predicates ---
     def is_null(self) -> UnaryOp[bool]:
         return UnaryOp("IS NULL", self, postfix=True)
 
     def is_not_null(self) -> UnaryOp[bool]:
         return UnaryOp("IS NOT NULL", self, postfix=True)
 
-    # --- コレクション・範囲・文字列マッチ ---
+    # --- Collection, Range & Pattern Matching ---
     def in_(self, values: Sequence[T]) -> InOp[T]:
         return InOp(self, tuple(values), negated=False)
 
@@ -138,7 +138,7 @@ class Column(Expr[T]):
     def ends_with(self, suffix: str) -> BinaryOp[bool]:
         return self.like(f"%{suffix}")
 
-    # --- 算術演算 (UPDATE 句の `User.age + 1` 等で利用) ---
+    # --- Arithmetic Operators (Used in UPDATE clauses like `User.age + 1`) ---
     def __add__(self, other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("+", self, _coerce_literal(other))
 
@@ -148,7 +148,7 @@ class Column(Expr[T]):
     def __mul__(self, other: T | Expr[T]) -> BinaryOp[T]:
         return BinaryOp("*", self, _coerce_literal(other))
 
-    # --- ソート指定 ---
+    # --- Ordering ---
     def asc(self, *, nulls: str | None = None) -> OrderByClause:
         return OrderByClause(self, direction="ASC", nulls=nulls)
 
@@ -156,48 +156,48 @@ class Column(Expr[T]):
         return OrderByClause(self, direction="DESC", nulls=nulls)
 ```
 
-### 2.3 AST ノード一覧
+### 2.3 AST Node Reference
 
-| クラス名 | 継承元 | `__slots__` | 役割・SQL 出力例 |
+| Class | Base Class | `__slots__` | Responsibility & SQL Compilation Behavior |
 | :--- | :--- | :--- | :--- |
-| `Literal[T]` | `Expr[T]` | `("value",)` | バインドパラメータ値 (`$1`, `%s`, `?`) を保持 |
-| `Column[T]` | `Expr[T]` | `("table", "name", "alias")` | `"users"."age"` などのカラム識別子 |
-| `BinaryOp[T]` | `Expr[T]` | `("op", "left", "right")` | 二項演算 (`"users"."age" >= $1`, `"users"."age" + $1`) |
-| `UnaryOp[T]` | `Expr[T]` | `("op", "operand", "postfix")` | 単項演算 (`NOT (...)`, `"users"."deleted_at" IS NULL`) |
-| `LogicalOp` | `Expr[bool]` | `("op", "clauses")` | 論理結合 (`(A AND B AND C)`, `(A OR B)`)。同一演算子のネストはフラット化 |
-| `InOp[T]` | `Expr[bool]` | `("expr", "values", "negated")` | `IN ($1, $2)`。**`values` が空タプルの場合は SQL 構文エラーを防ぐため `1 = 0` (`negated=False`) または `1 = 1` (`negated=True`) に安全に展開** |
-| `BetweenOp[T]` | `Expr[bool]` | `("expr", "low", "high")` | `"users"."age" BETWEEN $1 AND $2` |
-| `FuncCall[T]` | `Expr[T]` | `("name", "args", "distinct")` | `COUNT(*)`, `MAX("users"."age")`, `COALESCE(...)` |
-| `RawSQL[T]` | `Expr[T]` | `("sql", "params")` | エスケープハッチ `raw_sql[bool]("...", params)` |
-| `OrderByClause`| - | `("expr", "direction", "nulls")` | `ORDER BY "users"."created_at" DESC NULLS LAST` |
+| `Literal[T]` | `Expr[T]` | `("value",)` | Holds a bind parameter value (`$1`, `%s`, `?`). |
+| `Column[T]` | `Expr[T]` | `("table", "name", "alias")` | Qualified column identifier (e.g., `"users"."age"`). |
+| `BinaryOp[T]` | `Expr[T]` | `("op", "left", "right")` | Binary operation (`"users"."age" >= $1`, `"users"."age" + $1`). |
+| `UnaryOp[T]` | `Expr[T]` | `("op", "operand", "postfix")` | Unary operation (`NOT (...)`, `"users"."deleted_at" IS NULL`). |
+| `LogicalOp` | `Expr[bool]` | `("op", "clauses")` | Logical conjunction/disjunction (`(A AND B AND C)`, `(A OR B)`). Nested identical operators are flattened. |
+| `InOp[T]` | `Expr[bool]` | `("expr", "values", "negated")` | `IN ($1, $2)`. **When `values` is empty, safely compiles to `1 = 0` (`negated=False`) or `1 = 1` (`negated=True`) to prevent SQL syntax errors.** |
+| `BetweenOp[T]` | `Expr[bool]` | `("expr", "low", "high")` | `"users"."age" BETWEEN $1 AND $2`. |
+| `FuncCall[T]` | `Expr[T]` | `("name", "args", "distinct")` | SQL function calls (`COUNT(*)`, `MAX("users"."age")`, `COALESCE(...)`). |
+| `RawSQL[T]` | `Expr[T]` | `("sql", "params")` | Type-annotated raw SQL escape hatch `raw_sql[bool]("...", params)`. |
+| `OrderByClause`| - | `("expr", "direction", "nulls")` | `ORDER BY "users"."created_at" DESC NULLS LAST`. |
 
-### 2.4 論理・集約ヘルパー関数 (`atla/__init__.py`)
+### 2.4 Logical & Aggregate Helper Functions (`atla/__init__.py`)
 
-- **論理結合**:
+- **Logical Combinators**:
   - `and_(*clauses: Expr[bool]) -> Expr[bool]`
   - `or_(*clauses: Expr[bool]) -> Expr[bool]`
   - `not_(clause: Expr[bool]) -> Expr[bool]`
-- **集約関数**:
+- **Aggregate Functions**:
   - `count(expr: Expr[Any] | None = None, *, distinct: bool = False) -> FuncCall[int]`
   - `sum_(expr: Expr[T]) -> FuncCall[T | None]`
   - `avg(expr: Expr[Any]) -> FuncCall[float | None]`
   - `min_(expr: Expr[T]) -> FuncCall[T | None]`
   - `max_(expr: Expr[T]) -> FuncCall[T | None]`
-- **Raw SQL エスケープハッチ**:
+- **Raw SQL Escape Hatch**:
   - `raw_sql(sql: str, *params: Any) -> RawSQL[Any]`
 
 ---
 
-## 3. Dialect & 単一パス SQL コンパイラ (`atla/dialect.py`, `atla/compiler.py`)
+## 3. Dialects & Single-Pass SQL Compiler (`atla/dialect.py`, `atla/compiler.py`)
 
-### 3.1 Dialect 仕様
+### 3.1 Dialect Matrix
 
-各 RDBMS の構文差異を吸収するため、軽量な `Dialect` クラスを定義します。
+Lightweight `Dialect` classes encapsulate RDBMS-specific SQL syntax rules:
 
-| Dialect クラス | 対象 DB | 識別子クォート | プレースホルダ | `RETURNING` 対応 | `ILIKE` 変換 | Upsert 構文 |
+| Dialect Class | Target Engine | Identifier Quote | Placeholders | `RETURNING` Support | `ILIKE` Compilation | Upsert Syntax |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `PostgresDialect` | PostgreSQL | `"ident"` | `$1, $2, ...` | Yes | ネイティブ `ILIKE` | `ON CONFLICT (...) DO UPDATE` |
-| `CockroachDialect`| CockroachDB | `"ident"` | `$1, $2, ...` | Yes | ネイティブ `ILIKE` | `ON CONFLICT (...) DO UPDATE` |
+| `PostgresDialect` | PostgreSQL | `"ident"` | `$1, $2, ...` | Yes | Native `ILIKE` | `ON CONFLICT (...) DO UPDATE` |
+| `CockroachDialect`| CockroachDB | `"ident"` | `$1, $2, ...` | Yes | Native `ILIKE` | `ON CONFLICT (...) DO UPDATE` |
 | `MySQLDialect` | MySQL | `` `ident` `` | `%s, %s, ...` | No (`lastrowid`) | `LOWER(a) LIKE LOWER(b)` | `ON DUPLICATE KEY UPDATE` |
 | `TiDBDialect` | TiDB | `` `ident` `` | `%s, %s, ...` | No (`lastrowid`) | `LOWER(a) LIKE LOWER(b)` | `ON DUPLICATE KEY UPDATE` |
 | `SQLiteDialect` | SQLite 3.35+ | `"ident"` | `?, ?, ...` | Yes | `LOWER(a) LIKE LOWER(b)` | `ON CONFLICT (...) DO UPDATE` |
@@ -215,9 +215,9 @@ class Dialect:
     def placeholder(self, index: int) -> str: ...
 ```
 
-### 3.2 単一パス SQL コンパイラ (`SQLCompiler`)
+### 3.2 Single-Pass SQL Compiler (`SQLCompiler`)
 
-式木 AST から SQL 文字列とバインドパラメータ配列を生成する際、文字列連結 (`+`) による中間文字列アロケーションを避け、`list[str]` バッファへの `append` と最後の `"".join(buf)` で単一パス (Single-pass) コンパイルを行います。
+To avoid intermediate string allocations from repeated `+` concatenations, `SQLCompiler` traverses the AST in a single pass, appending SQL fragments to a `list[str]` buffer and joining once via `"".join(buf)`.
 
 ```python
 class SQLCompiler:
@@ -233,7 +233,7 @@ class SQLCompiler:
         return self.dialect.placeholder(len(self.params))
 
     def visit(self, node: Expr[Any]) -> None:
-        # match / isinstance 分岐により高速に buf と params を構築
+        # Fast structural pattern matching / isinstance dispatch over AST nodes
         ...
 
     def build(self) -> tuple[str, list[Any]]:
@@ -242,9 +242,9 @@ class SQLCompiler:
 
 ---
 
-## 4. DB アダプタ & トランザクション仕様 (`atla/adapter/`)
+## 4. Database Adapter & Transaction Specification (`atla/adapter/`)
 
-### 4.1 `DBAdapter` プロトコル定義
+### 4.1 `DBAdapter` Protocol
 
 ```python
 from contextlib import AbstractAsyncContextManager
@@ -255,67 +255,67 @@ class DBAdapter(Protocol):
     def dialect(self) -> Dialect: ...
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
-        """複数行をタプル/Record のシーケンスとして取得する。"""
+        """Fetch multiple rows as a sequence of tuples/records."""
         ...
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
-        """単一行をタプル/Record として取得する。存在しない場合は None。"""
+        """Fetch a single row as a tuple/record, or None if no row matches."""
         ...
 
     async def fetch_val(self, sql: str, params: Sequence[Any] = ()) -> Any:
-        """単一行の第1カラム値を取得する（COUNT や RETURNING id 用）。"""
+        """Fetch the first column of the first row (used for COUNT and scalar queries)."""
         ...
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        """DML (INSERT/UPDATE/DELETE) を実行し、影響行数 (または lastrowid) を返す。"""
+        """Execute a DML statement (INSERT/UPDATE/DELETE) and return affected row count."""
         ...
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
-        """バッチ DML を実行する。"""
+        """Execute a batch DML statement."""
         ...
 
     def transaction(self) -> AbstractAsyncContextManager[DBAdapter]:
-        """トランザクションを開始し、同一コネクションに束縛された DBAdapter を yield する。"""
+        """Begin a transaction and yield a DBAdapter pinned to the active connection."""
         ...
 ```
 
-### 4.2 各ドライバアダプタの実装詳細
+### 4.2 Concrete Driver Adapters
 
 #### 1. `AsyncpgAdapter` (PostgreSQL / CockroachDB)
-- `asyncpg.Pool` または `asyncpg.Connection` をラップ。
-- `fetch_all`: `await conn.fetch(sql, *params)` を呼び出す。`asyncpg.Record` は C レベルでシーケンスプロトコルと `*record` アンパックをサポートするため、変換コストゼロで `RecordCls(*row)` に渡せる。
-- `execute`: `await conn.execute(sql, *params)` のステータスタグ（例: `"UPDATE 3"`）から影響行数を高速パースして `int` を返す。
+- Wraps `asyncpg.Pool` or `asyncpg.Connection`.
+- `fetch_all`: Calls `await conn.fetch(sql, *params)`. Because `asyncpg.Record` natively implements the sequence protocol and C-level `*record` unpacking, rows are unpacked into `RecordCls(*row)` with zero conversion overhead.
+- `execute`: Parses the affected row count from the command status tag (e.g., `"UPDATE 3"` -> `3`).
 - `transaction()`:
-  - Pool の場合は `async with self._pool.acquire() as conn:` + `async with conn.transaction():` を実行し、その `conn` をラップした `_AsyncpgConnAdapter(conn)` を yield する。
-  - 既にトランザクション内の Connection の場合はネストされた `conn.transaction()` (SAVEPOINT) を開始する。
+  - When wrapping a `Pool`, acquires a connection via `async with self._pool.acquire() as conn:` and opens `async with conn.transaction():`, yielding a connection-pinned `AsyncpgAdapter(conn)`.
+  - When already inside a transaction on a pinned connection, opens a nested `conn.transaction()` (`SAVEPOINT`).
 
 #### 2. `AsyncmyAdapter` (MySQL / TiDB)
-- `asyncmy.Pool` または `asyncmy.Connection` をラップ。
-- 辞書生成コストを避けるため、標準のタプルカーソル (`asyncmy.cursors.Cursor`) を使用。
-- `transaction()`: `await conn.begin()` 〜 `await conn.commit()` / `await conn.rollback()`（ネスト時は `SAVEPOINT`）を制御。
+- Wraps `asyncmy.Pool` or `asyncmy.Connection`.
+- Uses the standard tuple cursor (`asyncmy.cursors.Cursor`) rather than `DictCursor` to avoid per-row dictionary allocation.
+- `transaction()`: Manages `await conn.begin()` / `await conn.commit()` / `await conn.rollback()` (and `SAVEPOINT` for nested transactions).
 
 #### 3. `AiosqliteAdapter` (SQLite)
-- `aiosqlite.Connection` をラップ。
-- `PRAGMA foreign_keys = ON` や `SAVEPOINT` を用いたトランザクション分離をサポート。
+- Wraps `aiosqlite.Connection`.
+- Supports `PRAGMA foreign_keys = ON` and `SAVEPOINT`-based transaction isolation.
 
 ---
 
-## 5. 例外階層 (`atla/errors.py`)
+## 5. Exception Hierarchy (`atla/errors.py`)
 
 ```python
 class AtlaError(Exception):
-    """atla の基底例外クラス"""
+    """Base exception for all atla runtime errors."""
 
 class NotFoundError(AtlaError):
-    """`.one()` 実行時に結果が 0 件だった場合に送出"""
+    """Raised when `.one()` returns 0 rows."""
 
 class MultipleResultsError(AtlaError):
-    """`.one()` 実行時に結果が 2 件以上存在した場合に送出"""
+    """Raised when `.one()` returns more than 1 row."""
 
 class UnsafeMutationError(AtlaError):
-    """WHERE 句なしの UPDATE / DELETE が `.allow_full_table()` なしで実行された場合に送出"""
+    """Raised when an UPDATE or DELETE query without a WHERE clause is executed without `.allow_full_table()`."""
 ```
 
 > [!TIP]
-> **`UnsafeMutationError` による事故防止**
-> 本番環境での `db.user.delete().execute()` のような WHERE 句忘れによる全件削除・全件更新事故を防ぐため、デフォルトで `where()` が未指定の `update()` / `delete()` は `UnsafeMutationError` を送出します。意図的に全件対象とする場合は `.allow_full_table()` の明示呼び出しを要求します。
+> **Guarding Against Accidental Full-Table Mutations**
+> To prevent catastrophic production bugs such as `await db.user.delete().execute()` wiping an entire table when `.where(...)` is forgotten, `update()` and `delete()` raise `UnsafeMutationError` by default if no `WHERE` clause is present. Full-table mutations require an explicit `.allow_full_table()` call.

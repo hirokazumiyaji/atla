@@ -1,54 +1,54 @@
-# `atlagen` コードジェネレータ詳細仕様 (Generator Specification)
+# `atlagen` Code Generator Specification
 
-本ドキュメントでは、Atlas のスキーマ定義から型安全かつゼロオーバーヘッドな Python コードを事前生成する CLI ツール `atlagen` の仕様を定義します。
+This document specifies `atlagen`, the Ahead-of-Time (AOT) CLI code generator that reads Atlas schema definitions and emits zero-overhead, strictly typed Python models and query builders.
 
 ---
 
-## 1. CLI インターフェース & 設定仕様 (`atlagen/cli.py`, `atlagen/config.py`)
+## 1. CLI Interface & Configuration (`atlagen/cli.py`, `atlagen/config.py`)
 
-### 1.1 コマンドライン構文
+### 1.1 Command-Line Syntax
 
-`atlagen` は以下の3通りの入力方式をサポートします：
-1. **標準入力パイプライン (推奨)**: `atlas schema inspect ... --format '{{ json . }}' | atlagen generate ...`
-2. **保存済み Atlas JSON ファイル**: `atlagen generate --schema ./schema.json ...`
-3. **Atlas CLI 自動呼び出し**: `atlagen generate --schema file://schema.hcl --dev-url docker://postgres/16/dev ...`
+`atlagen` supports three input modes:
+1. **Standard Input Pipeline (Recommended)**: `atlas schema inspect ... --format '{{ json . }}' | atlagen generate ...`
+2. **Saved Atlas JSON File**: `atlagen generate --schema ./schema.json ...`
+3. **Direct Atlas CLI Invocation**: `atlagen generate --schema file://schema.hcl --dev-url docker://postgres/16/dev ...`
 
 ```bash
-# 1. 標準入力から Atlas JSON を受け取る場合 (--schema 省略時は stdin を読み取る)
+# 1. Read Atlas JSON from stdin (default when --schema is omitted or '-')
 atlas schema inspect -u "postgres://localhost:5432/mydb" --format '{{ json . }}' \
   | atlagen generate --dialect postgres --out ./app/db/generated
 
-# 2. Atlas JSON ファイルを直接指定する場合
+# 2. Read from a saved Atlas JSON file
 atlagen generate \
   --schema ./schema.inspect.json \
   --dialect mysql \
   --out ./app/db/generated
 
-# 3. schema.hcl と dev-url を指定して内部で atlas schema inspect を実行する場合
+# 3. Invoke `atlas schema inspect` automatically under the hood
 atlagen generate \
   --schema "file://schema.hcl" \
   --dev-url "docker://postgres/16/dev" \
   --dialect postgres \
   --out ./app/db/generated
 
-# 4. CI 向け差分検証モード (生成コードが最新スキーマと一致しているか検査)
+# 4. CI check mode (verifies that generated files match the current schema without modifying disk)
 atlagen check --schema ./schema.inspect.json --dialect postgres --out ./app/db/generated
 ```
 
-### 1.2 CLI オプション一覧
+### 1.2 CLI Options
 
-| オプション | 必須 | デフォルト | 説明 |
+| Option | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--dialect` | Yes* | - | ターゲット DB 方言 (`postgres`, `cockroach`, `mysql`, `tidb`, `sqlite`) |
-| `--out`, `-o` | Yes* | - | 生成コードの出力先ディレクトリパス |
-| `--schema`, `-s` | No | `-` (stdin) | Atlas JSON ファイルパス、または Atlas URL (`file://...`, `postgres://...`) |
-| `--dev-url` | No | `None` | `--schema` に HCL/SQL を指定した際、Atlas CLI に渡す `--dev-url` |
-| `--schema-name` | No | 自動 (先頭スキーマ) | マルチスキーマ環境で対象とする DB スキーマ名（例: `public`） |
-| `--frozen / --mutable` | No | `--frozen` | 生成する `{Table}Record` dataclass に `frozen=True` を付与するか |
+| `--dialect` | Yes* | - | Target DB dialect (`postgres`, `cockroach`, `mysql`, `tidb`, `sqlite`). |
+| `--out`, `-o` | Yes* | - | Output directory path for generated Python files. |
+| `--schema`, `-s` | No | `-` (stdin) | Path to an Atlas JSON file, `-` for stdin, or an Atlas URL (`file://...`, `postgres://...`). |
+| `--dev-url` | No | `None` | Passed to `atlas schema inspect --dev-url` when inspecting HCL or SQL files directly. |
+| `--schema-name` | No | Auto (first schema) | Target database schema name in multi-schema databases (e.g., `public`). |
+| `--frozen / --mutable` | No | `--frozen` | Whether generated `{Table}Record` dataclasses specify `frozen=True`. |
 
-*※ `pyproject.toml` の `[tool.atlagen]` セクションが定義されている場合は CLI 引数を省略可能。*
+*\*Can be omitted on the command line if configured in `pyproject.toml` under `[tool.atlagen]`.*
 
-### 1.3 `pyproject.toml` 設定サポート
+### 1.3 `pyproject.toml` Configuration Support
 
 ```toml
 [tool.atlagen]
@@ -61,44 +61,44 @@ frozen = true
 
 ---
 
-## 2. 内部中間表現 (Internal Representation: `atlagen/ir.py`)
+## 2. Internal Representation (`atlagen/ir.py`)
 
-Atlas の JSON 出力フォーマットは RDBMS ごとに細かな表現差があるため、`parser.py` で一度正規化された内部 AST (`SchemaIR`) に変換します。
+Because Atlas JSON output exhibits subtle structural variations across database engines, `parser.py` normalizes the raw JSON into a dialect-agnostic Internal Representation (`SchemaIR`) before code generation:
 
 ```python
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 @dataclass(slots=True, frozen=True)
 class EnumIR:
-    name: str                  # DB 上の Enum 型名 (例: "user_role")
-    class_name: str            # Python の Enum クラス名 (例: "UserRole")
-    values: tuple[str, ...]    # 列挙値タプル (例: ("admin", "member", "guest"))
+    name: str                  # Database enum name (e.g., "user_role")
+    class_name: str            # Generated Python StrEnum class name (e.g., "UserRole")
+    values: tuple[str, ...]    # Enum values (e.g., ("admin", "member", "guest"))
 
 @dataclass(slots=True, frozen=True)
 class ColumnIR:
-    name: str                  # DB カラム名 (例: "created_at")
-    attr_name: str             # Python 属性名 (予約語衝突時は末尾 `_` 付与)
-    raw_type: str              # Atlas JSON 上の型文字列 (例: "character varying(255)")
-    python_type: str           # 読み取り時の Python 型表現 (例: "str", "int | None")
-    base_python_type: str      # Optional を除いた基底型 (例: "str", "int")
-    import_symbol: tuple[str, str] | None  # 必要な import (例: ("datetime", "datetime"))
-    nullable: bool             # NULL 許容か
-    has_default: bool          # DEFAULT 値または AUTO_INCREMENT / IDENTITY があるか
-    is_primary_key: bool       # 主キー構成カラムか
-    row_codec: str | None      # 行デコード時の変換式テンプレート (不要なら None)
+    name: str                  # Database column name (e.g., "created_at")
+    attr_name: str             # Python attribute name (appends `_` if colliding with Python keywords)
+    raw_type: str              # Raw SQL type string from Atlas JSON (e.g., "character varying(255)")
+    python_type: str           # Read-time Python type annotation (e.g., "str", "int | None")
+    base_python_type: str      # Non-nullable base Python type (e.g., "str", "int")
+    import_symbol: tuple[str, str] | None  # Required import (e.g., ("datetime", "datetime"))
+    nullable: bool             # Whether the column allows NULL
+    has_default: bool          # True if column has DEFAULT, AUTO_INCREMENT, SERIAL, or IDENTITY
+    is_primary_key: bool       # True if part of the table's primary key
+    row_codec: str | None      # Inline decoding expression for `_from_row` (None if driver returns native type)
 
 @dataclass(slots=True, frozen=True)
 class ForeignKeyIR:
-    symbol: str                # FK 制約名
-    columns: tuple[str, ...]   # 自テーブルのカラム名タプル
-    ref_table: str             # 参照先テーブル名
-    ref_columns: tuple[str, ...]# 参照先カラム名タプル
+    symbol: str                # Foreign key constraint name
+    columns: tuple[str, ...]   # Local column names
+    ref_table: str             # Referenced table name
+    ref_columns: tuple[str, ...]# Referenced column names
 
 @dataclass(slots=True, frozen=True)
 class TableIR:
-    name: str                  # DB テーブル名 (例: "users")
-    model_name: str            # PascalCase 単数形プレフィックス (例: "User")
-    accessor_name: str         # AtlaClient 上のプロパティ名 (例: "user")
+    name: str                  # Database table name (e.g., "users")
+    model_name: str            # Singular PascalCase prefix (e.g., "User")
+    accessor_name: str         # Property name on AtlaClient (e.g., "user")
     columns: tuple[ColumnIR, ...]
     primary_key: tuple[str, ...]
     foreign_keys: tuple[ForeignKeyIR, ...]
@@ -113,11 +113,11 @@ class SchemaIR:
 
 ---
 
-## 3. RDBMS 別 型マッピング規則 (`atlagen/mapper.py`)
+## 3. SQL-to-Python Type Mapping Rules (`atlagen/mapper.py`)
 
-SQL 型文字列はサイズ指定 (`varchar(255)`), 精度指定 (`numeric(10, 2)`), 符号指定 (`bigint unsigned`), タイムゾーン表記 (`timestamp with time zone`) などを正規化した上で以下の規則で Python 型へマッピングします。
+Raw SQL type strings are normalized (stripping length specifiers like `varchar(255)`, precision specifiers like `numeric(10, 2)`, `unsigned` modifiers, and timezone clauses) and mapped according to the following rules:
 
-| DB 分類 | SQL 型 (正規化後) | Python 型 (`models.py`) | `Column[T]` 型定義 | 必要な標準ライブラリ Import |
+| Engine Family | Normalized SQL Type | Python Type (`models.py`) | `Column[T]` Definition | Required Stdlib Import |
 | :--- | :--- | :--- | :--- | :--- |
 | **PostgreSQL / CockroachDB** | `smallint`, `integer`, `bigint`, `serial`, `bigserial`, `int2`, `int4`, `int8`, `rowid` | `int` | `Column[int]` | - |
 | | `real`, `double precision`, `float4`, `float8` | `float` | `Column[float]` | - |
@@ -130,9 +130,9 @@ SQL 型文字列はサイズ指定 (`varchar(255)`), 精度指定 (`numeric(10, 
 | | `time`, `timetz` | `time` | `Column[time]` | `from datetime import time` |
 | | `timestamp`, `timestamptz`, `timestamp with time zone` | `datetime` | `Column[datetime]` | `from datetime import datetime` |
 | | `interval` | `timedelta` | `Column[timedelta]` | `from datetime import timedelta` |
-| | `json`, `jsonb` | `dict[str, Any] \| list[Any]` | `Column[Any]` | `from typing import Any` |
-| | `<type>[]` (配列型) | `list[<PythonType>]` | `Column[list[<PythonType>]]` | - |
-| | `<enum>` (ユーザー定義 Enum) | `<EnumClass>` | `Column[<EnumClass>]` | `from .enums import <EnumClass>` |
+| | `json`, `jsonb` | `Any` (`dict` / `list`) | `Column[Any]` | `from typing import Any` |
+| | `<type>[]` (Array types) | `list[<PythonType>]` | `Column[list[<PythonType>]]` | - |
+| | `<enum>` (User-defined Enum) | `<EnumClass>` | `Column[<EnumClass>]` | `from .enums import <EnumClass>` |
 | **MySQL / TiDB** | `tinyint(1)`, `boolean`, `bool` | `bool` | `Column[bool]` | - |
 | | `tinyint`, `smallint`, `mediumint`, `int`, `integer`, `bigint` (signed/unsigned) | `int` | `Column[int]` | - |
 | | `float`, `double` | `float` | `Column[float]` | - |
@@ -155,29 +155,29 @@ SQL 型文字列はサイズ指定 (`varchar(255)`), 精度指定 (`numeric(10, 
 | | `uuid` | `UUID` | `Column[UUID]` | `from uuid import UUID` |
 | | `json` | `Any` | `Column[Any]` | `from typing import Any` |
 
-### Nullability & Default 規則
+### Nullability & Default Rules
 1. **Nullability (`null: true`)**:
-   - `ColumnIR.nullable == True` の場合、Python 3.10+ 標準の Union 記法 **`T | None`** として出力する（例: `Column[str | None]`, `bio: str | None`）。
-2. **Insert 時の必須 / 省略可能判定**:
-   - `nullable == False` かつ `has_default == False`（`auto_increment` / `identity` / `default` 式がいずれも無い）カラムのみ、`insert()` の **必須キーワード引数 (`T`)** とする。
-   - `nullable == True` または `has_default == True` のカラムは、デフォルト値 `UNSET` を持つ **省略可能キーワード引数 (`T | UnsetType = UNSET`)** とする。これにより、指定されなかったカラムは `INSERT` 文のカラムリスト自体から除外され、DB 側の `DEFAULT` 値が正しく適用される。
+   - When `ColumnIR.nullable == True`, the type annotation uses standard Python 3.10+ union syntax **`T | None`** (e.g., `Column[str | None]`, `bio: str | None`).
+2. **Required vs. Optional Parameters in `insert()`**:
+   - Columns where `nullable == False` AND `has_default == False` (no server `DEFAULT`, `AUTO_INCREMENT`, or `IDENTITY`) are emitted as **required keyword-only arguments (`col: T`)** on `insert()`.
+   - Columns where `nullable == True` OR `has_default == True` are emitted as **optional keyword-only arguments (`col: T | UnsetType = UNSET`)**. Any argument left as `UNSET` is omitted from the `INSERT` column list so the database applies its native default value.
 
 ---
 
-## 4. 生成コード仕様 (`emitter/`)
+## 4. Emitted Code Specification (`emitter/`)
 
-`atlagen` は出力ディレクトリに以下の5ファイルを生成します。すべてのファイル先頭には `# Code generated by atlagen. DO NOT EDIT.` ヘッダが付与されます。
+`atlagen` writes five files into the target output directory. Every generated file starts with `# Code generated by atlagen. DO NOT EDIT.`.
 
 ```text
 generated/
-├── __init__.py    # AtlaClient, 各 Record, 各 Table シングルトン, 各 Enum の再エクスポート
-├── enums.py       # DB Enum に対応する StrEnum クラス群
-├── models.py      # {Table}Record (slots dataclass) と {Table}Table (Column 定義)
-├── query.py       # 型付き {Table}Query / Insert / Update / Delete ビルダ
-└── client.py      # AtlaClient (テーブルアクセサ & トランザクション制御)
+├── __init__.py    # Re-exports AtlaClient, Record models, Table singletons, and Enums
+├── enums.py       # StrEnum classes corresponding to database enums
+├── models.py      # {Table}Record (slots dataclass) and {Table}Table (Column descriptors)
+├── query.py       # Typed {Table}Query / Insert / Update / Delete builders
+└── client.py      # AtlaClient (table repositories & transaction context manager)
 ```
 
-### 4.1 `models.py` の出力例
+### 4.1 Example `models.py` Output
 
 ```python
 # Code generated by atlagen. DO NOT EDIT.
@@ -219,30 +219,29 @@ class UsersTable:
         self.created_at: Column[datetime] = Column(t, "created_at")
 
     def as_(self, alias: str) -> UsersTable:
-        """自己結合やサブクエリ用にテーブルエイリアスを付与した新しい UsersTable を返す。"""
+        """Return a new UsersTable instance bound to the given SQL table alias for self-joins."""
         return UsersTable(alias=alias)
 
 
 User = UsersTable()
 ```
 
-### 4.2 `query.py` の出力例 (AOT 事前計算 & 完全型付き Builder)
+### 4.2 Example `query.py` Output (AOT Pre-computed SQL & Typed Builders)
 
 ```python
 # Code generated by atlagen. DO NOT EDIT.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Sequence
 from atla.adapter import DBAdapter
-from atla.expressions import Expr, OrderByClause
+from atla.expressions import Expr
 from atla.query import BaseSelectQuery, BaseInsertQuery, BaseUpdateQuery, BaseDeleteQuery
 from atla.types import UNSET, UnsetType
-from .models import UserRecord, UsersTable, User
+from .models import UserRecord
 
 class UserQuery(BaseSelectQuery[UserRecord]):
     __slots__ = ()
-    # コード生成時に確定している SELECT 句を定数化（実行時の文字列結合コストゼロ）
+    # Static SELECT clause pre-computed at codegen time (zero runtime string-join overhead)
     _TABLE_NAME = '"users"'
     _SELECT_SQL = (
         'SELECT "users"."id", "users"."email", "users"."name", '
@@ -328,7 +327,7 @@ class UserRepository:
         return BaseDeleteQuery(self._adapter, table_name='"users"')
 ```
 
-### 4.3 `client.py` の出力例
+### 4.3 Example `client.py` Output
 
 ```python
 # Code generated by atlagen. DO NOT EDIT.
@@ -349,7 +348,7 @@ class AtlaClient:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AtlaClient]:
-        """トランザクションを開始し、同一コネクションに束縛された AtlaClient を返す。"""
+        """Begin a database transaction and yield an AtlaClient pinned to the transaction connection."""
         async with self._adapter.transaction() as tx_adapter:
             yield AtlaClient(tx_adapter)
 ```
