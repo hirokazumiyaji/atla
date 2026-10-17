@@ -165,42 +165,102 @@ class SQLCompiler:
 
         style = self.dialect.positional_style
         expected = len(node.params)
+        placeholders = _collect_raw_placeholders(node.sql, style)
         if style == "dollar":
-            found = {int(match) for match in re.findall(r"\$(\d+)", node.sql)}
+            found = set(placeholders)
             if found != set(range(1, expected + 1)):
                 msg = (
                     "RawSQL dollar placeholders must be a contiguous $1..$N sequence "
                     f"matching {expected} parameter(s); found {sorted(found)}"
                 )
                 raise ValueError(msg)
-        elif style == "qmark":
-            count = node.sql.count("?")
-            if count != expected:
-                msg = f"RawSQL has {count} '?' placeholder(s) but {expected} parameter(s)"
-                raise ValueError(msg)
-        elif style == "format":
-            count = node.sql.replace("%%", "").count("%s")
-            if count != expected:
-                msg = f"RawSQL has {count} '%s' placeholder(s) but {expected} parameter(s)"
-                raise ValueError(msg)
-        else:
-            msg = f"unsupported positional_style: {style!r}"
+        elif len(placeholders) != expected:
+            token = "?" if style == "qmark" else "%s"
+            msg = (
+                f"RawSQL has {len(placeholders)} '{token}' placeholder(s) "
+                f"but {expected} parameter(s)"
+            )
             raise ValueError(msg)
 
         # Re-bind fragment parameters at the current compiler offset so composed
         # expressions do not reuse stale placeholder indexes (especially `$n`).
         rebound = [self.add_param(value) for value in node.params]
         if style == "dollar":
-
-            def _replace(match: re.Match[str]) -> str:
-                index = int(match.group(1)) - 1
-                return rebound[index]
-
-            self.write(re.sub(r"\$(\d+)", _replace, node.sql))
+            self.write(_rebind_dollar_placeholders(node.sql, rebound))
             return
 
-        # `%s` / `?` placeholders are order-based; SQL text stays unchanged.
         self.write(node.sql)
+
+
+_STRING_OR_COMMENT = re.compile(
+    r"('(?:''|[^'])*')"  # single-quoted literal
+    r"|(\"(?:\"\"|[^\"])*\")"  # double-quoted identifier/literal
+    r"|(`(?:``|[^`])*`)"  # MySQL identifier
+    r"|(--[^\n]*)"  # line comment
+    r"|(/\*.*?\*/)",  # block comment
+    re.DOTALL,
+)
+
+
+def _collect_raw_placeholders(sql: str, style: str) -> list[int]:
+    """Collect placeholder indexes found outside literals/comments."""
+    placeholders: list[int] = []
+    cursor = 0
+    for match in _STRING_OR_COMMENT.finditer(sql):
+        _scan_code_span(sql[cursor : match.start()], style, placeholders)
+        cursor = match.end()
+    _scan_code_span(sql[cursor:], style, placeholders)
+    return placeholders
+
+
+def _rebind_dollar_placeholders(sql: str, rebound: list[str]) -> str:
+    """Rewrite `$n` placeholders outside literals/comments using rebound tokens."""
+    out: list[str] = []
+    cursor = 0
+    for match in _STRING_OR_COMMENT.finditer(sql):
+        out.append(
+            re.sub(
+                r"\$(\d+)",
+                lambda m: rebound[int(m.group(1)) - 1],
+                sql[cursor : match.start()],
+            )
+        )
+        out.append(match.group(0))
+        cursor = match.end()
+    out.append(
+        re.sub(
+            r"\$(\d+)",
+            lambda m: rebound[int(m.group(1)) - 1],
+            sql[cursor:],
+        )
+    )
+    return "".join(out)
+
+
+def _scan_code_span(span: str, style: str, placeholders: list[int]) -> None:
+    if not span:
+        return
+    if style == "dollar":
+        for match in re.finditer(r"\$(\d+)", span):
+            placeholders.append(int(match.group(1)))
+        return
+    if style == "qmark":
+        placeholders.extend([0] * span.count("?"))
+        return
+    if style == "format":
+        index = 0
+        while index < len(span):
+            if span.startswith("%%", index):
+                index += 2
+                continue
+            if span.startswith("%s", index):
+                placeholders.append(0)
+                index += 2
+                continue
+            index += 1
+        return
+    msg = f"unsupported positional_style: {style!r}"
+    raise ValueError(msg)
 
 
 def compile_expr(dialect: Dialect, expr: Expr[Any]) -> tuple[str, list[Any]]:

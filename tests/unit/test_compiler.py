@@ -144,6 +144,25 @@ def test_raw_sql_placeholder_count_mismatch_raises() -> None:
         compile_expr(MySQLDialect(), raw_sql("x = %s AND y = %s", 1))
 
 
+def test_raw_sql_ignores_placeholders_inside_literals() -> None:
+    sql, params = compile_expr(
+        SQLiteDialect(),
+        raw_sql("note = '?' AND id = ?", 7),
+    )
+    assert sql == "note = '?' AND id = ?"
+    assert params == [7]
+
+    pg_sql, pg_params = compile_expr(
+        PostgresDialect(),
+        and_(
+            Column[int]("users", "age") == 1,
+            raw_sql("note = '$1' AND x = $1", 2),
+        ),
+    )
+    assert pg_sql == '("users"."age" = $1 AND note = \'$1\' AND x = $2)'
+    assert pg_params == [1, 2]
+
+
 def test_mysql_nulls_rejection_does_not_mutate_compiler() -> None:
     created = Column[object]("users", "created_at")
     compiler = SQLCompiler(MySQLDialect())
