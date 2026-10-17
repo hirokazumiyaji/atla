@@ -87,6 +87,46 @@ def test_parse_mysql_fixture() -> None:
     assert categories.columns[0].has_default is True
 
 
+def test_parse_index_parts_variants() -> None:
+    schema = parse_atlas_json(
+        {
+            "schemas": [
+                {
+                    "name": "public",
+                    "tables": [
+                        {
+                            "name": "items",
+                            "columns": [{"name": "id", "type": "int", "null": False}],
+                            "primary_key": {"columns": [{"name": "id"}]},
+                            "indexes": [
+                                {
+                                    "name": "idx_string_parts",
+                                    "parts": ["id"],
+                                },
+                                {
+                                    "name": "idx_c_object",
+                                    "unique": True,
+                                    "parts": [{"c": {"name": "id"}}],
+                                },
+                                {
+                                    "name": "idx_expr_only",
+                                    "parts": [{"x": "lower(id)"}],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        dialect="postgres",
+    )
+    indexes = {index.name: index for index in schema.tables[0].indexes}
+    assert indexes["idx_string_parts"].columns == ("id",)
+    assert indexes["idx_c_object"].columns == ("id",)
+    assert indexes["idx_c_object"].unique is True
+    assert "idx_expr_only" not in indexes
+
+
 def test_parse_sqlite_fixture() -> None:
     schema = parse_atlas_json(
         (FIXTURES / "sqlite_users.json").read_text(),

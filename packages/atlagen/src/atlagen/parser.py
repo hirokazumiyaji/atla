@@ -384,27 +384,51 @@ def _parse_index(raw_index: JsonDict) -> IndexIR | None:
     name = str(raw_index.get("name") or "")
     columns = _column_name_tuple(raw_index.get("columns"))
     if not columns:
-        columns = _column_name_tuple(raw_index.get("parts"))
-    if not columns:
-        extracted: list[str] = []
-        for part in _as_list(raw_index.get("parts")):
-            part_obj = _as_dict(part)
-            if part_obj is None:
-                continue
-            col = part_obj.get("column") or part_obj.get("c")
-            if isinstance(col, str):
-                extracted.append(col)
-                continue
-            col_obj = _as_dict(col)
-            if col_obj is not None:
-                col_name = col_obj.get("name")
-                if isinstance(col_name, str):
-                    extracted.append(col_name)
-        columns = tuple(extracted)
+        columns = _index_part_columns(raw_index.get("parts"))
     if not name or not columns:
         return None
     unique = bool(raw_index.get("unique", False))
     return IndexIR(name=name, columns=columns, unique=unique)
+
+
+def _index_part_columns(raw_parts: object) -> tuple[str, ...]:
+    """Extract column names from Atlas index ``parts`` variants.
+
+    Supported shapes:
+    - ``"email"``
+    - ``{"name": "email"}``
+    - ``{"column": "email"}`` / ``{"c": "email"}``
+    - ``{"column": {"name": "email"}}`` / ``{"c": {"name": "email"}}``
+    Expression-only parts (``{"x": "..."}`` / ``{"expr": "..."}``) are skipped.
+    """
+    names: list[str] = []
+    for part in _as_list(raw_parts):
+        if isinstance(part, str) and part:
+            names.append(part)
+            continue
+        part_obj = _as_dict(part)
+        if part_obj is None:
+            continue
+        # Expression-only index parts have no resolvable column name.
+        if any(
+            isinstance(part_obj.get(key), str) and part_obj.get(key)
+            for key in ("x", "expr", "expression")
+        ) and not (part_obj.get("column") or part_obj.get("c") or part_obj.get("name")):
+            continue
+        direct = part_obj.get("name")
+        if isinstance(direct, str) and direct:
+            names.append(direct)
+            continue
+        col = part_obj.get("column") or part_obj.get("c")
+        if isinstance(col, str) and col:
+            names.append(col)
+            continue
+        col_obj = _as_dict(col)
+        if col_obj is not None:
+            col_name = col_obj.get("name")
+            if isinstance(col_name, str) and col_name:
+                names.append(col_name)
+    return tuple(names)
 
 
 def _column_name_tuple(raw_columns: object) -> tuple[str, ...]:
