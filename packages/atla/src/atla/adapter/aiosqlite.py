@@ -57,7 +57,8 @@ class AiosqliteAdapter:
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         await self._ensure_configured()
-        cursor = await self._conn.execute(sql, tuple(params))
+        encoded = self._dialect.encode_params(params)
+        cursor = await self._conn.execute(sql, encoded)
         try:
             rows: Sequence[Sequence[Any]] = await cursor.fetchall()
             return rows
@@ -66,7 +67,8 @@ class AiosqliteAdapter:
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         await self._ensure_configured()
-        cursor = await self._conn.execute(sql, tuple(params))
+        encoded = self._dialect.encode_params(params)
+        cursor = await self._conn.execute(sql, encoded)
         try:
             row: Sequence[Any] | None = await cursor.fetchone()
             return row
@@ -81,7 +83,8 @@ class AiosqliteAdapter:
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         await self._ensure_configured()
-        cursor = await self._conn.execute(sql, tuple(params))
+        encoded = self._dialect.encode_params(params)
+        cursor = await self._conn.execute(sql, encoded)
         try:
             rowcount = int(cursor.rowcount)
         finally:
@@ -91,7 +94,8 @@ class AiosqliteAdapter:
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._ensure_configured()
-        await self._conn.executemany(sql, [tuple(params) for params in params_seq])
+        encoded_seq = self._dialect.encode_params_seq(params_seq)
+        await self._conn.executemany(sql, encoded_seq)
         await self._commit_if_autocommit()
 
     async def _exec_control(self, sql: str) -> None:

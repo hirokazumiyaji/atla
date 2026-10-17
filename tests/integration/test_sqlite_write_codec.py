@@ -89,13 +89,17 @@ async def test_sqlite_write_codec_round_trip(
     ship = date(2024, 3, 10)
     meta = {"tags": ["a", "b"], "n": 1}
 
-    await client.item.insert(
-        sku=sku,
-        price=price,
-        created_at=created,
-        ship_on=ship,
-        meta=meta,
-        status=Status.OPEN,  # StrEnum unwraps via encode_param
+    await client.item.insert_many(
+        [
+            {
+                "sku": sku,
+                "price": price,
+                "created_at": created,
+                "ship_on": ship,
+                "meta": meta,
+                "status": Status.OPEN,
+            }
+        ]
     ).execute()
 
     row = await client.item.query().where(Item.sku == sku).one()

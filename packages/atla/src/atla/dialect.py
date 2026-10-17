@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
@@ -104,6 +105,18 @@ class Dialect:
         if isinstance(value, (dict, list)):
             return json.dumps(value, separators=(",", ":"), default=str)
         return value
+
+    def encode_params(self, params: Sequence[Any]) -> tuple[Any, ...]:
+        """Encode a positional parameter sequence (idempotent for already-encoded values)."""
+        if not params:
+            return ()
+        return tuple(self.encode_param(value) for value in params)
+
+    def encode_params_seq(
+        self, params_seq: Sequence[Sequence[Any]]
+    ) -> list[tuple[Any, ...]]:
+        """Encode each row for ``executemany``-style APIs."""
+        return [self.encode_params(row) for row in params_seq]
 
 
 class PostgresDialect(Dialect):
