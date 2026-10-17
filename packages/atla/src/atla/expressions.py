@@ -21,6 +21,10 @@ class Expr[T_co]:
 
     __slots__ = ()
 
+    # ``__eq__`` builds SQL predicates, so value hashing is undefined; keep
+    # identity hashing so Expr nodes remain usable as ``set`` / ``dict`` keys.
+    __hash__ = object.__hash__  # type: ignore[assignment, unused-ignore]  # pyright: ignore[reportAssignmentType]
+
     def __bool__(self) -> NoReturn:
         raise TypeError(
             "SQL expression cannot be evaluated as a Python boolean. "
@@ -337,10 +341,6 @@ class Column[T](Expr[T]):
         self.table = table
         self.name = name
         self.alias = alias
-
-    # Identity hash: ``__eq__`` builds SQL, so value-equality hashing is undefined.
-    __hash__ = object.__hash__  # type: ignore[assignment, unused-ignore]  # pyright: ignore[reportAssignmentType]
-
 
 def _flatten_logical(op: str, clauses: tuple[Expr[bool], ...]) -> tuple[Expr[bool], ...]:
     flat: list[Expr[bool]] = []
