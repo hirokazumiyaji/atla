@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, Self, cast, overload
 
 from atla.adapter.base import DBAdapter
+from atla.advanced import ProjectedSelectQuery, UpsertQuery
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, and_
-from atla.table import TableRef, sql_attr_name
+from atla.table import TableRef
 from atla.types import UNSET, UnsetType
+
+# Stay under common driver bind limits (SQLite ~32766, MySQL/Postgres similar).
+_IN_BATCH_SIZE = 500
 
 
 def _is_unset(value: object) -> bool:
@@ -170,13 +174,21 @@ class BaseSelectQuery[RecordT]:
         *,
         fk: Column[Any],
         key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
     ) -> PreloadSelectQuery[RecordT, OtherT]:
-        """Batch-load ``related`` rows with one ``WHERE fk IN (...)`` follow-up query."""
+        """Batch-load ``related`` rows with one ``WHERE fk IN (...)`` follow-up query.
+
+        ``fk_attr`` / ``key_attr`` must be the generated Record attribute names
+        (from atlagen), not re-derived SQL column names.
+        """
         return PreloadSelectQuery(
             self,
             related=related,
             fk=fk,
             key=key,
+            fk_attr=fk_attr,
+            key_attr=key_attr,
         )
 
     def with_[OtherT](
@@ -185,9 +197,49 @@ class BaseSelectQuery[RecordT]:
         *,
         fk: Column[Any],
         key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
     ) -> PreloadSelectQuery[RecordT, OtherT]:
         """Alias for :meth:`preload` (batch eager loading without N+1 queries)."""
-        return self.preload(related, fk=fk, key=key)
+        return self.preload(
+            related,
+            fk=fk,
+            key=key,
+            fk_attr=fk_attr,
+            key_attr=key_attr,
+        )
+
+    @overload
+    def select[T](self, c0: Column[T]) -> ProjectedSelectQuery[T]: ...
+
+    @overload
+    def select[T1, T2](self, c0: Column[T1], c1: Column[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+
+    @overload
+    def select[T1, T2, T3](
+        self, c0: Column[T1], c1: Column[T2], c2: Column[T3]
+    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
+
+    @overload
+    def select[T1, T2, T3, T4](
+        self, c0: Column[T1], c1: Column[T2], c2: Column[T3], c3: Column[T4]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
+
+    def select(self, *columns: Column[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns as ``list[tuple[...]]`` (TypeVarTuple overloads)."""
+        if not columns:
+            msg = "select() requires at least one column"
+            raise ValueError(msg)
+        query: ProjectedSelectQuery[Any] = ProjectedSelectQuery(
+            self._adapter,
+            from_sql=type(self)._FROM_SQL,
+            columns=columns,
+            where=self._where,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+        )
+        return query
 
     def to_sql(self) -> tuple[str, list[Any]]:
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._SELECT_SQL)
@@ -209,7 +261,11 @@ class BaseSelectQuery[RecordT]:
         return compiler.build()
 
     async def all(self) -> list[RecordT]:
-        sql, params = self.to_sql()
+        if not self._where and not self._order_by and self._limit is None and self._offset is None:
+            sql = type(self)._SELECT_SQL
+            params: list[Any] = []
+        else:
+            sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
         mapper = type(self)._ROW_MAPPER
         return [mapper(row) for row in rows]
@@ -282,6 +338,24 @@ class BaseInsertQuery[RecordT]:
 
     def returning(self) -> Self:
         return type(self)(self._adapter, values=self._values, returning=True)
+
+    def on_conflict(self, *columns: str) -> UpsertQuery[RecordT]:
+        """Start a dialect-specific upsert (``ON CONFLICT`` / ``ON DUPLICATE KEY``)."""
+        if not columns and self._adapter.dialect.upsert_style == "conflict":
+            msg = "on_conflict() requires at least one conflict target column"
+            raise ValueError(msg)
+
+        class _Upsert(UpsertQuery[RecordT]):
+            __slots__ = ()
+            _RETURNING_COLS = type(self)._RETURNING_COLS
+            _ROW_MAPPER = type(self)._ROW_MAPPER
+
+        return _Upsert(
+            self._adapter,
+            table_name=type(self)._TABLE_NAME,
+            values=self._values,
+            conflict_columns=columns,
+        )
 
     def to_sql(self) -> tuple[str, list[Any]]:
         if not self._values:
@@ -671,7 +745,7 @@ class JoinedSelectQuery[*Ts]:
 class PreloadSelectQuery[ParentT, ChildT]:
     """Two-query batch eager loader: parent SELECT + ``WHERE fk IN (...)``."""
 
-    __slots__ = ("_fk", "_key", "_parent", "_related")
+    __slots__ = ("_fk", "_fk_attr", "_key", "_key_attr", "_parent", "_related")
 
     def __init__(
         self,
@@ -680,11 +754,15 @@ class PreloadSelectQuery[ParentT, ChildT]:
         related: TableRef[ChildT],
         fk: Column[Any],
         key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
     ) -> None:
         self._parent = parent
         self._related = related
         self._fk = fk
         self._key = key
+        self._fk_attr = fk_attr
+        self._key_attr = key_attr
 
     def where(self, *predicates: Expr[bool]) -> PreloadSelectQuery[ParentT, ChildT]:
         return PreloadSelectQuery(
@@ -692,6 +770,8 @@ class PreloadSelectQuery[ParentT, ChildT]:
             related=self._related,
             fk=self._fk,
             key=self._key,
+            fk_attr=self._fk_attr,
+            key_attr=self._key_attr,
         )
 
     def order_by(self, *clauses: OrderByClause) -> PreloadSelectQuery[ParentT, ChildT]:
@@ -700,6 +780,8 @@ class PreloadSelectQuery[ParentT, ChildT]:
             related=self._related,
             fk=self._fk,
             key=self._key,
+            fk_attr=self._fk_attr,
+            key_attr=self._key_attr,
         )
 
     def limit(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
@@ -708,6 +790,8 @@ class PreloadSelectQuery[ParentT, ChildT]:
             related=self._related,
             fk=self._fk,
             key=self._key,
+            fk_attr=self._fk_attr,
+            key_attr=self._key_attr,
         )
 
     def offset(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
@@ -716,19 +800,24 @@ class PreloadSelectQuery[ParentT, ChildT]:
             related=self._related,
             fk=self._fk,
             key=self._key,
+            fk_attr=self._fk_attr,
+            key_attr=self._key_attr,
         )
 
     async def all(self) -> list[tuple[ParentT, list[ChildT]]]:
         parents = await self._parent.all()
         if not parents:
             return []
-        key_attr = sql_attr_name(self._key.name)
-        fk_attr = sql_attr_name(self._fk.name)
+        key_attr = self._key_attr
+        fk_attr = self._fk_attr
         keys = [getattr(parent, key_attr) for parent in parents]
-        children = (
-            await _table_select(self._related, self._parent.adapter).where(self._fk.in_(keys)).all()
-        )
-        grouped: dict[Any, list[ChildT]] = {key: [] for key in keys}
+        unique_keys = list(dict.fromkeys(keys))
+        children: list[ChildT] = []
+        related_query = _table_select(self._related, self._parent.adapter)
+        for start in range(0, len(unique_keys), _IN_BATCH_SIZE):
+            batch = unique_keys[start : start + _IN_BATCH_SIZE]
+            children.extend(await related_query.where(self._fk.in_(batch)).all())
+        grouped: dict[Any, list[ChildT]] = {key: [] for key in unique_keys}
         for child in children:
             grouped.setdefault(getattr(child, fk_attr), []).append(child)
         return [(parent, list(grouped.get(getattr(parent, key_attr), []))) for parent in parents]
