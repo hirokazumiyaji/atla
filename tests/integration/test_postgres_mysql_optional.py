@@ -181,7 +181,7 @@ async def _mysql_adapter() -> AsyncGenerator[Any]:
             )
         yield AsyncmyAdapter(conn)
     finally:
-        conn.close()
+        await conn.ensure_closed()
 
 
 async def _exercise_client(client: Any, *, models: Any, supports_returning: bool) -> None:
