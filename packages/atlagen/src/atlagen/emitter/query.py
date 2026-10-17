@@ -30,6 +30,7 @@ def emit_query(schema: SchemaIR) -> str:
         "",
         "from atla.adapter.base import DBAdapter",
         "from atla.advanced import BaseInsertManyQuery, UpsertQuery, insert_many_rows",
+        "from atla.errors import NotFoundError",
         "from atla.expressions import Column, Expr",
         "from atla.query import (",
         *[f"    {name}," for name in query_imports],
@@ -251,6 +252,14 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             f"self._adapter, table_name={quoted_table!r})",
         ]
     )
+    lines.extend(
+        _emit_pk_lookup_methods(
+            table,
+            dialect=dialect,
+            select_cols=select_cols,
+            quoted_table=quoted_table,
+        )
+    )
     lines.extend(_emit_with_methods(table, schema=schema))
     many_cls = f"{table.model_name}InsertManyBuilder"
     insert_many_cls = [
@@ -369,6 +378,149 @@ def _emit_mapped_call(
     for column in columns:
         lines.append(f"{indent}    {column.name!r}: {column.attr_name},")
     lines.append(f"{indent}}})")
+    return lines
+
+
+def _placeholder(dialect: str, index: int) -> str:
+    if dialect in {"mysql", "tidb"}:
+        return "%s"
+    if dialect == "sqlite":
+        return "?"
+    return f"${index}"
+
+
+def _emit_pk_lookup_methods(
+    table: TableIR,
+    *,
+    dialect: str,
+    select_cols: str,
+    quoted_table: str,
+) -> list[str]:
+    """Emit AOT ``get`` / ``get_one`` / ``get_many`` for tables with a primary key."""
+    if not table.primary_key:
+        return []
+    pk_columns: list[ColumnIR] = []
+    for name in table.primary_key:
+        column = next((c for c in table.columns if c.name == name), None)
+        if column is None:
+            return []
+        pk_columns.append(column)
+
+    where_parts: list[str] = []
+    for index, column in enumerate(pk_columns, start=1):
+        col_sql = f"{quoted_table}.{_quote_ident(column.name, dialect=dialect)}"
+        where_parts.append(f"{col_sql} = {_placeholder(dialect, index)}")
+    get_sql = f"SELECT {select_cols} FROM {quoted_table} WHERE {' AND '.join(where_parts)} LIMIT 1"
+    record = f"{table.model_name}Record"
+    mapper = f"{record}._from_row"
+    lines = [
+        "",
+        f"    _GET_BY_PK_SQL = {get_sql!r}",
+        "",
+    ]
+
+    if len(pk_columns) == 1:
+        pk = pk_columns[0]
+        pk_type = pk.base_python_type
+        pk_qual = f"{quoted_table}.{_quote_ident(pk.name, dialect=dialect)}"
+        get_many_prefix = f"SELECT {select_cols} FROM {quoted_table} WHERE {pk_qual} IN ("
+        lines.extend(
+            [
+                f"    _GET_MANY_PREFIX = {get_many_prefix!r}",
+                "",
+                f"    async def get(self, {pk.attr_name}: {pk_type}) -> {record} | None:",
+                "        row = await self._adapter.fetch_one("
+                f"self._GET_BY_PK_SQL, ({pk.attr_name},))",
+                f"        return None if row is None else {mapper}(row)"
+                "  # pyright: ignore[reportPrivateUsage]",
+                "",
+                f"    async def get_one(self, {pk.attr_name}: {pk_type}) -> {record}:",
+                f"        row = await self.get({pk.attr_name})",
+                "        if row is None:",
+                f'            raise NotFoundError("{table.model_name} not found")',
+                "        return row",
+                "",
+                f"    async def get_many(self, keys: Sequence[{pk_type}]) -> list[{record}]:",
+                '        """Fetch rows for ``keys`` with batched ``WHERE pk IN (...)`` queries.',
+                "",
+                "        Result order follows the database row order, not ``keys`` order.",
+                "        Duplicate keys collapse to one row, and missing keys are omitted.",
+                "        Keys are chunked (500 per query) to stay under bind-parameter limits.",
+                '        """',
+                "        if not keys:",
+                "            return []",
+                "        dialect = self._adapter.dialect",
+                "        batch_size = 500",
+                f"        results: list[{record}] = []",
+                "        key_list = list(keys)",
+                "        for start in range(0, len(key_list), batch_size):",
+                "            batch = key_list[start : start + batch_size]",
+                '            placeholders = ", ".join('
+                "dialect.placeholder(i) for i in range(1, len(batch) + 1))",
+                '            sql = f"{self._GET_MANY_PREFIX}{placeholders})"',
+                "            rows = await self._adapter.fetch_all(sql, batch)",
+                f"            results.extend({mapper}(row) for row in rows)"
+                "  # pyright: ignore[reportPrivateUsage]",
+                "        return results",
+            ]
+        )
+        return lines
+
+    # Composite primary key.
+    pk_params = ", ".join(f"{column.attr_name}: {column.base_python_type}" for column in pk_columns)
+    pk_tuple_type = "tuple[" + ", ".join(c.base_python_type for c in pk_columns) + "]"
+    pk_args = ", ".join(column.attr_name for column in pk_columns)
+    get_kwargs = ", ".join(f"{column.attr_name}={column.attr_name}" for column in pk_columns)
+    composite_cols = ", ".join(
+        f"{quoted_table}.{_quote_ident(column.name, dialect=dialect)}" for column in pk_columns
+    )
+    composite_prefix = f"SELECT {select_cols} FROM {quoted_table} WHERE ({composite_cols}) IN ("
+    lines.extend(
+        [
+            f"    async def get(self, *, {pk_params}) -> {record} | None:",
+            f"        row = await self._adapter.fetch_one(self._GET_BY_PK_SQL, ({pk_args}))",
+            f"        return None if row is None else {mapper}(row)"
+            "  # pyright: ignore[reportPrivateUsage]",
+            "",
+            f"    async def get_one(self, *, {pk_params}) -> {record}:",
+            f"        row = await self.get({get_kwargs})",
+            "        if row is None:",
+            f'            raise NotFoundError("{table.model_name} not found")',
+            "        return row",
+            "",
+            f"    _GET_MANY_PREFIX = {composite_prefix!r}",
+            "",
+            f"    async def get_many(self, keys: Sequence[{pk_tuple_type}]) -> list[{record}]:",
+            '        """Fetch rows for composite ``keys`` via batched row-value ``IN`` queries.',
+            "",
+            "        Issues ``WHERE (a, b) IN ((?, ?), ...)`` (PostgreSQL, MySQL 8+, SQLite 3.15+)",
+            "        in chunks that stay under the driver bind-parameter limit.",
+            "        Result order follows the database row order, not ``keys`` order.",
+            "        Duplicate keys collapse to one row, and missing keys are omitted.",
+            '        """',
+            "        if not keys:",
+            "            return []",
+            "        dialect = self._adapter.dialect",
+            f"        width = {len(pk_columns)}",
+            "        batch_size = max(1, 500 // width)",
+            f"        results: list[{record}] = []",
+            "        key_list = list(keys)",
+            "        for start in range(0, len(key_list), batch_size):",
+            "            batch = key_list[start : start + batch_size]",
+            "            groups: list[str] = []",
+            "            params: list[Any] = []",
+            "            for key in batch:",
+            "                base = len(params)",
+            "                marks = [dialect.placeholder(base + i + 1) for i in range(width)]",
+            '                groups.append("(" + ", ".join(marks) + ")")',
+            "                params.extend(key)",
+            '            sql = self._GET_MANY_PREFIX + ", ".join(groups) + ")"',
+            "            rows = await self._adapter.fetch_all(sql, params)",
+            f"            results.extend({mapper}(row) for row in rows)"
+            "  # pyright: ignore[reportPrivateUsage]",
+            "        return results",
+        ]
+    )
     return lines
 
 

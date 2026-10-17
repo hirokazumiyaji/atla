@@ -42,6 +42,12 @@ async def exercise(db: AtlaClient) -> None:
     _ = db.user.insert(email="alice@example.com")
     _ = db.user.update().set(email="bob@example.com", id=1).where(User.id == 1)
     _ = db.user.delete().where(User.id == 1).returning()
+    found = await db.user.get(1)
+    assert_type(found, UserRecord | None)
+    one = await db.user.get_one(1)
+    assert_type(one, UserRecord)
+    many = await db.user.get_many([1, 2])
+    assert_type(many, list[UserRecord])
 
     upsert = (
         db.user.insert(email="alice@example.com")

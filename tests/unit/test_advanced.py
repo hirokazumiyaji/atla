@@ -163,11 +163,14 @@ def test_insert_many_rows_normalizes_key_order() -> None:
 @pytest.mark.asyncio
 async def test_insert_many_chunks_large_batches() -> None:
     adapter = FakeAdapter(SQLiteDialect())
-    # 2 columns x 20_000 rows => 40_000 binds, must split under 30_000.
+    # Large batches use atomic multi-VALUES INSERT chunks (bind-parameter limit).
     rows = tuple((("a", i), ("b", i)) for i in range(20_000))
     q = UserInsertMany(adapter, table_name='"t"', rows=rows)
-    assert await q.execute() == 4  # two chunks x execute_count 2
-    assert len([c for c in adapter.calls if c[0] == "execute"]) == 2
+    assert await q.execute() == 4  # FakeAdapter.execute_count * 2 chunks
+    executes = [c for c in adapter.calls if c[0] == "execute"]
+    assert len(executes) == 2
+    assert all("VALUES" in c[1] for c in executes)
+    assert not [c for c in adapter.calls if c[0] == "execute_many"]
 
 
 @pytest.mark.asyncio
