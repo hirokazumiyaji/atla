@@ -65,6 +65,13 @@ _IRREGULAR_SINGULAR: dict[str, str] = {
     "bonuses": "bonus",
     "atlases": "atlas",
     "classes": "class",
+    "analyses": "analysis",
+    "bases": "basis",
+    "crises": "crisis",
+    "theses": "thesis",
+    "hypotheses": "hypothesis",
+    "diagnoses": "diagnosis",
+    "oases": "oasis",
 }
 
 # AtlaClient members that must not be overwritten by table accessors.
