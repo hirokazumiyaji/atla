@@ -16,3 +16,8 @@ class UnsetType:
 
 
 UNSET = UnsetType()
+
+
+def is_unset(value: object) -> bool:
+    """Return True when ``value`` is the :data:`UNSET` sentinel."""
+    return value is UNSET or isinstance(value, UnsetType)

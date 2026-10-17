@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ClassVar, NamedTuple
 
@@ -107,7 +107,7 @@ async def test_upsert_on_conflict_do_update_postgres() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict("email")
-        ._do_update_values(email="a@example.com")
+        ._do_update_values(email="a@example.com")  # pyright: ignore[reportPrivateUsage]
         .to_sql()
     )
     assert 'ON CONFLICT ("email") DO UPDATE SET "email" = $3' in sql
@@ -131,7 +131,7 @@ async def test_upsert_on_duplicate_key_mysql() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict()
-        ._do_update_values(email="b@example.com")
+        ._do_update_values(email="b@example.com")  # pyright: ignore[reportPrivateUsage]
         .to_sql()
     )
     assert "ON DUPLICATE KEY UPDATE" in sql
@@ -185,14 +185,14 @@ def test_on_conflict_accepts_column_and_attr_mapping() -> None:
         __slots__ = ()
         _RETURNING_COLS = '"id", "email"'
         _ROW_MAPPER = UserRecord.from_row
-        _ATTR_TO_SQL: ClassVar[dict[str, str]] = {"from_": "from"}
+        _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {"from_": "from"}
 
     class MappedInsert(BaseInsertQuery[UserRecord]):
         __slots__ = ()
         _TABLE_NAME = '"users"'
         _RETURNING_COLS = '"id", "email"'
         _ROW_MAPPER = UserRecord.from_row
-        _ATTR_TO_SQL: ClassVar[dict[str, str]] = {"from_": "from"}
+        _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {"from_": "from"}
         _UPSERT_CLS = MappedUpsert
 
     sql, params = (
@@ -212,7 +212,7 @@ def test_excluded_compiles_for_conflict_and_duplicate_dialects() -> None:
         UserInsert(pg)
         .values(email="a@example.com")
         .on_conflict("email")
-        ._do_update_values(email=excluded(email_col))
+        ._do_update_values(email=excluded(email_col))  # pyright: ignore[reportPrivateUsage]
         .to_sql()
     )
     assert 'DO UPDATE SET "email" = EXCLUDED."email"' in sql
@@ -223,7 +223,7 @@ def test_excluded_compiles_for_conflict_and_duplicate_dialects() -> None:
         UserInsert(mysql)
         .values(email="a@example.com", id=1)
         .on_conflict()
-        ._do_update_values(email=excluded(email_col))
+        ._do_update_values(email=excluded(email_col))  # pyright: ignore[reportPrivateUsage]
         .to_sql()
     )
     assert "ON DUPLICATE KEY UPDATE `email` = VALUES(`email`)" in sql
@@ -238,7 +238,7 @@ async def test_upsert_returning_all_and_one() -> None:
         UserInsert(adapter)
         .values(email="a@example.com")
         .on_conflict("email")
-        ._do_update_values(email="a@example.com")
+        ._do_update_values(email="a@example.com")  # pyright: ignore[reportPrivateUsage]
         .returning()
     )
     rows = await q.all()
@@ -247,3 +247,28 @@ async def test_upsert_returning_all_and_one() -> None:
         await q.one()
     adapter.rows = [(1, "a@example.com")]
     assert await q.one() == UserRecord(1, "a@example.com")
+
+
+@pytest.mark.asyncio
+async def test_mutation_one_skips_mapper_when_multiple_rows() -> None:
+    mapped: list[Sequence[Any]] = []
+
+    def counting_mapper(row: Sequence[Any]) -> UserRecord:
+        mapped.append(row)
+        return UserRecord.from_row(row)
+
+    class CountingInsert(BaseInsertQuery[UserRecord]):
+        __slots__ = ()
+        _TABLE_NAME = '"users"'
+        _RETURNING_COLS = '"id", "email"'
+        _ROW_MAPPER = staticmethod(counting_mapper)
+
+    adapter = FakeAdapter(PostgresDialect())
+    adapter.rows = [(1, "a@example.com"), (2, "b@example.com")]
+    q = CountingInsert(adapter).values(email="a@example.com").returning()
+    with pytest.raises(MultipleResultsError):
+        await q.one()
+    assert mapped == []
+    adapter.rows = [(1, "a@example.com")]
+    assert await q.one() == UserRecord(1, "a@example.com")
+    assert mapped == [(1, "a@example.com")]

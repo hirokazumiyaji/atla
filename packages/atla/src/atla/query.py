@@ -12,14 +12,10 @@ from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, and_
 from atla.table import TableRef
-from atla.types import UNSET, UnsetType
+from atla.types import is_unset
 
 # Stay under common driver bind limits (SQLite ~32766, MySQL/Postgres similar).
 _IN_BATCH_SIZE = 500
-
-
-def _is_unset(value: object) -> bool:
-    return value is UNSET or isinstance(value, UnsetType)
 
 
 def _compile_value(compiler: SQLCompiler, value: Any) -> str:
@@ -331,7 +327,7 @@ class BaseInsertQuery[RecordT]:
         dialect-quoted once in :meth:`to_sql`. Generated repositories pass Python
         keyword names, never pre-quoted fragments.
         """
-        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         return type(self)(
             self._adapter,
             values=self._values + pairs,
@@ -354,7 +350,9 @@ class BaseInsertQuery[RecordT]:
             class _Upsert(UpsertQuery[RecordT]):
                 __slots__ = ()
                 _RETURNING_COLS = type(self)._RETURNING_COLS
-                _ROW_MAPPER = type(self)._ROW_MAPPER
+                # staticmethod keeps the callable unbound (mypy would otherwise infer a
+                # bound method and clash with UpsertQuery._ROW_MAPPER).
+                _ROW_MAPPER = staticmethod(type(self)._ROW_MAPPER)
                 _ATTR_TO_SQL = type(self)._ATTR_TO_SQL
 
             upsert_cls = _Upsert
@@ -401,12 +399,17 @@ class BaseInsertQuery[RecordT]:
         return rows[0] if rows else None
 
     async def one(self) -> RecordT:
-        rows = await self.all()
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
         if not rows:
             raise NotFoundError("insert ... returning produced no row")
         if len(rows) > 1:
             raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class BaseUpdateQuery[RecordT]:
@@ -435,7 +438,7 @@ class BaseUpdateQuery[RecordT]:
 
     def _set_values(self, **columns: Any) -> Self:
         """Accumulate SET columns (bare identifiers; quoted once in ``to_sql``)."""
-        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         return type(self)(
             self._adapter,
             set_values=self._set + pairs,
@@ -516,12 +519,17 @@ class BaseUpdateQuery[RecordT]:
         return rows[0] if rows else None
 
     async def one(self) -> RecordT:
-        rows = await self.all()
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
         if not rows:
             raise NotFoundError("update ... returning produced no row")
         if len(rows) > 1:
             raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class BaseDeleteQuery[RecordT]:
@@ -614,12 +622,17 @@ class BaseDeleteQuery[RecordT]:
         return rows[0] if rows else None
 
     async def one(self) -> RecordT:
-        rows = await self.all()
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
         if not rows:
             raise NotFoundError("delete ... returning produced no row")
         if len(rows) > 1:
             raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class JoinedSelectQuery[*Ts]:

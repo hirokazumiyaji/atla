@@ -324,7 +324,7 @@ def test_update_allow_full_table() -> None:
 
 def test_delete_without_where_raises() -> None:
     adapter = FakeAdapter()
-    q = BaseDeleteQuery(adapter, table_name='"users"')
+    q: BaseDeleteQuery[object] = BaseDeleteQuery(adapter, table_name='"users"')
     with pytest.raises(UnsafeMutationError):
         q.to_sql()
 
@@ -356,7 +356,7 @@ def test_update_delete_where_is_immutable() -> None:
     with pytest.raises(UnsafeMutationError):
         base_update.to_sql()
 
-    base_delete = BaseDeleteQuery(adapter, table_name='"users"')
+    base_delete: BaseDeleteQuery[object] = BaseDeleteQuery(adapter, table_name='"users"')
     with pytest.raises(UnsafeMutationError):
         base_delete.to_sql()
     d1_sql, d1_params = base_delete.where(id_col == 1).to_sql()

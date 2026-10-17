@@ -9,7 +9,7 @@ from atla.adapter.base import DBAdapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import Column, Expr, OrderByClause, and_
-from atla.types import UNSET, UnsetType
+from atla.types import is_unset
 
 # Stay under common driver bind limits (SQLite ~32766).
 _MAX_BIND_PARAMS = 30_000
@@ -19,10 +19,6 @@ def _compile_value(compiler: SQLCompiler, value: Any) -> str:
     if isinstance(value, Expr):
         return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
     return compiler.add_param(value)
-
-
-def _is_unset(value: object) -> bool:
-    return value is UNSET or isinstance(value, UnsetType)
 
 
 def conflict_column_names(*columns: Column[Any] | str) -> tuple[str, ...]:
@@ -187,7 +183,7 @@ class UpsertQuery[RecordT]:
         invoke it directly with SQL names, or use :meth:`do_update_attrs` for
         ``_ATTR_TO_SQL`` remapping.
         """
-        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         if not pairs:
             msg = "do_update() requires at least one column"
             raise ValueError(msg)
@@ -205,9 +201,7 @@ class UpsertQuery[RecordT]:
         """Like ``do_update``, remapping Python attr names via ``_ATTR_TO_SQL``."""
         mapping = type(self)._ATTR_TO_SQL
         pairs = {
-            mapping.get(name, name): value
-            for name, value in columns.items()
-            if not _is_unset(value)
+            mapping.get(name, name): value for name, value in columns.items() if not is_unset(value)
         }
         return self._do_update_values(**pairs)
 
@@ -284,12 +278,17 @@ class UpsertQuery[RecordT]:
         return rows[0] if rows else None
 
     async def one(self) -> RecordT:
-        rows = await self.all()
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
         if not rows:
             raise NotFoundError("upsert ... returning produced no row")
         if len(rows) > 1:
             raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class ProjectedSelectQuery[*Ts]:
