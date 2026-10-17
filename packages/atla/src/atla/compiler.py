@@ -74,12 +74,7 @@ class SQLCompiler:
         raise TypeError(msg)
 
     def visit_order_by(self, clause: OrderByClause) -> None:
-        if clause.direction not in {"ASC", "DESC"}:
-            msg = f"ORDER BY direction must be ASC or DESC, got {clause.direction!r}"
-            raise ValueError(msg)
-        if clause.nulls is not None and clause.nulls not in {"FIRST", "LAST"}:
-            msg = f"ORDER BY nulls must be FIRST or LAST, got {clause.nulls!r}"
-            raise ValueError(msg)
+        # direction/nulls are validated once in ``OrderByClause.__init__``.
         if clause.nulls is not None and self.dialect.name in {"mysql", "tidb"}:
             msg = (
                 f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
@@ -140,9 +135,7 @@ class SQLCompiler:
             self.write(f" {node.op}")
             return
         self.write(node.op)
-        needs_parens = isinstance(
-            node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp)
-        )
+        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp))
         if needs_parens:
             self.write("(")
             self.visit(node.operand)

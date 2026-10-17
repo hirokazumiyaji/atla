@@ -9,8 +9,15 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-# user:password@ → user:***@  (also covers URL-encoded passwords without @)
-_CREDENTIAL_RE = re.compile(r"(://[^:/?#\s]+:)([^@/\s]*)(@)")
+# ``user:password@`` -> ``user:***@``. The userinfo starts right after ``://`` or,
+# for schemeless DSNs (e.g. MySQL ``user:pass@tcp(host)/db``), at the start of a
+# token. The password is matched greedily up to the *last* ``@`` before the first
+# ``/``, ``?``, ``#`` or whitespace so passwords that contain ``@`` do not leak.
+_CREDENTIAL_RE = re.compile(
+    r"(?:(?<=://)|(?<![\w@:/.%+-]))"
+    r"(?P<user>[^\s:/?#@'\"]+):"
+    r"(?P<password>[^\s/?#]*)@"
+)
 
 
 class InspectError(RuntimeError):
@@ -19,7 +26,7 @@ class InspectError(RuntimeError):
 
 def mask_credentials(text: str) -> str:
     """Replace DSN passwords with ``***`` so logs/errors never leak secrets."""
-    return _CREDENTIAL_RE.sub(r"\1***\3", text)
+    return _CREDENTIAL_RE.sub(lambda m: f"{m.group('user')}:***@", text)
 
 
 def load_schema_json(

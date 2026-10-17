@@ -244,9 +244,11 @@ class OrderByClause:
         self,
         expr: Expr[Any],
         *,
-        direction: str,
+        direction: OrderDirection,
         nulls: str | None = None,
     ) -> None:
+        # Validated at construction (runtime guard for untyped callers); the
+        # compiler trusts these slots and does not re-check them.
         self.expr = expr
         self.direction = _normalize_order_direction(direction)
         self.nulls = _normalize_nulls(nulls)

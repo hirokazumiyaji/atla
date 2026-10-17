@@ -15,7 +15,7 @@ from atlagen.inspect import InspectError, load_schema_json, mask_credentials
 def test_order_by_rejects_injected_direction_and_nulls() -> None:
     col = Column[int]("users", "id")
     with pytest.raises(ValueError, match="direction"):
-        OrderByClause(col, direction="ASC; DROP TABLE users")
+        OrderByClause(col, direction="ASC; DROP TABLE users")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="nulls"):
         col.asc(nulls="LAST; --")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="nulls"):
@@ -90,6 +90,44 @@ def test_mask_credentials_redacts_password() -> None:
     raw = "postgres://alice:s3cret-pass@db.example:5432/app"
     assert mask_credentials(raw) == "postgres://alice:***@db.example:5432/app"
     assert "s3cret" not in mask_credentials(f"atlas failed: could not connect to {raw}")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected", "secret"),
+    [
+        (
+            "mysql://root:p@ss@127.0.0.1:3306/db",
+            "mysql://root:***@127.0.0.1:3306/db",
+            "p@ss",
+        ),
+        (
+            "user:pass@tcp(127.0.0.1:3306)/db",
+            "user:***@tcp(127.0.0.1:3306)/db",
+            "pass",
+        ),
+        (
+            "failed: user:pa@ss@tcp(127.0.0.1:3306)/db refused",
+            "failed: user:***@tcp(127.0.0.1:3306)/db refused",
+            "pa@ss",
+        ),
+        (
+            "postgres://alice:s3cret@db.example:5432/app?x=a@b",
+            "postgres://alice:***@db.example:5432/app?x=a@b",
+            "s3cret",
+        ),
+    ],
+)
+def test_mask_credentials_handles_at_in_password_and_schemeless(
+    raw: str, expected: str, secret: str
+) -> None:
+    masked = mask_credentials(raw)
+    assert masked == expected
+    assert secret not in masked
+
+
+def test_mask_credentials_leaves_plain_text_alone() -> None:
+    text = "atlas failed: connection refused at 12:30 (see host:5432)"
+    assert mask_credentials(text) == text
 
 
 def test_inspect_error_masks_password_from_atlas_stderr() -> None:
