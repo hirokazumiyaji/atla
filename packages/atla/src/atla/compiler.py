@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from atla.dialect import Dialect
@@ -10,9 +11,11 @@ from atla.expressions import (
     BetweenOp,
     BinaryOp,
     Column,
+    ExcludedRef,
     Expr,
     FuncCall,
     InOp,
+    LikeOp,
     Literal,
     LogicalOp,
     OrderByClause,
@@ -32,13 +35,18 @@ class SQLCompiler:
         self.params: list[Any] = []
 
     def add_param(self, value: Any) -> str:
-        self.params.append(value)
+        self.params.append(self.dialect.encode_param(value))
         return self.dialect.placeholder(len(self.params))
 
     def write(self, fragment: str) -> None:
         self.buf.append(fragment)
 
     def visit(self, node: Expr[Any]) -> None:
+        handler = _VISIT_BY_TYPE.get(type(node))
+        if handler is not None:
+            handler(self, node)
+            return
+        # Subclass fallback (rare); keep isinstance chain for extensibility.
         if isinstance(node, Literal):
             self.write(self.add_param(node.value))
             return
@@ -47,6 +55,9 @@ class SQLCompiler:
             return
         if isinstance(node, BinaryOp):
             self._visit_binary(node)
+            return
+        if isinstance(node, LikeOp):
+            self._visit_like(node)
             return
         if isinstance(node, UnaryOp):
             self._visit_unary(node)
@@ -66,10 +77,17 @@ class SQLCompiler:
         if isinstance(node, RawSQL):
             self._visit_raw(node)
             return
+        if isinstance(node, ExcludedRef):
+            self._visit_excluded(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
 
+    def _visit_literal(self, node: Literal[Any]) -> None:
+        self.write(self.add_param(node.value))
+
     def visit_order_by(self, clause: OrderByClause) -> None:
+        # direction/nulls are validated once in ``OrderByClause.__init__``.
         if clause.nulls is not None and self.dialect.name in {"mysql", "tidb"}:
             msg = (
                 f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
@@ -110,13 +128,26 @@ class SQLCompiler:
         self.write(f" {node.op} ")
         self.visit(node.right)
 
+    def _visit_like(self, node: LikeOp) -> None:
+        if node.op == "ILIKE" and not self.dialect.supports_ilike:
+            self.write("LOWER(")
+            self.visit(node.left)
+            self.write(") LIKE LOWER(")
+            self.visit(node.right)
+            self.write(")")
+        else:
+            self.visit(node.left)
+            self.write(f" {node.op} ")
+            self.visit(node.right)
+        self.write(f" ESCAPE {self.dialect.quote_string_literal(node.escape)}")
+
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
         if node.postfix:
             self.visit(node.operand)
             self.write(f" {node.op}")
             return
         self.write(node.op)
-        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, BetweenOp, InOp))
+        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp))
         if needs_parens:
             self.write("(")
             self.visit(node.operand)
@@ -165,6 +196,13 @@ class SQLCompiler:
                     self.write(", ")
                 self.visit(arg)
         self.write(")")
+
+    def _visit_excluded(self, node: ExcludedRef[Any]) -> None:
+        quoted = self.dialect.quote(node.column.name)
+        if self.dialect.upsert_style == "duplicate":
+            self.write(f"VALUES({quoted})")
+            return
+        self.write(f"EXCLUDED.{quoted}")
 
     def _visit_raw(self, node: RawSQL[Any]) -> None:
         if not node.params:
@@ -405,6 +443,21 @@ def _scan_code_span(span: str, style: str, placeholders: list[int]) -> None:
         return
     msg = f"unsupported positional_style: {style!r}"
     raise ValueError(msg)
+
+
+# Dispatch table lives at module level so ``visit`` avoids per-node isinstance chains;
+# it intentionally binds the compiler's own protected ``_visit_*`` methods.
+_VISIT_BY_TYPE: dict[type[Any], Callable[[SQLCompiler, Any], None]] = {
+    Literal: SQLCompiler._visit_literal,  # pyright: ignore[reportPrivateUsage]
+    Column: SQLCompiler._visit_column,  # pyright: ignore[reportPrivateUsage]
+    BinaryOp: SQLCompiler._visit_binary,  # pyright: ignore[reportPrivateUsage]
+    UnaryOp: SQLCompiler._visit_unary,  # pyright: ignore[reportPrivateUsage]
+    LogicalOp: SQLCompiler._visit_logical,  # pyright: ignore[reportPrivateUsage]
+    InOp: SQLCompiler._visit_in,  # pyright: ignore[reportPrivateUsage]
+    BetweenOp: SQLCompiler._visit_between,  # pyright: ignore[reportPrivateUsage]
+    FuncCall: SQLCompiler._visit_func,  # pyright: ignore[reportPrivateUsage]
+    RawSQL: SQLCompiler._visit_raw,  # pyright: ignore[reportPrivateUsage]
+}
 
 
 def compile_expr(dialect: Dialect, expr: Expr[Any]) -> tuple[str, list[Any]]:

@@ -19,7 +19,19 @@ from atlagen.ir import ColumnIR, SchemaIR, TableIR
 
 
 def _column(name: str, *, pk: bool, py: str = "int") -> ColumnIR:
-    return ColumnIR(name, name, py, py, py, None, False, False, pk, None)
+    return ColumnIR(
+        name,
+        name,
+        py,
+        py,
+        py,
+        None,
+        nullable=False,
+        schema_nullable=False,
+        has_default=False,
+        is_primary_key=pk,
+        row_codec=None,
+    )
 
 
 class SqliteAdapter:

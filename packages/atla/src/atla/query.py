@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Self, cast, overload
+from itertools import starmap
+from typing import Any, ClassVar, Literal, Self, cast, overload
 
 from atla.adapter.base import DBAdapter
-from atla.advanced import ProjectedSelectQuery, UpsertQuery
+from atla.advanced import ProjectedSelectQuery, UpsertQuery, conflict_column_names
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, and_
 from atla.table import TableRef
-from atla.types import UNSET, UnsetType
+from atla.types import is_unset
 
 # Stay under common driver bind limits (SQLite ~32766, MySQL/Postgres similar).
 _IN_BATCH_SIZE = 500
-
-
-def _is_unset(value: object) -> bool:
-    return value is UNSET or isinstance(value, UnsetType)
 
 
 def _compile_value(compiler: SQLCompiler, value: Any) -> str:
@@ -46,7 +44,95 @@ class _JoinClause:
     segment: _JoinSegment
 
 
-class BaseSelectQuery[RecordT]:
+class _ProjectableSelect:
+    """Shared ``select()`` overloads for builders that can project columns.
+
+    Typed for 1-8 projected expressions (``ProjectedSelectQuery[T1, ..., T8]``);
+    pass more than 8 and the runtime still works but the result is untyped
+    (type checkers will report no matching overload).
+    Subclasses implement :meth:`_project`.
+    """
+
+    __slots__ = ()
+
+    @overload
+    def select[T](self, c0: Expr[T]) -> ProjectedSelectQuery[T]: ...
+
+    @overload
+    def select[T1, T2](self, c0: Expr[T1], c1: Expr[T2]) -> ProjectedSelectQuery[T1, T2]: ...
+
+    @overload
+    def select[T1, T2, T3](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3]
+    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
+
+    @overload
+    def select[T1, T2, T3, T4](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5](
+        self, c0: Expr[T1], c1: Expr[T2], c2: Expr[T3], c3: Expr[T4], c4: Expr[T5]
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7]: ...
+
+    @overload
+    def select[T1, T2, T3, T4, T5, T6, T7, T8](
+        self,
+        c0: Expr[T1],
+        c1: Expr[T2],
+        c2: Expr[T3],
+        c3: Expr[T4],
+        c4: Expr[T5],
+        c5: Expr[T6],
+        c6: Expr[T7],
+        c7: Expr[T8],
+    ) -> ProjectedSelectQuery[T1, T2, T3, T4, T5, T6, T7, T8]: ...
+
+    def select(self, *columns: Expr[Any]) -> Any:  # type: ignore[misc]
+        """Project specific columns/expressions as ``list[tuple[...]]``.
+
+        Supports up to 8 typed columns/expressions (overloads); more than 8 are
+        accepted at runtime but are not statically typed.
+
+        Row codecs (UUID/Decimal/datetime/...) are applied only for the generated
+        table column descriptors (e.g. ``users.id``), which carry a ``decoder``.
+        Hand-built ``Column("users", "id")`` objects and other expressions return
+        the adapter's raw values.
+        """
+        if not columns:
+            msg = "select() requires at least one column"
+            raise ValueError(msg)
+        return self._project(columns)
+
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        raise NotImplementedError
+
+
+class BaseSelectQuery[RecordT](_ProjectableSelect):
     """Immutable SELECT query builder backed by AOT SQL fragments."""
 
     __slots__ = ("_adapter", "_limit", "_offset", "_order_by", "_where")
@@ -55,6 +141,8 @@ class BaseSelectQuery[RecordT]:
     _SELECT_SQL: str
     _COUNT_SQL: str
     _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    # When set (codec-free tables), ``all()`` uses ``starmap`` for C-level hydration.
+    _ROW_CTOR: ClassVar[type[Any] | None] = None
     _SELECT_COLS: str
     _COLUMN_COUNT: int
     _FROM_SQL: str
@@ -209,28 +297,8 @@ class BaseSelectQuery[RecordT]:
             key_attr=key_attr,
         )
 
-    @overload
-    def select[T](self, c0: Column[T]) -> ProjectedSelectQuery[T]: ...
-
-    @overload
-    def select[T1, T2](self, c0: Column[T1], c1: Column[T2]) -> ProjectedSelectQuery[T1, T2]: ...
-
-    @overload
-    def select[T1, T2, T3](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3]
-    ) -> ProjectedSelectQuery[T1, T2, T3]: ...
-
-    @overload
-    def select[T1, T2, T3, T4](
-        self, c0: Column[T1], c1: Column[T2], c2: Column[T3], c3: Column[T4]
-    ) -> ProjectedSelectQuery[T1, T2, T3, T4]: ...
-
-    def select(self, *columns: Column[Any]) -> Any:  # type: ignore[misc]
-        """Project specific columns as ``list[tuple[...]]`` (TypeVarTuple overloads)."""
-        if not columns:
-            msg = "select() requires at least one column"
-            raise ValueError(msg)
-        query: ProjectedSelectQuery[Any] = ProjectedSelectQuery(
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        return ProjectedSelectQuery(
             self._adapter,
             from_sql=type(self)._FROM_SQL,
             columns=columns,
@@ -239,7 +307,6 @@ class BaseSelectQuery[RecordT]:
             limit=self._limit,
             offset=self._offset,
         )
-        return query
 
     def to_sql(self) -> tuple[str, list[Any]]:
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._SELECT_SQL)
@@ -260,14 +327,28 @@ class BaseSelectQuery[RecordT]:
             compiler.write(compiler.add_param(self._offset))
         return compiler.build()
 
+    def _is_static_select(self) -> bool:
+        """True when the AOT ``_SELECT_SQL`` can be used verbatim (no builder clauses).
+
+        Single source of truth for ``all()`` / ``first()`` fast paths. Any new clause
+        that alters the SELECT text (GROUP BY, DISTINCT, ...) must be checked here.
+        """
+        return (
+            not self._where and not self._order_by and self._limit is None and self._offset is None
+        )
+
     async def all(self) -> list[RecordT]:
-        if not self._where and not self._order_by and self._limit is None and self._offset is None:
-            sql = type(self)._SELECT_SQL
+        cls = type(self)
+        if self._is_static_select():
+            sql = cls._SELECT_SQL
             params: list[Any] = []
         else:
             sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
-        mapper = type(self)._ROW_MAPPER
+        ctor = cls._ROW_CTOR
+        if ctor is not None:
+            return list(starmap(ctor, rows))
+        mapper = cls._ROW_MAPPER
         return [mapper(row) for row in rows]
 
     def _with_fetch_limit(self, maximum: int) -> Self:
@@ -277,8 +358,15 @@ class BaseSelectQuery[RecordT]:
         return self.limit(maximum)
 
     async def first(self) -> RecordT | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        if self._is_static_select():
+            sql = f"{type(self)._SELECT_SQL} LIMIT 1"
+            params: list[Any] = []
+        else:
+            sql, params = self._with_fetch_limit(1).to_sql()
+        row = await self._adapter.fetch_one(sql, params)
+        if row is None:
+            return None
+        return type(self)._ROW_MAPPER(row)
 
     async def one(self) -> RecordT:
         rows = await self._with_fetch_limit(2).all()
@@ -299,7 +387,28 @@ class BaseSelectQuery[RecordT]:
         return int(value)
 
     async def exists(self) -> bool:
-        return (await self.first()) is not None
+        """Return whether any matching row exists without hydrating records.
+
+        Preserves the caller's LIMIT/OFFSET pagination (e.g. ``offset(100).exists()``
+        is false when fewer than 101 matching rows exist).
+        """
+        if self._limit == 0:
+            return False
+        compiler = SQLCompiler(
+            self._adapter.dialect,
+            initial_sql=f"SELECT 1 FROM {type(self)._FROM_SQL}",
+        )
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        # ``_limit == 0`` returned above, so the probe is always a single row.
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(1))
+        if self._offset is not None:
+            compiler.write(" OFFSET ")
+            compiler.write(compiler.add_param(self._offset))
+        sql, params = compiler.build()
+        return (await self._adapter.fetch_val(sql, params)) is not None
 
 
 class BaseInsertQuery[RecordT]:
@@ -310,6 +419,8 @@ class BaseInsertQuery[RecordT]:
     _TABLE_NAME: str
     _RETURNING_COLS: str
     _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    _ATTR_TO_SQL: ClassVar[Mapping[str, str]] = {}
+    _UPSERT_CLS: ClassVar[type[UpsertQuery[Any]] | None] = None
 
     def __init__(
         self,
@@ -329,7 +440,7 @@ class BaseInsertQuery[RecordT]:
         dialect-quoted once in :meth:`to_sql`. Generated repositories pass Python
         keyword names, never pre-quoted fragments.
         """
-        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         return type(self)(
             self._adapter,
             values=self._values + pairs,
@@ -339,22 +450,32 @@ class BaseInsertQuery[RecordT]:
     def returning(self) -> Self:
         return type(self)(self._adapter, values=self._values, returning=True)
 
-    def on_conflict(self, *columns: str) -> UpsertQuery[RecordT]:
+    def on_conflict(self, *columns: Column[Any] | str) -> UpsertQuery[RecordT]:
         """Start a dialect-specific upsert (``ON CONFLICT`` / ``ON DUPLICATE KEY``)."""
-        if not columns and self._adapter.dialect.upsert_style == "conflict":
+        conflict_columns = conflict_column_names(*columns)
+        if not conflict_columns and self._adapter.dialect.upsert_style == "conflict":
             msg = "on_conflict() requires at least one conflict target column"
             raise ValueError(msg)
 
-        class _Upsert(UpsertQuery[RecordT]):
-            __slots__ = ()
-            _RETURNING_COLS = type(self)._RETURNING_COLS
-            _ROW_MAPPER = type(self)._ROW_MAPPER
+        upsert_cls = type(self)._UPSERT_CLS
+        if upsert_cls is None:
 
-        return _Upsert(
+            class _Upsert(UpsertQuery[RecordT]):
+                __slots__ = ()
+                _RETURNING_COLS = type(self)._RETURNING_COLS
+                # staticmethod keeps the callable unbound (mypy would otherwise infer a
+                # bound method and clash with UpsertQuery._ROW_MAPPER).
+                _ROW_MAPPER = staticmethod(type(self)._ROW_MAPPER)
+                _ATTR_TO_SQL = type(self)._ATTR_TO_SQL
+
+            upsert_cls = _Upsert
+
+        return upsert_cls(
             self._adapter,
             table_name=type(self)._TABLE_NAME,
             values=self._values,
-            conflict_columns=columns,
+            conflict_columns=conflict_columns,
+            returning=self._returning,
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
@@ -377,16 +498,6 @@ class BaseInsertQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
-    async def one(self) -> RecordT:
-        if not self._returning:
-            msg = "one() requires .returning()"
-            raise ValueError(msg)
-        sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
-            raise NotFoundError("insert ... returning produced no row")
-        return type(self)._ROW_MAPPER(row)
-
     async def all(self) -> list[RecordT]:
         if not self._returning:
             msg = "all() requires .returning()"
@@ -395,6 +506,23 @@ class BaseInsertQuery[RecordT]:
         rows = await self._adapter.fetch_all(sql, params)
         mapper = type(self)._ROW_MAPPER
         return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        if not rows:
+            raise NotFoundError("insert ... returning produced no row")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
 class BaseUpdateQuery[RecordT]:
@@ -423,7 +551,7 @@ class BaseUpdateQuery[RecordT]:
 
     def _set_values(self, **columns: Any) -> Self:
         """Accumulate SET columns (bare identifiers; quoted once in ``to_sql``)."""
-        pairs = tuple((name, value) for name, value in columns.items() if not _is_unset(value))
+        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         return type(self)(
             self._adapter,
             set_values=self._set + pairs,
@@ -490,21 +618,40 @@ class BaseUpdateQuery[RecordT]:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
+    async def all(self) -> list[RecordT]:
+        if not self._returning:
+            msg = "all() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
+
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
     async def one(self) -> RecordT:
         if not self._returning:
             msg = "one() requires .returning()"
             raise ValueError(msg)
         sql, params = self.to_sql()
-        row = await self._adapter.fetch_one(sql, params)
-        if row is None:
+        rows = await self._adapter.fetch_all(sql, params)
+        if not rows:
             raise NotFoundError("update ... returning produced no row")
-        return type(self)._ROW_MAPPER(row)
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
 
 
-class BaseDeleteQuery:
+class BaseDeleteQuery[RecordT]:
     """Immutable DELETE builder with full-table mutation guard."""
 
-    __slots__ = ("_adapter", "_allow_full", "_table_name", "_where")
+    __slots__ = ("_adapter", "_allow_full", "_returning", "_table_name", "_where")
+
+    _RETURNING_COLS: str = "*"
+    _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
 
     def __init__(
         self,
@@ -513,28 +660,41 @@ class BaseDeleteQuery:
         table_name: str,
         where: tuple[Expr[bool], ...] = (),
         allow_full: bool = False,
+        returning: bool = False,
     ) -> None:
         self._adapter = adapter
         self._table_name = table_name
         self._where = where
         self._allow_full = allow_full
+        self._returning = returning
 
-    def where(self, *predicates: Expr[bool]) -> BaseDeleteQuery:
+    def where(self, *predicates: Expr[bool]) -> Self:
         if not predicates:
             return self
-        return BaseDeleteQuery(
+        return type(self)(
             self._adapter,
             table_name=self._table_name,
             where=self._where + predicates,
             allow_full=self._allow_full,
+            returning=self._returning,
         )
 
-    def allow_full_table(self) -> BaseDeleteQuery:
-        return BaseDeleteQuery(
+    def allow_full_table(self) -> Self:
+        return type(self)(
             self._adapter,
             table_name=self._table_name,
             where=self._where,
             allow_full=True,
+            returning=self._returning,
+        )
+
+    def returning(self) -> Self:
+        return type(self)(
+            self._adapter,
+            table_name=self._table_name,
+            where=self._where,
+            allow_full=self._allow_full,
+            returning=True,
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
@@ -543,19 +703,52 @@ class BaseDeleteQuery:
                 "DELETE without WHERE is refused; call allow_full_table() to proceed"
             )
         sql = f"DELETE FROM {self._table_name}"
-        if not self._where:
-            return sql, []
-        compiler = SQLCompiler(self._adapter.dialect)
-        compiler.visit(and_(*self._where))
-        where_sql, params = compiler.build()
-        return f"{sql} WHERE {where_sql}", params
+        params: list[Any] = []
+        if self._where:
+            compiler = SQLCompiler(self._adapter.dialect)
+            compiler.visit(and_(*self._where))
+            where_sql, params = compiler.build()
+            sql = f"{sql} WHERE {where_sql}"
+        if self._returning:
+            dialect = self._adapter.dialect
+            if not dialect.supports_returning:
+                msg = f"{dialect.name} does not support RETURNING"
+                raise ValueError(msg)
+            sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
+        return sql, params
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
         return await self._adapter.execute(sql, params)
 
+    async def all(self) -> list[RecordT]:
+        if not self._returning:
+            msg = "all() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        mapper = type(self)._ROW_MAPPER
+        return [mapper(row) for row in rows]
 
-class JoinedSelectQuery[*Ts]:
+    async def first(self) -> RecordT | None:
+        rows = await self.all()
+        return rows[0] if rows else None
+
+    async def one(self) -> RecordT:
+        if not self._returning:
+            msg = "one() requires .returning()"
+            raise ValueError(msg)
+        sql, params = self.to_sql()
+        rows = await self._adapter.fetch_all(sql, params)
+        if not rows:
+            raise NotFoundError("delete ... returning produced no row")
+        if len(rows) > 1:
+            raise MultipleResultsError("expected exactly one row, found multiple")
+        # Map only the single accepted row (UPDATE/DELETE cannot be LIMITed).
+        return type(self)._ROW_MAPPER(rows[0])
+
+
+class JoinedSelectQuery[*Ts](_ProjectableSelect):
     """SELECT builder that hydrates each row into ``tuple[*Ts]`` via column slices."""
 
     __slots__ = (
@@ -628,6 +821,21 @@ class JoinedSelectQuery[*Ts]:
 
     def offset(self, n: int) -> JoinedSelectQuery[*Ts]:
         return self._clone(offset=n, replace_offset=True)
+
+    def _project(self, columns: tuple[Expr[Any], ...]) -> ProjectedSelectQuery[Any]:
+        join_parts = tuple(
+            (f" {join.kind} JOIN {join.target_sql} ON ", join.on) for join in self._joins
+        )
+        return ProjectedSelectQuery(
+            self._adapter,
+            from_sql=self._from_sql,
+            columns=columns,
+            where=self._where,
+            order_by=self._order_by,
+            limit=self._limit,
+            offset=self._offset,
+            join_parts=join_parts,
+        )
 
     def join[OtherT](
         self,
@@ -710,19 +918,32 @@ class JoinedSelectQuery[*Ts]:
         return compiler.build()
 
     def _hydrate(self, row: Sequence[Any]) -> tuple[*Ts]:
+        segments = self._segments
+        if len(segments) == 2:
+            left, right = segments
+            n0 = left.column_count
+            return cast(tuple[*Ts], (left.mapper(row[:n0]), right.mapper(row[n0:])))
+        if len(segments) == 3:
+            a, b, c = segments
+            n0 = a.column_count
+            n1 = n0 + b.column_count
+            return cast(
+                tuple[*Ts],
+                (a.mapper(row[:n0]), b.mapper(row[n0:n1]), c.mapper(row[n1:])),
+            )
         values: list[Any] = []
         offset = 0
-        for segment in self._segments:
+        for segment in segments:
             end = offset + segment.column_count
-            slice_row = row[offset:end]
+            values.append(segment.mapper(row[offset:end]))
             offset = end
-            values.append(segment.mapper(slice_row))
         return cast(tuple[*Ts], tuple(values))
 
     async def all(self) -> list[tuple[*Ts]]:
         sql, params = self.to_sql()
         rows = await self._adapter.fetch_all(sql, params)
-        return [self._hydrate(row) for row in rows]
+        hydrate = self._hydrate
+        return [hydrate(row) for row in rows]
 
     def _with_fetch_limit(self, maximum: int) -> JoinedSelectQuery[*Ts]:
         if self._limit is not None and self._limit <= maximum:
@@ -730,8 +951,11 @@ class JoinedSelectQuery[*Ts]:
         return self.limit(maximum)
 
     async def first(self) -> tuple[*Ts] | None:
-        rows = await self._with_fetch_limit(1).all()
-        return rows[0] if rows else None
+        sql, params = self._with_fetch_limit(1).to_sql()
+        row = await self._adapter.fetch_one(sql, params)
+        if row is None:
+            return None
+        return self._hydrate(row)
 
     async def one(self) -> tuple[*Ts]:
         rows = await self._with_fetch_limit(2).all()
@@ -827,24 +1051,44 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return rows[0] if rows else None
 
 
+# Bounded LRU: alias comes from ``table.as_("...")`` and may be user-generated, so an
+# unbounded dict could grow without limit. Eviction only costs one class rebuild.
+_ADHOC_SELECT_CACHE_MAX = 256
+_ADHOC_SELECT_CACHE: OrderedDict[tuple[type[Any], str, str | None], type[BaseSelectQuery[Any]]] = (
+    OrderedDict()
+)
+
+
 def _table_select[RecordT](
     table: TableRef[RecordT],
     adapter: DBAdapter,
 ) -> BaseSelectQuery[RecordT]:
     """Build an ad-hoc ``BaseSelectQuery`` for a ``TableRef`` (preload follow-up)."""
     dialect = adapter.dialect
-    select_cols = table.select_list(dialect)
-    from_sql = table.join_target(dialect)
-    count_sql = f"SELECT COUNT(*) FROM {from_sql}"
+    alias = getattr(table, "_alias", None)
+    cache_key = (type(table), dialect.name, alias)
+    query_cls = _ADHOC_SELECT_CACHE.get(cache_key)
+    if query_cls is not None:
+        _ADHOC_SELECT_CACHE.move_to_end(cache_key)
+    else:
+        select_cols = table.select_list(dialect)
+        from_sql = table.join_target(dialect)
+        count_sql = f"SELECT COUNT(*) FROM {from_sql}"
+        row_mapper = table.get_row_mapper()
+        column_count = table.column_count
 
-    class _AdHocQuery(BaseSelectQuery[RecordT]):
-        __slots__ = ()
-        _TABLE_NAME = from_sql
-        _SELECT_COLS = select_cols
-        _FROM_SQL = from_sql
-        _SELECT_SQL = f"SELECT {select_cols} FROM {from_sql}"
-        _COUNT_SQL = count_sql
-        _COLUMN_COUNT = table.column_count
-        _ROW_MAPPER = table.get_row_mapper()
+        class _AdHocQuery(BaseSelectQuery[RecordT]):
+            __slots__ = ()
+            _TABLE_NAME = from_sql
+            _SELECT_COLS = select_cols
+            _FROM_SQL = from_sql
+            _SELECT_SQL = f"SELECT {select_cols} FROM {from_sql}"
+            _COUNT_SQL = count_sql
+            _COLUMN_COUNT = column_count
+            _ROW_MAPPER = row_mapper
 
-    return _AdHocQuery(adapter)
+        query_cls = _AdHocQuery
+        _ADHOC_SELECT_CACHE[cache_key] = query_cls
+        if len(_ADHOC_SELECT_CACHE) > _ADHOC_SELECT_CACHE_MAX:
+            _ADHOC_SELECT_CACHE.popitem(last=False)
+    return cast(BaseSelectQuery[RecordT], query_cls(adapter))
