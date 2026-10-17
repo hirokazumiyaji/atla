@@ -75,7 +75,7 @@ def _emit_insert_param(table: TableIR) -> list[str]:
     """
     lines = [
         f"class {table.model_name}InsertParam(TypedDict):",
-        "    \"\"\"Row shape for ``insert_many``.",
+        '    """Row shape for ``insert_many``.',
         "",
         "    All rows must share the same column set; omitting a NotRequired key",
         "    on only some rows raises ValueError at runtime.",

@@ -709,8 +709,7 @@ class BaseUpdateQuery[RecordT]:
         dialect = self._adapter.dialect
         compiler = SQLCompiler(dialect)
         assignments = [
-            f"{dialect.quote(name)} = {compiler.compile_value(value)}"
-            for name, value in self._set
+            f"{dialect.quote(name)} = {compiler.compile_value(value)}" for name, value in self._set
         ]
         sql = f"UPDATE {self._TABLE_NAME} SET {', '.join(assignments)}"
         if self._where:

@@ -496,9 +496,11 @@ def insert_many_rows(
             if unknown:
                 msg = f"insert_many() got unknown column(s): {', '.join(sorted(map(str, unknown)))}"
                 raise ValueError(msg)
-        by_sql = {attr_to_sql[attr]: value for attr, value in row.items()} if attr_to_sql else {
-            attr: value for attr, value in row.items()
-        }
+        by_sql = (
+            {attr_to_sql[attr]: value for attr, value in row.items()}
+            if attr_to_sql
+            else {attr: value for attr, value in row.items()}
+        )
         names = set(by_sql)
         if column_order is None:
             column_order = list(by_sql)

@@ -22,7 +22,7 @@ def emit_client(schema: SchemaIR) -> str:
     lines.extend(
         [
             "",
-            "T = TypeVar(\"T\")",
+            'T = TypeVar("T")',
             "",
             "class AtlaClient:",
             '    __slots__ = ("_adapter",)',
