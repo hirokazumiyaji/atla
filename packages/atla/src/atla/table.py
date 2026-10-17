@@ -55,16 +55,15 @@ class TableRef[RecordT]:
         """Hydrate a LEFT JOIN slice, or return ``None`` when the right side is absent.
 
         With a single-column ``_PK_INDEXES`` entry, absence is detected by that key
-        being NULL (O(1)). This assumes primary keys are never NULL in stored rows.
-        Caveat: SQLite permits NULL in non-``INTEGER PRIMARY KEY`` key columns (e.g.
-        TEXT keys), so a matched row with a NULL key would be misreported as absent.
-        Descriptors that need to tolerate that case should leave ``_PK_INDEXES`` empty
-        (or composite), which falls back to scanning the whole slice.
+        being NULL (O(1)). **Only set ``_PK_INDEXES`` for a non-nullable single-column
+        PK** — a nullable PK (e.g. SQLite TEXT PRIMARY KEY) must leave it empty so a
+        matched row with a NULL key is not misreported as absent. Composite keys and
+        custom descriptors without key metadata also leave it empty and fall back to
+        scanning the whole slice.
         """
         pk_indexes = type(self)._PK_INDEXES
-        # Single-column PK: O(1) absence check (non-null by definition on most engines).
-        # Composite / unknown keys: scan the whole slice so SQLite NULL PK rows and
-        # custom descriptors without key metadata stay correct.
+        # Single-column non-nullable PK only (emitter omits indexes when schema-nullable).
+        # Composite / nullable / unknown keys: scan the whole slice.
         if len(pk_indexes) == 1:
             if row[pk_indexes[0]] is None:
                 return None

@@ -74,16 +74,17 @@ def table_model_name(table_name: str) -> str:
 
 
 def table_accessor_name(table_name: str) -> str:
-    """``users`` / ``other.users`` -> ``user``."""
+    """``users`` / ``other.users`` -> ``user`` (escaped if reserved on AtlaClient)."""
     singular = singularize(unqualified_table_name(table_name))
     if not singular:
         return singular
-    return singular[:1].lower() + singular[1:]
+    name = singular[:1].lower() + singular[1:]
+    return safe_attr_name(name)
 
 
 # Builtins / soft-keyword-adjacent names that should not become attributes as-is.
 # Note: ``id`` is intentionally allowed (common primary-key column).
-# Also reserve names emitted on generated Record / Table classes.
+# Also reserve names emitted on generated Record / Table / Client classes.
 _RESERVED_ATTRS = frozenset(
     {
         "type",
@@ -107,6 +108,7 @@ _RESERVED_ATTRS = frozenset(
         "_from_row",
         "_COLUMNS",
         "_ROW_MAPPER",
+        "_PK_INDEXES",
         "__table_name__",
         "sql_alias",
         "join_target",
@@ -115,6 +117,10 @@ _RESERVED_ATTRS = frozenset(
         "get_row_mapper",
         "map_row",
         "map_row_optional",
+        # Generated AtlaClient members (must not collide with table accessors / slots)
+        "_adapter",
+        "transaction",
+        "run_in_transaction",
     }
 )
 

@@ -211,8 +211,10 @@ def _parse_column(
         raise AtlasParseError(msg)
 
     raw_type = _extract_raw_type(column_raw.get("type"))
-    # Primary-key columns are non-nullable even if Atlas marks null=true.
-    nullable = bool(column_raw.get("null", False)) and name not in primary_key_names
+    # Atlas nullability before PK override (SQLite may allow NULL in non-INTEGER PKs).
+    schema_nullable = bool(column_raw.get("null", False))
+    # Primary-key columns are non-nullable for typing even if Atlas marks null=true.
+    nullable = schema_nullable and name not in primary_key_names
     has_default = _column_has_default(column_raw, raw_type=raw_type)
 
     inline_enum: EnumIR | None = None
@@ -237,6 +239,7 @@ def _parse_column(
             base_python_type="",
             import_symbol=None,
             nullable=nullable,
+            schema_nullable=schema_nullable,
             has_default=has_default,
             is_primary_key=name in primary_key_names,
             row_codec=None,

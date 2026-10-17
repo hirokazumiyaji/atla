@@ -30,10 +30,18 @@ def test_safe_attr_name_keywords() -> None:
     assert safe_attr_name("_alias") == "_alias_"
     assert safe_attr_name("_from_row") == "_from_row_"
     assert safe_attr_name("list") == "list_"
+    assert safe_attr_name("transaction") == "transaction_"
     assert safe_attr_name("user-name") == "user_name"
     assert safe_attr_name("1st") == "col_1st"
     assert unique_attr_names(["user-name", "user_name"]) == ["user_name", "user_name_2"]
     assert unique_attr_names(["as", "as_"]) == ["as__", "as___2"]
+
+
+def test_table_accessor_reserves_client_members() -> None:
+    from atlagen.naming import table_accessor_name
+
+    assert table_accessor_name("transactions") == "transaction_"
+    assert table_accessor_name("users") == "user"
 
 
 def test_parse_postgres_fixture() -> None:
@@ -151,6 +159,7 @@ def test_primary_key_forces_non_nullable() -> None:
     column = schema.tables[0].columns[0]
     assert column.is_primary_key is True
     assert column.nullable is False
+    assert column.schema_nullable is True
 
 
 def test_parse_foreign_key_string_ref_keeps_qualification() -> None:
