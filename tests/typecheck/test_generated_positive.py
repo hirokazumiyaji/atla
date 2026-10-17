@@ -24,7 +24,10 @@ from typing import assert_type, cast
 
 from atla.adapter.base import DBAdapter
 
+from atla import excluded
+
 from appdb import AtlaClient, User, UserRecord
+from appdb.query import UserUpsertBuilder
 
 
 async def exercise(db: AtlaClient) -> None:
@@ -37,8 +40,15 @@ async def exercise(db: AtlaClient) -> None:
     assert_type(one, UserRecord)
 
     _ = db.user.insert(email="alice@example.com")
-    _ = db.user.update().set(email="bob@example.com").where(User.id == 1)
-    _ = db.user.delete().where(User.id == 1)
+    _ = db.user.update().set(email="bob@example.com", id=1).where(User.id == 1)
+    _ = db.user.delete().where(User.id == 1).returning()
+
+    upsert = (
+        db.user.insert(email="alice@example.com")
+        .on_conflict(User.email)
+        .do_update(email=excluded(User.email))
+    )
+    assert_type(upsert, UserUpsertBuilder)
 
     async with db.transaction() as tx:
         assert_type(tx, AtlaClient)
