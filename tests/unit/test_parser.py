@@ -87,6 +87,31 @@ def test_parse_mysql_fixture() -> None:
     assert categories.columns[0].has_default is True
 
 
+def test_primary_key_forces_non_nullable() -> None:
+    schema = parse_atlas_json(
+        {
+            "schemas": [
+                {
+                    "name": "public",
+                    "tables": [
+                        {
+                            "name": "users",
+                            "columns": [
+                                {"name": "id", "type": "int", "null": True},
+                            ],
+                            "primary_key": {"columns": [{"name": "id"}]},
+                        }
+                    ],
+                }
+            ]
+        },
+        dialect="postgres",
+    )
+    column = schema.tables[0].columns[0]
+    assert column.is_primary_key is True
+    assert column.nullable is False
+
+
 def test_parse_foreign_key_nested_ref_object() -> None:
     schema = parse_atlas_json(
         {

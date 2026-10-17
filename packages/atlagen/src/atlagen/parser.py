@@ -204,7 +204,8 @@ def _parse_column(
         raise AtlasParseError(msg)
 
     raw_type = _extract_raw_type(column_raw.get("type"))
-    nullable = bool(column_raw.get("null", False))
+    # Primary-key columns are non-nullable even if Atlas marks null=true.
+    nullable = bool(column_raw.get("null", False)) and name not in primary_key_names
     has_default = _column_has_default(column_raw, raw_type=raw_type)
 
     inline_enum: EnumIR | None = None
