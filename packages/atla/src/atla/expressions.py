@@ -3,11 +3,37 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, NoReturn, overload
+from typing import Literal as TypingLiteral
 from typing import cast as typing_cast
 
+OrderDirection = TypingLiteral["ASC", "DESC"]
+NullsPosition = TypingLiteral["FIRST", "LAST"]
+
 _SQL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\([\d,\s]+\))?(\[\])?$")
+_FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+# Exact tokens emitted by the expression API / compiler (no free-form SQL).
+_BINARY_OPS = frozenset(
+    {
+        "=",
+        "<>",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "LIKE",
+        "ILIKE",
+    }
+)
+_UNARY_OPS = frozenset({"NOT ", "IS NULL", "IS NOT NULL", "-"})
+_LOGICAL_OPS = frozenset({"AND", "OR"})
 
 
 def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
@@ -19,7 +45,7 @@ def _coerce_literal[T](value: T | Expr[T]) -> Expr[T]:
 def _try_subquery(value: object) -> SubqueryExpr[Any] | None:
     """Convert a compiled query (``to_sql()``) or :class:`SubqueryExpr` into a subquery."""
     if isinstance(value, SubqueryExpr):
-        return typing_cast(SubqueryExpr[Any], value)
+        return typing_cast("SubqueryExpr[object]", value)
     to_sql = getattr(value, "to_sql", None)
     if callable(to_sql) and not isinstance(value, (str, bytes, bytearray)):
         result = typing_cast(tuple[str, Sequence[Any]], to_sql())
@@ -35,7 +61,67 @@ def _coerce_in_values(values: object) -> Sequence[Any] | SubqueryExpr[Any]:
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Iterable):
         msg = "in_() expects an iterable of values or a subquery with to_sql()"
         raise TypeError(msg)
-    return tuple(values)
+    return tuple(typing_cast("Iterable[object]", values))
+
+
+def _validate_binary_op(op: str) -> str:
+    if op not in _BINARY_OPS:
+        msg = f"invalid SQL binary operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_unary_op(op: str) -> str:
+    if op not in _UNARY_OPS:
+        msg = f"invalid SQL unary operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_logical_op(op: str) -> str:
+    if op not in _LOGICAL_OPS:
+        msg = f"invalid SQL logical operator: {op!r}"
+        raise ValueError(msg)
+    return op
+
+
+def _validate_func_name(name: str) -> str:
+    if not _FUNC_NAME_RE.fullmatch(name):
+        msg = f"invalid SQL function name: {name!r}"
+        raise ValueError(msg)
+    return name
+
+
+def _normalize_order_direction(direction: str) -> OrderDirection:
+    normalized = direction.upper()
+    if normalized not in {"ASC", "DESC"}:
+        msg = f"ORDER BY direction must be ASC or DESC, got {direction!r}"
+        raise ValueError(msg)
+    return typing_cast(OrderDirection, normalized)
+
+
+def _normalize_nulls(nulls: str | None) -> NullsPosition | None:
+    if nulls is None:
+        return None
+    normalized = nulls.upper()
+    if normalized not in {"FIRST", "LAST"}:
+        msg = f"ORDER BY nulls must be FIRST or LAST, got {nulls!r}"
+        raise ValueError(msg)
+    return typing_cast(NullsPosition, normalized)
+
+
+# Use ``!`` rather than ``\`` so ESCAPE literals stay portable on MySQL/TiDB
+# (where ``\`` is a string-literal escape by default).
+_LIKE_ESCAPE = "!"
+
+
+def escape_like(value: str) -> str:
+    """Escape ``!``, ``%``, and ``_`` for LIKE patterns using ``ESCAPE '!'``."""
+    return (
+        value.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", f"{_LIKE_ESCAPE}%")
+        .replace("_", f"{_LIKE_ESCAPE}_")
+    )
 
 
 class Expr[T_co]:
@@ -151,19 +237,45 @@ class Expr[T_co]:
         return BetweenOp(self, _coerce_literal(low), _coerce_literal(high))
 
     def like(self, pattern: str) -> BinaryOp[bool]:
+        """Raw SQL ``LIKE`` — ``%`` / ``_`` keep wildcard meaning.
+
+        For literal substring / prefix / suffix matching (with automatic
+        escaping and ``ESCAPE '!'``), use :meth:`contains`, :meth:`starts_with`,
+        or :meth:`ends_with` instead.
+        """
         return BinaryOp("LIKE", self, Literal(pattern))
 
     def ilike(self, pattern: str) -> BinaryOp[bool]:
+        """Raw SQL ``ILIKE`` / lowercased ``LIKE`` — wildcards stay active.
+
+        Prefer :meth:`icontains`, :meth:`istarts_with`, or :meth:`iends_with`
+        when the input should be matched literally.
+        """
         return BinaryOp("ILIKE", self, Literal(pattern))
 
-    def contains(self, substring: str) -> BinaryOp[bool]:
-        return self.like(f"%{substring}%")
+    def contains(self, substring: str) -> LikeOp:
+        """Substring match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"%{escape_like(substring)}%")
 
-    def starts_with(self, prefix: str) -> BinaryOp[bool]:
-        return self.like(f"{prefix}%")
+    def starts_with(self, prefix: str) -> LikeOp:
+        """Prefix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"{escape_like(prefix)}%")
 
-    def ends_with(self, suffix: str) -> BinaryOp[bool]:
-        return self.like(f"%{suffix}")
+    def ends_with(self, suffix: str) -> LikeOp:
+        """Suffix match via ``LIKE`` with escaped wildcards and ``ESCAPE '!'``."""
+        return LikeOp("LIKE", self, f"%{escape_like(suffix)}")
+
+    def icontains(self, substring: str) -> LikeOp:
+        """Case-insensitive substring match (``ILIKE`` / lowercased ``LIKE``)."""
+        return LikeOp("ILIKE", self, f"%{escape_like(substring)}%")
+
+    def istarts_with(self, prefix: str) -> LikeOp:
+        """Case-insensitive prefix match."""
+        return LikeOp("ILIKE", self, f"{escape_like(prefix)}%")
+
+    def iends_with(self, suffix: str) -> LikeOp:
+        """Case-insensitive suffix match."""
+        return LikeOp("ILIKE", self, f"%{escape_like(suffix)}")
 
     # --- Arithmetic ---
 
@@ -202,10 +314,10 @@ class Expr[T_co]:
 
     # --- Ordering / alias ---
 
-    def asc(self, *, nulls: str | None = None) -> OrderByClause:
+    def asc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
         return OrderByClause(self, direction="ASC", nulls=nulls)
 
-    def desc(self, *, nulls: str | None = None) -> OrderByClause:
+    def desc(self, *, nulls: NullsPosition | None = None) -> OrderByClause:
         return OrderByClause(self, direction="DESC", nulls=nulls)
 
     def as_(self, alias: str) -> AliasedExpr[T_co]:
@@ -227,9 +339,34 @@ class BinaryOp[T](Expr[T]):
     __slots__ = ("left", "op", "right")
 
     def __init__(self, op: str, left: Expr[Any], right: Expr[Any]) -> None:
-        self.op = op
+        self.op = _validate_binary_op(op)
         self.left = left
         self.right = right
+
+
+class LikeOp(Expr[bool]):
+    """LIKE / ILIKE with a mandatory ESCAPE clause and a pre-escaped pattern."""
+
+    __slots__ = ("escape", "left", "op", "right")
+
+    def __init__(
+        self,
+        op: TypingLiteral["LIKE", "ILIKE"],
+        left: Expr[Any],
+        pattern: str,
+        *,
+        escape: str = _LIKE_ESCAPE,
+    ) -> None:
+        if op not in {"LIKE", "ILIKE"}:
+            msg = f"invalid LIKE operator: {op!r}"
+            raise ValueError(msg)
+        if len(escape) != 1 or "\x00" in escape:
+            msg = f"LIKE ESCAPE must be a single non-NUL character, got {escape!r}"
+            raise ValueError(msg)
+        self.op = op
+        self.left = left
+        self.right = Literal(pattern)
+        self.escape = escape
 
 
 class UnaryOp[T](Expr[T]):
@@ -238,7 +375,7 @@ class UnaryOp[T](Expr[T]):
     __slots__ = ("op", "operand", "postfix")
 
     def __init__(self, op: str, operand: Expr[Any], *, postfix: bool = False) -> None:
-        self.op = op
+        self.op = _validate_unary_op(op)
         self.operand = operand
         self.postfix = postfix
 
@@ -249,7 +386,7 @@ class LogicalOp(Expr[bool]):
     __slots__ = ("clauses", "op")
 
     def __init__(self, op: str, clauses: tuple[Expr[bool], ...]) -> None:
-        self.op = op
+        self.op = _validate_logical_op(op)
         self.clauses = clauses
 
 
@@ -287,6 +424,7 @@ class InOp[T](Expr[bool]):
     ) -> None:
         self.expr = expr
         self.negated = negated
+        self.subquery: SubqueryExpr[Any] | None
         if isinstance(values, SubqueryExpr):
             self.subquery = values
             self.values: tuple[Any, ...] = ()
@@ -318,7 +456,7 @@ class FuncCall[T](Expr[T]):
         *,
         distinct: bool = False,
     ) -> None:
-        self.name = name
+        self.name = _validate_func_name(name)
         self.args = args
         self.distinct = distinct
 
@@ -377,6 +515,15 @@ class CaseExpr[T](Expr[T]):
         self.else_ = else_
 
 
+class ExcludedRef[T](Expr[T]):
+    """Upsert conflict-row reference (``EXCLUDED.col`` / ``VALUES(col)``)."""
+
+    __slots__ = ("column",)
+
+    def __init__(self, column: Column[T]) -> None:
+        self.column = column
+
+
 class OrderByClause:
     """ORDER BY clause fragment."""
 
@@ -386,28 +533,41 @@ class OrderByClause:
         self,
         expr: Expr[Any],
         *,
-        direction: str,
+        direction: OrderDirection,
         nulls: str | None = None,
     ) -> None:
+        # Validated at construction (runtime guard for untyped callers); the
+        # compiler trusts these slots and does not re-check them.
         self.expr = expr
-        self.direction = direction
-        self.nulls = nulls
+        self.direction = _normalize_order_direction(direction)
+        self.nulls = _normalize_nulls(nulls)
 
 
 class Column[T](Expr[T]):
     """Typed column descriptor used in generated table models.
 
-    ``__eq__`` / ``__ne__`` return SQL predicates, not value equality.
-    ``__hash__ = object.__hash__`` is intentional so hashing stays identity-based;
-    ``set`` / ``dict`` keys compare by descriptor identity, never by SQL text.
+    ``__eq__`` / ``__ne__`` return SQL predicates, so equality is not
+    identity-based. Hashing uses object identity (``__hash__ = object.__hash__``)
+    so columns remain usable as ``set`` / ``dict`` keys by descriptor identity.
+
+    Optional ``decoder`` applies the same row codec used by ``Record._from_row``
+    when the column is projected via ``select()``.
     """
 
-    __slots__ = ("alias", "name", "table")
+    __slots__ = ("alias", "decoder", "name", "table")
 
-    def __init__(self, table: str, name: str, alias: str | None = None) -> None:
+    def __init__(
+        self,
+        table: str,
+        name: str,
+        alias: str | None = None,
+        *,
+        decoder: Callable[[Any], Any] | None = None,
+    ) -> None:
         self.table = table
         self.name = name
         self.alias = alias
+        self.decoder = decoder
 
 
 def _flatten_logical(op: str, clauses: tuple[Expr[bool], ...]) -> tuple[Expr[bool], ...]:
@@ -572,3 +732,12 @@ def not_exists(subquery: SubqueryExpr[Any] | object) -> ExistsOp:
 def raw_sql(sql: str, *params: Any) -> RawSQL[Any]:
     """Escape hatch for dialect-specific or unsupported SQL fragments."""
     return RawSQL(sql, params)
+
+
+def excluded[T](column: Column[T]) -> ExcludedRef[T]:
+    """Reference the proposed INSERT row in an upsert ``DO UPDATE`` assignment.
+
+    Compiles to ``EXCLUDED."col"`` (Postgres / CockroachDB / SQLite) or
+    ``VALUES(`col`)`` (MySQL / TiDB).
+    """
+    return ExcludedRef(column)

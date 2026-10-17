@@ -25,6 +25,8 @@ class ColumnIR:
     base_python_type: str
     import_symbol: tuple[str, str] | None
     nullable: bool
+    # Atlas ``null`` flag before PK non-null override (for LEFT JOIN PK fast path).
+    schema_nullable: bool
     has_default: bool
     is_primary_key: bool
     row_codec: str | None
