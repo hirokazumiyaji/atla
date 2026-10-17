@@ -44,6 +44,7 @@ from atlagen.parser import AtlasParseError, parse_atlas_json
         ("addresses", "address"),
         ("analyses", "analysis"),
         ("crises", "crisis"),
+        ("bases", "base"),
     ],
 )
 def test_singularize_cases(plural: str, singular: str) -> None:
@@ -177,7 +178,7 @@ def test_default_name_colliding_with_reserved_symbol_is_rejected() -> None:
         parse_atlas_json(schema, dialect="sqlite")
 
 
-@pytest.mark.parametrize("table_name", ["columns", "table_refs", "decimals"])
+@pytest.mark.parametrize("table_name", ["columns", "table_refs", "decimals", "str_enums"])
 def test_generated_import_colliding_model_name_is_rejected(table_name: str) -> None:
     schema = {
         "schemas": [
@@ -188,6 +189,25 @@ def test_generated_import_colliding_model_name_is_rejected(table_name: str) -> N
         ]
     }
     with pytest.raises(AtlasParseError, match=r"collides|reserved"):
+        parse_atlas_json(schema, dialect="sqlite")
+
+
+def test_builder_symbol_collision_is_rejected() -> None:
+    schema = {
+        "schemas": [
+            {
+                "name": "main",
+                "tables": [
+                    {"name": "users", "columns": [{"name": "id", "type": "INTEGER"}]},
+                    {
+                        "name": "user_insert_builders",
+                        "columns": [{"name": "id", "type": "INTEGER"}],
+                    },
+                ],
+            }
+        ]
+    }
+    with pytest.raises(AtlasParseError, match="InsertBuilder"):
         parse_atlas_json(schema, dialect="sqlite")
 
 

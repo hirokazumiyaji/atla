@@ -126,6 +126,8 @@ _RESERVED_MODEL_NAMES = frozenset(
         "time",
         "datetime",
         "timedelta",
+        # enums.py imports
+        "StrEnum",
     }
 )
 
@@ -139,7 +141,8 @@ def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
         )
         raise AtlasParseError(msg)
     if kind == "model_name" and (
-        text in _RESERVED_MODEL_NAMES or text.endswith(("Record", "Repository", "Query", "Table"))
+        text in _RESERVED_MODEL_NAMES
+        or text.endswith(("Record", "Repository", "Query", "Table", "Builder"))
     ):
         msg = (
             f"override model_name {value!r} for table {table_name!r} "
@@ -183,6 +186,9 @@ def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> 
             f"{table.model_name}Repository": f"table {table.name!r} repository",
             f"{table.model_name}Query": f"table {table.name!r} query",
             f"{table.model_name}Table": f"table {table.name!r} table",
+            f"{table.model_name}InsertBuilder": f"table {table.name!r} insert builder",
+            f"{table.model_name}UpdateBuilder": f"table {table.name!r} update builder",
+            f"{table.model_name}InsertManyBuilder": f"table {table.name!r} insert-many builder",
         }
         for symbol, owner in owners.items():
             prior = occupied.get(symbol)

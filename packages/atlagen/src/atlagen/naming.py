@@ -84,7 +84,6 @@ _IRREGULAR_SINGULAR: dict[str, str] = {
     "atlases": "atlas",
     "classes": "class",
     "analyses": "analysis",
-    "bases": "basis",
     "crises": "crisis",
     "theses": "thesis",
     "hypotheses": "hypothesis",
