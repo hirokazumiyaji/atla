@@ -101,19 +101,23 @@ class AsyncmyAdapter:
     async def transaction(self) -> AsyncGenerator[AsyncmyAdapter]:
         if self._pool is not None and self._conn is None:
             self._tx_active = True
-            conn = await self._pool.acquire()
             try:
-                await conn.begin()
-                pinned = AsyncmyAdapter(conn, dialect=self._dialect, _depth=1)
+                active: Any = await self._pool.acquire()
+            except BaseException:
+                self._tx_active = False
+                raise
+            try:
+                await active.begin()
+                pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
                 try:
                     yield pinned
                 except BaseException:
-                    await conn.rollback()
+                    await active.rollback()
                     raise
                 else:
-                    await conn.commit()
+                    await active.commit()
             finally:
-                await self._pool.release(conn)
+                await self._pool.release(active)
                 self._tx_active = False
             return
 
