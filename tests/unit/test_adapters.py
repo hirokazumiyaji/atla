@@ -443,3 +443,47 @@ async def test_aiosqlite_serializes_concurrent_writes(tmp_path: Path) -> None:
         assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 30
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_blocks_outer_ops_during_transaction() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        async with adapter.transaction() as tx:
+            await tx.execute("INSERT INTO t(name) VALUES (?)", ("alice",))
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.fetch_all("SELECT 1")
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.execute("INSERT INTO t(name) VALUES (?)", ("bob",))
+        assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 1
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_aiosqlite_peer_task_rejected_during_transaction() -> None:
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    adapter = AiosqliteAdapter(conn)
+    try:
+        await adapter.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        gate = asyncio.Event()
+        peer_done = asyncio.Event()
+
+        async def holder() -> None:
+            async with adapter.transaction() as tx:
+                await tx.execute("INSERT INTO t(name) VALUES (?)", ("alice",))
+                gate.set()
+                await peer_done.wait()
+
+        async def peer() -> None:
+            await gate.wait()
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await adapter.execute("INSERT INTO t(name) VALUES (?)", ("bob",))
+            peer_done.set()
+
+        await asyncio.gather(holder(), peer())
+        assert await adapter.fetch_val("SELECT COUNT(*) FROM t") == 1
+    finally:
+        await conn.close()

@@ -59,6 +59,20 @@ class AiosqliteAdapter:
     def dialect(self) -> Dialect:
         return self._dialect
 
+    def _ensure_not_in_active_transaction(self) -> None:
+        """Reject ops on the outer adapter while a transaction is open.
+
+        The yielded (pinned) adapter has ``_depth > 0`` and is the only
+        allowed entry point for the connection during that window, so peer
+        tasks cannot accidentally join another task's transaction.
+        """
+        if self._depth == 0 and self._tx_active:
+            msg = (
+                "connection is checked out for an active transaction; "
+                "use the adapter yielded by transaction()"
+            )
+            raise RuntimeError(msg)
+
     async def _ensure_configured(self) -> None:
         if not self._needs_configure:
             return
@@ -74,6 +88,7 @@ class AiosqliteAdapter:
             await self._conn.commit()
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
+        self._ensure_not_in_active_transaction()
         await self._ensure_configured()
         async with self._lock:
             cursor = await self._conn.execute(sql, tuple(params))
@@ -84,6 +99,7 @@ class AiosqliteAdapter:
                 await cursor.close()
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
+        self._ensure_not_in_active_transaction()
         await self._ensure_configured()
         async with self._lock:
             cursor = await self._conn.execute(sql, tuple(params))
@@ -100,6 +116,7 @@ class AiosqliteAdapter:
         return row[0]
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        self._ensure_not_in_active_transaction()
         await self._ensure_configured()
         async with self._lock:
             cursor = await self._conn.execute(sql, tuple(params))
@@ -111,6 +128,7 @@ class AiosqliteAdapter:
         return rowcount
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
+        self._ensure_not_in_active_transaction()
         await self._ensure_configured()
         async with self._lock:
             await self._conn.executemany(sql, [tuple(params) for params in params_seq])
