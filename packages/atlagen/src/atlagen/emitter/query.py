@@ -6,6 +6,12 @@ from atlagen.ir import ColumnIR, SchemaIR, TableIR
 
 
 def emit_query(schema: SchemaIR) -> str:
+    imports: set[tuple[str, str]] = set()
+    for table in schema.tables:
+        for column in table.columns:
+            if column.import_symbol is not None:
+                imports.add(column.import_symbol)
+
     lines = [
         "from __future__ import annotations",
         "",
@@ -14,9 +20,8 @@ def emit_query(schema: SchemaIR) -> str:
         "from atla.query import BaseDeleteQuery, BaseInsertQuery, BaseSelectQuery, BaseUpdateQuery",
         "from atla.types import UNSET, UnsetType",
     ]
-    if schema.enums:
-        enum_imports = ", ".join(enum.class_name for enum in schema.enums)
-        lines.append(f"from .enums import {enum_imports}")
+    for module, symbol in sorted(imports):
+        lines.append(f"from {module} import {symbol}")
     if schema.tables:
         record_imports = ", ".join(f"{table.model_name}Record" for table in schema.tables)
         lines.append(f"from .models import {record_imports}")
@@ -41,19 +46,23 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
     returning_cols = ", ".join(
         _quote_ident(column.name, dialect=dialect) for column in table.columns
     )
+    row_mapper = (
+        f"    _ROW_MAPPER = {table.model_name}Record._from_row"
+        "  # pyright: ignore[reportPrivateUsage]"
+    )
     lines = [
         f"class {table.model_name}Query(BaseSelectQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _TABLE_NAME = {quoted_table!r}",
         f"    _SELECT_SQL = {('SELECT ' + select_cols + ' FROM ' + quoted_table)!r}",
         f"    _COUNT_SQL = {('SELECT COUNT(*) FROM ' + quoted_table)!r}",
-        f"    _ROW_MAPPER = {table.model_name}Record._from_row",
+        row_mapper,
         "",
         f"class {table.model_name}InsertBuilder(BaseInsertQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _TABLE_NAME = {quoted_table!r}",
         f"    _RETURNING_COLS = {returning_cols!r}",
-        f"    _ROW_MAPPER = {table.model_name}Record._from_row",
+        row_mapper,
     ]
     if dialect in {"mysql", "tidb"}:
         lines.extend(
@@ -70,7 +79,7 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
             "    __slots__ = ()",
             f"    _TABLE_NAME = {quoted_table!r}",
             f"    _RETURNING_COLS = {returning_cols!r}",
-            f"    _ROW_MAPPER = {table.model_name}Record._from_row",
+            row_mapper,
             "",
         ]
     )
@@ -91,9 +100,7 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
             )
         lines.append(f"    ) -> {table.model_name}UpdateBuilder:")
         lines.extend(
-            _emit_mapped_call(
-                "        return self._set_values", set_columns, indent="        "
-            )
+            _emit_mapped_call("        return self._set_values", set_columns, indent="        ")
         )
     else:
         lines.extend(

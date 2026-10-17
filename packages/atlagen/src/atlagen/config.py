@@ -120,9 +120,7 @@ def resolve_config(
     elif "frozen" in settings:
         frozen_setting = settings["frozen"]
         if not isinstance(frozen_setting, bool):
-            raise ConfigError(
-                "[tool.atlagen].frozen must be a TOML boolean (true/false)"
-            )
+            raise ConfigError("[tool.atlagen].frozen must be a TOML boolean (true/false)")
         frozen = frozen_setting
 
     if not dialect:

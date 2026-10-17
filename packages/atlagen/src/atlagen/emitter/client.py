@@ -9,7 +9,7 @@ def emit_client(schema: SchemaIR) -> str:
     lines = [
         "from __future__ import annotations",
         "",
-        "from collections.abc import AsyncIterator",
+        "from collections.abc import AsyncGenerator",
         "from contextlib import asynccontextmanager",
         "",
         "from atla.adapter.base import DBAdapter",
@@ -40,7 +40,7 @@ def emit_client(schema: SchemaIR) -> str:
     lines.extend(
         [
             "    @asynccontextmanager",
-            "    async def transaction(self) -> AsyncIterator[AtlaClient]:",
+            "    async def transaction(self) -> AsyncGenerator[AtlaClient, None]:",
             "        async with self._adapter.transaction() as tx:",
             "            yield AtlaClient(tx)",
             "",

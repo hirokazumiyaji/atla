@@ -9,14 +9,13 @@ def emit_enums(schema: SchemaIR) -> str:
     lines = [
         "from __future__ import annotations",
         "",
-        "from enum import StrEnum",
-        "",
     ]
     if not schema.enums:
         lines.append("# No enums defined in schema.")
         lines.append("")
         return "\n".join(lines)
 
+    lines.extend(["from enum import StrEnum", ""])
     for enum in schema.enums:
         lines.append(f"class {enum.class_name}(StrEnum):")
         used: set[str] = set()

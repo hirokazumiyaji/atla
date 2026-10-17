@@ -39,9 +39,7 @@ class AsyncpgAdapter:
         self._tx_active = False
         # Prefer explicit pool markers over MagicMock getattr auto-creation.
         # Real asyncpg.Connection always exposes fetchrow; pools do not.
-        self._pool_mode = hasattr(pool_or_conn, "acquire") and not hasattr(
-            pool_or_conn, "fetchrow"
-        )
+        self._pool_mode = hasattr(pool_or_conn, "acquire") and not hasattr(pool_or_conn, "fetchrow")
 
     def _ensure_not_checked_out(self) -> None:
         if self._tx_active:

@@ -1,0 +1,45 @@
+{
+  "schemas": [
+    {
+      "name": "public",
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {
+              "name": "id",
+              "type": "bigserial",
+              "null": false
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "null": false
+            },
+            {
+              "name": "email",
+              "type": "text",
+              "null": false
+            },
+            {
+              "name": "age",
+              "type": "integer",
+              "null": false
+            }
+          ],
+          "primary_key": {
+            "columns": [{ "name": "id" }]
+          },
+          "indexes": [
+            {
+              "name": "users_email_key",
+              "unique": true,
+              "columns": [{ "name": "email" }]
+            }
+          ],
+          "foreign_keys": []
+        }
+      ]
+    }
+  ]
+}
