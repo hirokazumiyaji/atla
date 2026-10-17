@@ -153,6 +153,9 @@ class LikeOp(Expr[bool]):
         *,
         escape: str = _LIKE_ESCAPE,
     ) -> None:
+        if op not in {"LIKE", "ILIKE"}:
+            msg = f"invalid LIKE operator: {op!r}"
+            raise ValueError(msg)
         if len(escape) != 1 or "\x00" in escape:
             msg = f"LIKE ESCAPE must be a single non-NUL character, got {escape!r}"
             raise ValueError(msg)

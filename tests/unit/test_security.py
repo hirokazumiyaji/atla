@@ -77,11 +77,13 @@ def test_func_call_rejects_unsafe_names() -> None:
 
 
 def test_binary_op_rejects_injected_operator() -> None:
-    from atla.expressions import BinaryOp
+    from atla.expressions import BinaryOp, LikeOp
 
     col = Column[int]("users", "id")
     with pytest.raises(ValueError, match="binary operator"):
         BinaryOp("= 1 OR 1=1", col, Literal(1))
+    with pytest.raises(ValueError, match="LIKE operator"):
+        LikeOp("LIKE; DROP TABLE users --", col, "%x%")  # type: ignore[arg-type]
 
 
 def test_mask_credentials_redacts_password() -> None:
