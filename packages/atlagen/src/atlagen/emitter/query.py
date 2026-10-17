@@ -54,14 +54,26 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
         f"    _TABLE_NAME = {quoted_table!r}",
         f"    _RETURNING_COLS = {returning_cols!r}",
         f"    _ROW_MAPPER = {table.model_name}Record._from_row",
-        "",
-        f"class {table.model_name}UpdateBuilder(BaseUpdateQuery[{table.model_name}Record]):",
-        "    __slots__ = ()",
-        f"    _TABLE_NAME = {quoted_table!r}",
-        f"    _RETURNING_COLS = {returning_cols!r}",
-        f"    _ROW_MAPPER = {table.model_name}Record._from_row",
-        "",
     ]
+    if dialect in {"mysql", "tidb"}:
+        lines.extend(
+            [
+                "",
+                f"    def returning(self) -> {table.model_name}InsertBuilder:",
+                f'        raise ValueError("{dialect} does not support RETURNING")',
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            f"class {table.model_name}UpdateBuilder(BaseUpdateQuery[{table.model_name}Record]):",
+            "    __slots__ = ()",
+            f"    _TABLE_NAME = {quoted_table!r}",
+            f"    _RETURNING_COLS = {returning_cols!r}",
+            f"    _ROW_MAPPER = {table.model_name}Record._from_row",
+            "",
+        ]
+    )
     set_columns = [column for column in table.columns if not column.is_primary_key]
     if set_columns:
         lines.extend(
@@ -87,6 +99,14 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
             [
                 f"    def set(self) -> {table.model_name}UpdateBuilder:",
                 '        raise ValueError("table has no updatable columns")',
+            ]
+        )
+    if dialect in {"mysql", "tidb"}:
+        lines.extend(
+            [
+                "",
+                f"    def returning(self) -> {table.model_name}UpdateBuilder:",
+                f'        raise ValueError("{dialect} does not support RETURNING")',
             ]
         )
     lines.extend(

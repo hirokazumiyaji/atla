@@ -21,6 +21,8 @@ def test_safe_attr_name_keywords() -> None:
     assert safe_attr_name("from") == "from_"
     assert safe_attr_name("class") == "class_"
     assert safe_attr_name("type") == "type_"
+    assert safe_attr_name("user-name") == "user_name"
+    assert safe_attr_name("1st") == "col_1st"
 
 
 def test_parse_postgres_fixture() -> None:

@@ -68,13 +68,15 @@ _RESERVED_ATTRS = frozenset(
 
 def safe_attr_name(column_name: str) -> str:
     """Return a Python-safe attribute name (append ``_`` for keywords)."""
-    if (
-        keyword.iskeyword(column_name)
-        or keyword.issoftkeyword(column_name)
-        or column_name in _RESERVED_ATTRS
-    ):
-        return f"{column_name}_"
-    return column_name
+    name = column_name
+    if not name.isidentifier():
+        cleaned = "".join(ch if ch.isalnum() else "_" for ch in name)
+        if not cleaned or cleaned[0].isdigit():
+            cleaned = f"col_{cleaned}"
+        name = cleaned
+    if keyword.iskeyword(name) or keyword.issoftkeyword(name) or name in _RESERVED_ATTRS:
+        return f"{name}_"
+    return name
 
 
 def enum_class_name(enum_name: str) -> str:
