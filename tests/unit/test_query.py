@@ -40,7 +40,17 @@ class FakeAdapter:
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Sequence[Any]]:
         self.calls.append(("fetch_all", sql, list(params)))
-        return self.rows
+        rows = self.rows
+        marker = " LIMIT $"
+        if marker in sql:
+            # `$N` is 1-based; take the bind that corresponds to LIMIT.
+            index = int(sql.split(marker, 1)[1].split(None, 1)[0]) - 1
+            rows = rows[: int(params[index])]
+        elif " LIMIT ?" in sql or " LIMIT %s" in sql:
+            # LIMIT is the first pagination bind after WHERE params: last int before OFFSET.
+            limit_value = params[-2] if " OFFSET " in sql else params[-1]
+            rows = rows[: int(limit_value)]
+        return rows
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Sequence[Any] | None:
         self.calls.append(("fetch_one", sql, list(params)))
@@ -110,6 +120,36 @@ def test_select_where_is_immutable() -> None:
     assert active_sql != alice_sql
     # Base query remains unchanged after branching.
     assert base.to_sql() == (base_sql, base_params)
+
+
+@pytest.mark.asyncio
+async def test_first_and_one_preserve_existing_limit() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [(1, "alice@example.com"), (2, "bob@example.com")]
+
+    assert await UserQuery(adapter).limit(0).first() is None
+    with pytest.raises(NotFoundError):
+        await UserQuery(adapter).limit(0).one()
+
+    # Existing limit(1) must not be widened to 2 (would raise MultipleResultsError).
+    one = await UserQuery(adapter).limit(1).one()
+    assert one == UserRecord(1, "alice@example.com")
+    last_fetch = next(call for call in reversed(adapter.calls) if call[0] == "fetch_all")
+    assert "LIMIT $1" in last_fetch[1]
+    assert last_fetch[2] == [1]
+
+
+@pytest.mark.asyncio
+async def test_count_ignores_limit_offset() -> None:
+    adapter = FakeAdapter()
+    q = UserQuery(adapter).where(id_col > 0).limit(10).offset(5)
+    adapter.scalar = 42
+    assert await q.count() == 42
+    assert adapter.calls[-1][0] == "fetch_val"
+    sql = adapter.calls[-1][1]
+    assert "LIMIT" not in sql
+    assert "OFFSET" not in sql
+    assert "WHERE" in sql
 
 
 def test_select_to_sql_order_limit_offset() -> None:

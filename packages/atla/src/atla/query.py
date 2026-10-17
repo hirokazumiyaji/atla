@@ -110,12 +110,18 @@ class BaseSelectQuery[RecordT]:
         mapper = type(self)._ROW_MAPPER
         return [mapper(row) for row in rows]
 
+    def _with_fetch_limit(self, maximum: int) -> Self:
+        """Cap rows fetched without raising the caller's existing LIMIT."""
+        if self._limit is not None and self._limit <= maximum:
+            return self
+        return self.limit(maximum)
+
     async def first(self) -> RecordT | None:
-        rows = await self.limit(1).all()
+        rows = await self._with_fetch_limit(1).all()
         return rows[0] if rows else None
 
     async def one(self) -> RecordT:
-        rows = await self.limit(2).all()
+        rows = await self._with_fetch_limit(2).all()
         if not rows:
             raise NotFoundError("expected exactly one row, found 0")
         if len(rows) > 1:
@@ -123,6 +129,7 @@ class BaseSelectQuery[RecordT]:
         return rows[0]
 
     async def count(self) -> int:
+        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination)."""
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._COUNT_SQL)
         if self._where:
             compiler.write(" WHERE ")
