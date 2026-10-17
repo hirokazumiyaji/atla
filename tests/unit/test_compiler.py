@@ -227,3 +227,70 @@ def test_mysql_nulls_rejection_does_not_mutate_compiler() -> None:
     with pytest.raises(ValueError, match="does not support NULLS"):
         compiler.visit_order_by(created.desc(nulls="LAST"))
     assert compiler.build() == ("", [])
+
+
+def test_nested_binary_ops_get_parentheses() -> None:
+    price = Column[int]("items", "price")
+    tax = Column[int]("items", "tax")
+    sql, params = compile_expr(PostgresDialect(), (price + tax) * 2)
+    assert sql == '("items"."price" + "items"."tax") * $1'
+    assert params == [2]
+
+
+def test_expr_chain_compare_and_functions() -> None:
+    from atla import (
+        case,
+        cast,
+        coalesce,
+        concat,
+        count,
+        lower,
+        max_,
+        now,
+        nullif,
+        upper,
+        when,
+    )
+
+    age = Column[int]("users", "age")
+    name = Column[str]("users", "name")
+    nick = Column[str | None]("users", "nickname")
+    sql, params = compile_expr(PostgresDialect(), (age + 1) >= 20)
+    assert sql == '("users"."age" + $1) >= $2'
+    assert params == [1, 20]
+    sql, params = compile_expr(PostgresDialect(), count(age) > 5)
+    assert sql == 'COUNT("users"."age") > $1'
+    assert params == [5]
+    sql, _ = compile_expr(PostgresDialect(), max_(age).desc().expr)
+    assert sql == 'MAX("users"."age")'
+    sql, params = compile_expr(PostgresDialect(), coalesce(nick, name))
+    assert sql == 'COALESCE("users"."nickname", "users"."name")'
+    assert params == []
+    sql, _ = compile_expr(PostgresDialect(), lower(name))
+    assert sql == 'LOWER("users"."name")'
+    sql, _ = compile_expr(PostgresDialect(), upper(name))
+    assert sql == 'UPPER("users"."name")'
+    sql, params = compile_expr(PostgresDialect(), concat(name, "!", nick))
+    assert sql == 'CONCAT("users"."name", $1, "users"."nickname")'
+    assert params == ["!"]
+    sql, _ = compile_expr(PostgresDialect(), cast(age, "text", str))
+    assert sql == 'CAST("users"."age" AS text)'
+    sql, params = compile_expr(PostgresDialect(), nullif(name, ""))
+    assert sql == 'NULLIF("users"."name", $1)'
+    assert params == [""]
+    sql, _ = compile_expr(PostgresDialect(), now())
+    assert sql == "NOW()"
+    sql, _ = compile_expr(PostgresDialect(), (age / 2).as_("half"))
+    assert sql == '("users"."age" / $1) AS "half"'
+    sql, params = compile_expr(PostgresDialect(), -age % 3)
+    assert sql == '-"users"."age" % $1'
+    assert params == [3]
+    sql, params = compile_expr(PostgresDialect(), 1 + age)
+    assert sql == '$1 + "users"."age"'
+    assert params == [1]
+    sql, params = compile_expr(
+        PostgresDialect(),
+        case(when(age > 18, "adult"), else_="minor"),
+    )
+    assert sql == 'CASE WHEN "users"."age" > $1 THEN $2 ELSE $3 END'
+    assert params == [18, "adult", "minor"]

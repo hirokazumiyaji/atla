@@ -7,8 +7,11 @@ from typing import Any
 
 from atla.dialect import Dialect
 from atla.expressions import (
+    AliasedExpr,
     BetweenOp,
     BinaryOp,
+    CaseExpr,
+    CastExpr,
     Column,
     Expr,
     FuncCall,
@@ -66,6 +69,15 @@ class SQLCompiler:
         if isinstance(node, RawSQL):
             self._visit_raw(node)
             return
+        if isinstance(node, AliasedExpr):
+            self._visit_aliased(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
+        if isinstance(node, CastExpr):
+            self._visit_cast(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
+        if isinstance(node, CaseExpr):
+            self._visit_case(node)  # pyright: ignore[reportUnknownArgumentType]
+            return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
 
@@ -98,6 +110,14 @@ class SQLCompiler:
         self.write(".")
         self.write(self.dialect.quote(node.name))
 
+    def _visit_binary_child(self, node: Expr[Any]) -> None:
+        if isinstance(node, (BinaryOp, LogicalOp)):
+            self.write("(")
+            self.visit(node)
+            self.write(")")
+            return
+        self.visit(node)
+
     def _visit_binary(self, node: BinaryOp[Any]) -> None:
         if node.op == "ILIKE" and not self.dialect.supports_ilike:
             self.write("LOWER(")
@@ -106,9 +126,9 @@ class SQLCompiler:
             self.visit(node.right)
             self.write(")")
             return
-        self.visit(node.left)
+        self._visit_binary_child(node.left)
         self.write(f" {node.op} ")
-        self.visit(node.right)
+        self._visit_binary_child(node.right)
 
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
         if node.postfix:
@@ -123,6 +143,35 @@ class SQLCompiler:
             self.write(")")
         else:
             self.visit(node.operand)
+
+    def _visit_aliased(self, node: AliasedExpr[Any]) -> None:
+        if isinstance(node.expr, (BinaryOp, LogicalOp)):
+            self.write("(")
+            self.visit(node.expr)
+            self.write(")")
+        else:
+            self.visit(node.expr)
+        self.write(" AS ")
+        self.write(self.dialect.quote(node.alias))
+
+    def _visit_cast(self, node: CastExpr[Any]) -> None:
+        self.write("CAST(")
+        self.visit(node.expr)
+        self.write(" AS ")
+        self.write(node.sql_type)
+        self.write(")")
+
+    def _visit_case(self, node: CaseExpr[Any]) -> None:
+        self.write("CASE")
+        for arm in node.whens:
+            self.write(" WHEN ")
+            self.visit(arm.when)
+            self.write(" THEN ")
+            self.visit(arm.result)
+        if node.else_ is not None:
+            self.write(" ELSE ")
+            self.visit(node.else_)
+        self.write(" END")
 
     def _visit_logical(self, node: LogicalOp) -> None:
         self.write("(")
