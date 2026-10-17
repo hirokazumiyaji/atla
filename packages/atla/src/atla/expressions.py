@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, NoReturn, overload
 from typing import cast as typing_cast
 
@@ -32,10 +32,10 @@ def _coerce_in_values(values: object) -> Sequence[Any] | SubqueryExpr[Any]:
     subquery = _try_subquery(values)
     if subquery is not None:
         return subquery
-    if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
-        msg = "in_() expects a sequence of values or a subquery with to_sql()"
+    if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Iterable):
+        msg = "in_() expects an iterable of values or a subquery with to_sql()"
         raise TypeError(msg)
-    return typing_cast(Sequence[Any], values)
+    return tuple(values)
 
 
 class Expr[T_co]:

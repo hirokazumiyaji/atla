@@ -121,7 +121,7 @@ class BaseSelectQuery[RecordT]:
         having: tuple[Expr[bool], ...] | None = None,
         distinct: bool | None = None,
         distinct_on: tuple[Expr[Any], ...] | None = None,
-        locking: LockClause | None | object = _LOCK_UNSET,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> Self:
         return type(self)(
             self._adapter,
@@ -390,7 +390,12 @@ class BaseSelectQuery[RecordT]:
         return [mapper(row) for row in rows]
 
     async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[RecordT]:
-        """Yield hydrated rows in batches to bound memory for large result sets."""
+        """Yield hydrated rows in batches to bound memory for large result sets.
+
+        Callers must supply a stable ``ORDER BY``; without one, LIMIT/OFFSET
+        paging can duplicate or skip rows as the result set shifts. Deep
+        ``OFFSET`` values also force O(offset) scans on most engines.
+        """
         if batch_size < 1:
             msg = "batch_size must be >= 1"
             raise ValueError(msg)
@@ -402,6 +407,9 @@ class BaseSelectQuery[RecordT]:
             size = batch_size if remaining is None else min(batch_size, remaining)
             if size <= 0:
                 return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
             batch_query = self.limit(size).offset(offset)
             sql, params = batch_query.to_sql()
             rows = await self._adapter.fetch_all(sql, params)
@@ -434,7 +442,18 @@ class BaseSelectQuery[RecordT]:
         return rows[0]
 
     async def count(self) -> int:
-        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination)."""
+        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination).
+
+        ``group_by`` / ``having`` / ``distinct`` / ``distinct_on`` are not
+        applied — call ``count()`` only on ungrouped queries, or project an
+        aggregate via ``select(count())`` instead.
+        """
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "count() ignores group_by/having/distinct; remove those clauses "
+                "or use select(count(...)) for grouped aggregates"
+            )
+            raise ValueError(msg)
         compiler = SQLCompiler(self._adapter.dialect, initial_sql=self._COUNT_SQL)
         if self._where:
             compiler.write(" WHERE ")
@@ -765,7 +784,7 @@ class JoinedSelectQuery[*Ts]:
         having: tuple[Expr[bool], ...] | None = None,
         distinct: bool | None = None,
         distinct_on: tuple[Expr[Any], ...] | None = None,
-        locking: LockClause | None | object = _LOCK_UNSET,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> JoinedSelectQuery[*Ts]:
         return JoinedSelectQuery(
             self._adapter,
@@ -953,6 +972,7 @@ class JoinedSelectQuery[*Ts]:
         return [self._hydrate(row) for row in rows]
 
     async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[tuple[*Ts]]:
+        """Yield joined rows in batches; requires stable ORDER BY beyond batch 1."""
         if batch_size < 1:
             msg = "batch_size must be >= 1"
             raise ValueError(msg)
@@ -963,6 +983,9 @@ class JoinedSelectQuery[*Ts]:
             size = batch_size if remaining is None else min(batch_size, remaining)
             if size <= 0:
                 return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
             sql, params = self.limit(size).offset(offset).to_sql()
             rows = await self._adapter.fetch_all(sql, params)
             if not rows:

@@ -318,7 +318,7 @@ class ProjectedSelectQuery[*Ts]:
         having: tuple[Expr[bool], ...] | None = None,
         distinct: bool | None = None,
         distinct_on: tuple[Expr[Any], ...] | None = None,
-        locking: LockClause | None | object = _LOCK_UNSET,
+        locking: LockClause | object | None = _LOCK_UNSET,
     ) -> ProjectedSelectQuery[*Ts]:
         return ProjectedSelectQuery(
             self._adapter,
@@ -439,6 +439,7 @@ class ProjectedSelectQuery[*Ts]:
         return [self._hydrate(row) for row in rows]
 
     async def stream(self, *, batch_size: int = 1000) -> AsyncIterator[tuple[*Ts]]:
+        """Yield projected rows in batches; requires stable ORDER BY beyond batch 1."""
         if batch_size < 1:
             msg = "batch_size must be >= 1"
             raise ValueError(msg)
@@ -449,6 +450,9 @@ class ProjectedSelectQuery[*Ts]:
             size = batch_size if remaining is None else min(batch_size, remaining)
             if size <= 0:
                 return
+            if offset > start and not self._order_by:
+                msg = "stream() requires ORDER BY when paging beyond the first batch"
+                raise ValueError(msg)
             sql, params = self.limit(size).offset(offset).to_sql()
             rows = await self._adapter.fetch_all(sql, params)
             if not rows:

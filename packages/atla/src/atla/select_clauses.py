@@ -21,7 +21,8 @@ class LockClause:
 
 
 def lock_of_targets(tables: Sequence[TableRef[Any]], dialect: Dialect) -> tuple[str, ...]:
-    return tuple(table.join_target(dialect).split(" AS ", 1)[0] for table in tables)
+    # Prefer the SQL alias (self-joins / ``as_``); Postgres hides the base name.
+    return tuple(dialect.quote(table.sql_alias()) for table in tables)
 
 
 def write_distinct(
@@ -89,8 +90,17 @@ def write_locking(compiler: SQLCompiler, dialect: Dialect, locking: LockClause |
     if not dialect.supports_for_update:
         msg = f"{dialect.name} does not support FOR UPDATE / FOR SHARE"
         raise ValueError(msg)
+    if locking.mode == "SHARE" and not dialect.supports_for_share:
+        msg = f"{dialect.name} does not support FOR SHARE"
+        raise ValueError(msg)
     if locking.nowait and locking.skip_locked:
         msg = "nowait and skip_locked cannot both be True"
+        raise ValueError(msg)
+    if locking.skip_locked and not dialect.supports_skip_locked:
+        msg = f"{dialect.name} does not support SKIP LOCKED"
+        raise ValueError(msg)
+    if locking.of and not dialect.supports_lock_of:
+        msg = f"{dialect.name} does not support FOR UPDATE/SHARE OF"
         raise ValueError(msg)
     compiler.write(" FOR ")
     compiler.write(locking.mode)

@@ -210,12 +210,37 @@ class SQLCompiler:
     def _visit_subquery(self, node: SubqueryExpr[Any]) -> None:
         self.write("(")
         if not node.params:
+            placeholders = _collect_raw_placeholders(node.sql, self.dialect)
+            if placeholders:
+                msg = (
+                    "SubqueryExpr has placeholders but no parameters; "
+                    f"found {len(placeholders)} placeholder(s)"
+                )
+                raise ValueError(msg)
             self.write(node.sql)
             self.write(")")
             return
+        style = self.dialect.positional_style
+        expected = len(node.params)
+        placeholders = _collect_raw_placeholders(node.sql, self.dialect)
+        if style == "dollar":
+            found = set(placeholders)
+            if found != set(range(1, expected + 1)):
+                msg = (
+                    "SubqueryExpr dollar placeholders must be a contiguous $1..$N sequence "
+                    f"matching {expected} parameter(s); found {sorted(found)}"
+                )
+                raise ValueError(msg)
+        elif len(placeholders) != expected:
+            token = "?" if style == "qmark" else "%s"
+            msg = (
+                f"SubqueryExpr has {len(placeholders)} '{token}' placeholder(s) "
+                f"but {expected} parameter(s)"
+            )
+            raise ValueError(msg)
         # Re-bind nested query parameters at the current compiler offset.
         rebound = [self.add_param(value) for value in node.params]
-        if self.dialect.positional_style == "dollar":
+        if style == "dollar":
             self.write(_rebind_dollar_placeholders(node.sql, rebound, self.dialect))
         else:
             # ``%s`` / ``?`` placeholders are position-independent.

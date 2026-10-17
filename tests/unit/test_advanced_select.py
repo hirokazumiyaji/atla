@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from atla.adapter.base import DBAdapter
-from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect
+from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect, TiDBDialect
 from atla.expressions import Column, count, exists
 from atla.query import BaseSelectQuery
 
@@ -109,6 +109,16 @@ def test_for_update_rejected_on_sqlite() -> None:
         UserQuery(adapter).for_update().to_sql()
 
 
+def test_tidb_rejects_for_share_and_skip_locked() -> None:
+    adapter = FakeAdapter(TiDBDialect())
+    with pytest.raises(ValueError, match="FOR SHARE"):
+        UserQuery(adapter).for_share().to_sql()
+    with pytest.raises(ValueError, match="SKIP LOCKED"):
+        UserQuery(adapter).for_update(skip_locked=True).to_sql()
+    sql, _ = UserQuery(adapter).for_update().to_sql()
+    assert sql.endswith(" FOR UPDATE")
+
+
 def test_distinct_and_distinct_on() -> None:
     adapter = FakeAdapter()
     sql, _ = UserQuery(adapter).distinct().to_sql()
@@ -152,7 +162,16 @@ def test_exists_predicate() -> None:
 @pytest.mark.asyncio
 async def test_stream_batches() -> None:
     adapter = FakeAdapter()
-    rows = [row async for row in UserQuery(adapter).stream(batch_size=2)]
+    rows = [
+        row async for row in UserQuery(adapter).order_by(ID.asc()).stream(batch_size=2)
+    ]
     assert len(rows) == 4
     assert rows[0].role == "admin"
     assert any("LIMIT" in call[1] for call in adapter.calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_requires_order_by_after_first_batch() -> None:
+    adapter = FakeAdapter()
+    with pytest.raises(ValueError, match="ORDER BY"):
+        _ = [row async for row in UserQuery(adapter).stream(batch_size=2)]
