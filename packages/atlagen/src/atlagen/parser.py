@@ -203,14 +203,13 @@ def _parse_table(
                 table_name=table_name,
             )
         if override.get("accessor_name"):
-            raw_accessor = str(override["accessor_name"]).strip()
-            if not raw_accessor.isidentifier():
-                msg = (
-                    f"override accessor_name {raw_accessor!r} for table {table_name!r} "
-                    "must be a valid Python identifier"
-                )
-                raise AtlasParseError(msg)
-            accessor_name = safe_attr_name(raw_accessor)
+            accessor_name = _validate_override_ident(
+                str(override["accessor_name"]),
+                kind="accessor_name",
+                table_name=table_name,
+            )
+            # Still escape AtlaClient-reserved names (e.g. transaction -> transaction_).
+            accessor_name = safe_attr_name(accessor_name)
     primary_key = _parse_primary_key(table_raw.get("primary_key"))
     pk_set = set(primary_key)
 

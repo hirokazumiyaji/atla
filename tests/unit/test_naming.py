@@ -45,8 +45,11 @@ def test_singularize_cases(plural: str, singular: str) -> None:
 
 def test_snake_case_and_accessor_escaping() -> None:
     assert to_snake_case("UserAccounts") == "user_accounts"
+    assert singularize_identifier("UserAccounts") == "user_account"
     assert table_model_name("UserAccounts") == "UserAccount"
     assert table_accessor_name("UserAccounts") == "user_account"
+    assert table_model_name("archives") == "Archive"  # trailing-s only, not -ves→f
+    assert singularize("archives") == "archive"
     assert table_accessor_name("transactions") == "transaction_"
     assert table_accessor_name("classes") == "class_"
     assert table_accessor_name("returns") == "return_"

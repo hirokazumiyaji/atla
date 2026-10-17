@@ -144,10 +144,9 @@ def singularize(name: str) -> str:
         return _match_case(name, lower[:-3] + "y")
     if lower.endswith(("sses", "xes", "zes", "ches", "shes")):
         return name[:-2]
-    # -uses/-ases/… plurals (buses, aliases, …) live in _IRREGULAR_SINGULAR so
-    # already-singular names like ``houses`` are not mangled by a broad heuristic.
-    if lower.endswith("ves") and len(lower) > 3:
-        return _match_case(name, lower[:-3] + "f")
+    # -uses/-ases/… and -ves plurals (buses, leaves, …) live in
+    # _IRREGULAR_SINGULAR so already-singular names like ``houses`` / ``archives``
+    # are not mangled by a broad heuristic.
     if lower.endswith("s") and not lower.endswith("ss"):
         return name[:-1]
     return name
