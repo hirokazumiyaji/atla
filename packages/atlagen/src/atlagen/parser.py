@@ -366,7 +366,7 @@ def _extract_ref_table(raw_fk: JsonDict, ref_obj: JsonDict | None = None) -> str
             return resolved
     ref = raw_fk.get("ref")
     if isinstance(ref, str) and ref:
-        return ref.rsplit(".", 1)[-1]
+        return ref
     if ref_obj is None:
         ref_obj = _as_dict(ref)
     if ref_obj is not None:
