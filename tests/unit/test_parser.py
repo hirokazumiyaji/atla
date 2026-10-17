@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from atlagen.naming import safe_attr_name, table_model_name
+from atlagen.naming import safe_attr_name, table_model_name, unique_attr_names
 from atlagen.parser import parse_atlas_json
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "atlas"

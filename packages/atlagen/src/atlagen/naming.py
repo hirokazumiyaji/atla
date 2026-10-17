@@ -79,6 +79,22 @@ def safe_attr_name(column_name: str) -> str:
     return name
 
 
+def unique_attr_names(column_names: list[str]) -> list[str]:
+    """Assign unique ``safe_attr_name`` values for a table's columns."""
+    used: set[str] = set()
+    result: list[str] = []
+    for column_name in column_names:
+        base = safe_attr_name(column_name)
+        candidate = base
+        index = 2
+        while candidate in used:
+            candidate = f"{base}_{index}"
+            index += 1
+        used.add(candidate)
+        result.append(candidate)
+    return result
+
+
 def enum_class_name(enum_name: str) -> str:
     """``user_role`` -> ``UserRole``."""
     return to_pascal_case(enum_name)
