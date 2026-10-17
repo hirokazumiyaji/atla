@@ -90,9 +90,7 @@ def _row_expr(column: ColumnIR, index: int) -> str:
 def _emit_table(table: TableIR, *, table_cls: str) -> list[str]:
     slot_names = ", ".join(repr(column.attr_name) for column in table.columns)
     column_names = ", ".join(repr(column.name) for column in table.columns)
-    pk_indexes = tuple(
-        index for index, column in enumerate(table.columns) if column.is_primary_key
-    )
+    pk_indexes = tuple(index for index, column in enumerate(table.columns) if column.is_primary_key)
     lines = [
         f"class {table_cls}(TableRef[{table.model_name}Record]):",
         f"    __slots__ = ({slot_names})",

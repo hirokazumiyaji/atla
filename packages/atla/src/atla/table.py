@@ -52,6 +52,15 @@ class TableRef[RecordT]:
         return cast(RecordT, self.get_row_mapper()(row))
 
     def map_row_optional(self, row: Sequence[Any]) -> RecordT | None:
+        """Hydrate a LEFT JOIN slice, or return ``None`` when the right side is absent.
+
+        With a single-column ``_PK_INDEXES`` entry, absence is detected by that key
+        being NULL (O(1)). This assumes primary keys are never NULL in stored rows.
+        Caveat: SQLite permits NULL in non-``INTEGER PRIMARY KEY`` key columns (e.g.
+        TEXT keys), so a matched row with a NULL key would be misreported as absent.
+        Descriptors that need to tolerate that case should leave ``_PK_INDEXES`` empty
+        (or composite), which falls back to scanning the whole slice.
+        """
         pk_indexes = type(self)._PK_INDEXES
         # Single-column PK: O(1) absence check (non-null by definition on most engines).
         # Composite / unknown keys: scan the whole slice so SQLite NULL PK rows and

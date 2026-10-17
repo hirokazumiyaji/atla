@@ -38,9 +38,7 @@ class FakeAdapter:
         self.scalar: Any = 2
         self.execute_count = 1
 
-    def _apply_limit_offset(
-        self, sql: str, params: Sequence[Any]
-    ) -> list[Sequence[Any]]:
+    def _apply_limit_offset(self, sql: str, params: Sequence[Any]) -> list[Sequence[Any]]:
         rows = list(self.rows)
         offset = 0
         if " OFFSET $" in sql:

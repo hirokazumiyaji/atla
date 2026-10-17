@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import starmap
@@ -263,9 +264,19 @@ class BaseSelectQuery[RecordT]:
             compiler.write(compiler.add_param(self._offset))
         return compiler.build()
 
+    def _is_static_select(self) -> bool:
+        """True when the AOT ``_SELECT_SQL`` can be used verbatim (no builder clauses).
+
+        Single source of truth for ``all()`` / ``first()`` fast paths. Any new clause
+        that alters the SELECT text (GROUP BY, DISTINCT, ...) must be checked here.
+        """
+        return (
+            not self._where and not self._order_by and self._limit is None and self._offset is None
+        )
+
     async def all(self) -> list[RecordT]:
         cls = type(self)
-        if not self._where and not self._order_by and self._limit is None and self._offset is None:
+        if self._is_static_select():
             sql = cls._SELECT_SQL
             params: list[Any] = []
         else:
@@ -284,7 +295,7 @@ class BaseSelectQuery[RecordT]:
         return self.limit(maximum)
 
     async def first(self) -> RecordT | None:
-        if not self._where and not self._order_by and self._limit is None and self._offset is None:
+        if self._is_static_select():
             sql = f"{type(self)._SELECT_SQL} LIMIT 1"
             params: list[Any] = []
         else:
@@ -327,10 +338,9 @@ class BaseSelectQuery[RecordT]:
         if self._where:
             compiler.write(" WHERE ")
             compiler.visit(and_(*self._where))
-        # Cap to one probe row without raising an existing LIMIT of 1+.
-        exists_limit = 1 if self._limit is None else min(self._limit, 1)
+        # ``_limit == 0`` returned above, so the probe is always a single row.
         compiler.write(" LIMIT ")
-        compiler.write(compiler.add_param(exists_limit))
+        compiler.write(compiler.add_param(1))
         if self._offset is not None:
             compiler.write(" OFFSET ")
             compiler.write(compiler.add_param(self._offset))
@@ -879,7 +889,12 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return rows[0] if rows else None
 
 
-_ADHOC_SELECT_CACHE: dict[tuple[type[Any], str, str | None], type[BaseSelectQuery[Any]]] = {}
+# Bounded LRU: alias comes from ``table.as_("...")`` and may be user-generated, so an
+# unbounded dict could grow without limit. Eviction only costs one class rebuild.
+_ADHOC_SELECT_CACHE_MAX = 256
+_ADHOC_SELECT_CACHE: OrderedDict[tuple[type[Any], str, str | None], type[BaseSelectQuery[Any]]] = (
+    OrderedDict()
+)
 
 
 def _table_select[RecordT](
@@ -891,7 +906,9 @@ def _table_select[RecordT](
     alias = getattr(table, "_alias", None)
     cache_key = (type(table), dialect.name, alias)
     query_cls = _ADHOC_SELECT_CACHE.get(cache_key)
-    if query_cls is None:
+    if query_cls is not None:
+        _ADHOC_SELECT_CACHE.move_to_end(cache_key)
+    else:
         select_cols = table.select_list(dialect)
         from_sql = table.join_target(dialect)
         count_sql = f"SELECT COUNT(*) FROM {from_sql}"
@@ -910,4 +927,6 @@ def _table_select[RecordT](
 
         query_cls = _AdHocQuery
         _ADHOC_SELECT_CACHE[cache_key] = query_cls
+        if len(_ADHOC_SELECT_CACHE) > _ADHOC_SELECT_CACHE_MAX:
+            _ADHOC_SELECT_CACHE.popitem(last=False)
     return cast(BaseSelectQuery[RecordT], query_cls(adapter))
