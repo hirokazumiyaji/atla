@@ -1,5 +1,50 @@
 """atla: zero-overhead, compile-time type-safe SQL runtime core."""
 
+from atla.expressions import (
+    BetweenOp,
+    BinaryOp,
+    Column,
+    Expr,
+    FuncCall,
+    InOp,
+    Literal,
+    LogicalOp,
+    OrderByClause,
+    RawSQL,
+    UnaryOp,
+    and_,
+    avg,
+    count,
+    max_,
+    min_,
+    not_,
+    or_,
+    raw_sql,
+    sum_,
+)
+
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = [
+    "BetweenOp",
+    "BinaryOp",
+    "Column",
+    "Expr",
+    "FuncCall",
+    "InOp",
+    "Literal",
+    "LogicalOp",
+    "OrderByClause",
+    "RawSQL",
+    "UnaryOp",
+    "__version__",
+    "and_",
+    "avg",
+    "count",
+    "max_",
+    "min_",
+    "not_",
+    "or_",
+    "raw_sql",
+    "sum_",
+]
