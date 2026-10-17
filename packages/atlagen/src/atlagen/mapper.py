@@ -168,10 +168,12 @@ def _map_table(table: TableIR, *, dialect: str, enums: dict[str, EnumIR]) -> Tab
 
 
 def _enum_mapping(enum: EnumIR, *, dialect: str) -> TypeMapping:
-    codec: str | None = None
-    if dialect in {"mysql", "tidb", "sqlite"}:
-        # Drivers may return plain strings; wrap into the generated StrEnum.
-        codec = f"{enum.class_name}({{value}})"
+    _ = dialect
+    # Drivers may return plain strings (incl. asyncpg enums); wrap into StrEnum.
+    codec = (
+        f"{enum.class_name}({{value}}) "
+        f"if not isinstance({{value}}, {enum.class_name}) else {{value}}"
+    )
     return TypeMapping(
         base_python_type=enum.class_name,
         import_symbol=(".enums", enum.class_name),

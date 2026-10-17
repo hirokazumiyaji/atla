@@ -68,7 +68,8 @@ def test_postgres_enum_and_nullable() -> None:
     assert mapped.base_python_type == "UserRole"
     assert mapped.python_type == "UserRole | None"
     assert mapped.import_symbol == (".enums", "UserRole")
-    assert mapped.row_codec is None  # asyncpg returns enum/str already usable
+    assert mapped.row_codec is not None
+    assert "UserRole({value})" in mapped.row_codec
 
 
 def test_mysql_tinyint_bool_and_inline_enum() -> None:
@@ -92,7 +93,8 @@ def test_mysql_tinyint_bool_and_inline_enum() -> None:
         table_name="users",
     )
     assert mapped.base_python_type == "UserStatusEnum"
-    assert mapped.row_codec == "UserStatusEnum({value})"
+    assert mapped.row_codec is not None
+    assert "UserStatusEnum({value})" in mapped.row_codec
 
 
 def test_sqlite_codecs() -> None:
@@ -147,6 +149,8 @@ def test_postgres_enum_array() -> None:
     mapping = resolve_sql_type("status[]", dialect="postgres", enums=enums)
     assert mapping.base_python_type == "list[Status]"
     assert mapping.import_symbol == (".enums", "Status")
+    assert mapping.row_codec is not None
+    assert "Status(v)" in mapping.row_codec
 
 
 def test_sqlite_array_preserves_element_codec() -> None:
