@@ -84,9 +84,10 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
             ]
         )
         for column in set_columns:
+            value_type = column.python_type or column.base_python_type
             lines.append(
-                f"        {column.attr_name}: {column.base_python_type} | "
-                f"Expr[{column.base_python_type}] | UnsetType = UNSET,"
+                f"        {column.attr_name}: {value_type} | "
+                f"Expr[{value_type}] | UnsetType = UNSET,"
             )
         lines.append(f"    ) -> {table.model_name}UpdateBuilder:")
         lines.extend(
