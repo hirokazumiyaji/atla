@@ -124,16 +124,23 @@ def assert_typechecks_clean(work: Path, *paths: Path) -> None:
 
 
 def assert_typechecks_fail(work: Path, *paths: Path, must_mention: tuple[str, ...]) -> None:
-    pyright = run_pyright(work, *paths)
+    # Negative checks must target app sources only so generated-package errors
+    # cannot satisfy returncode != 0 / token matching.
+    app_paths = tuple(p for p in paths if p.is_file() and p.parent == work)
+    check_paths = app_paths or paths
+
+    pyright = run_pyright(work, *check_paths)
     assert pyright.returncode != 0, pyright.stdout + pyright.stderr
     pyright_out = (pyright.stdout + pyright.stderr).lower()
-    assert any(token.lower() in pyright_out for token in must_mention), pyright_out
+    assert all(token.lower() in pyright_out for token in must_mention), pyright_out
+    assert any(f"{path.name.lower()}:" in pyright_out for path in check_paths), pyright_out
 
-    mypy = run_mypy(work, *paths)
+    mypy = run_mypy(work, *check_paths)
     assert mypy.returncode != 0, mypy.stdout + mypy.stderr
     mypy_out = (mypy.stdout + mypy.stderr).lower()
     assert "error" in mypy_out
-    assert any(token.lower() in mypy_out for token in must_mention), mypy_out
+    assert all(token.lower() in mypy_out for token in must_mention), mypy_out
+    assert any(f"{path.name.lower()}:" in mypy_out for path in check_paths), mypy_out
 
 
 def write_text(path: Path, content: str) -> Path:

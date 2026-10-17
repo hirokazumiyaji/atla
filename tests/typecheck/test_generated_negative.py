@@ -38,8 +38,8 @@ def _need_bool_expr(clause: Expr[bool]) -> None:
 
 _need_bool_expr(User.age == "invalid")
 """
-    package, app = _setup(tmp_path, source, filename="neg_age_eq.py")
-    assert_typechecks_fail(tmp_path, package, app, must_mention=("age", "str", "bool"))
+    _package, app = _setup(tmp_path, source, filename="neg_age_eq.py")
+    assert_typechecks_fail(tmp_path, app, must_mention=("age", "bool"))
 
 
 def test_insert_missing_required_email_is_rejected(tmp_path: Path) -> None:
@@ -60,8 +60,8 @@ def bad(db: AtlaClient) -> None:
 
 bad(AtlaClient(cast(DBAdapter, object())))
 """
-    package, app = _setup(tmp_path, source, filename="neg_insert.py")
-    assert_typechecks_fail(tmp_path, package, app, must_mention=("email", "insert", "argument"))
+    _package, app = _setup(tmp_path, source, filename="neg_insert.py")
+    assert_typechecks_fail(tmp_path, app, must_mention=("email", "insert", "argument"))
 
 
 def test_update_set_age_str_is_rejected(tmp_path: Path) -> None:
@@ -81,5 +81,5 @@ def bad(db: AtlaClient) -> None:
 
 bad(AtlaClient(cast(DBAdapter, object())))
 """
-    package, app = _setup(tmp_path, source, filename="neg_update.py")
-    assert_typechecks_fail(tmp_path, package, app, must_mention=("age", "str"))
+    _package, app = _setup(tmp_path, source, filename="neg_update.py")
+    assert_typechecks_fail(tmp_path, app, must_mention=("age", "str"))
