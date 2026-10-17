@@ -17,6 +17,7 @@ from atla import (
     compile_order_by,
     count,
     or_,
+    raw_sql,
 )
 
 DIALECTS: list[Dialect] = [
@@ -83,9 +84,16 @@ def test_in_between_null_arithmetic_order_by(dialect: Dialect) -> None:
     assert arith_sql == f"{age_sql} + {_ph(dialect, 1)}"
     assert arith_params == [1]
 
-    order_sql, order_params = compile_order_by(dialect, created.desc(nulls="LAST"))
-    assert order_sql == f"{q('users')}.{q('created_at')} DESC NULLS LAST"
-    assert order_params == []
+    if dialect.name in {"mysql", "tidb"}:
+        with pytest.raises(ValueError, match="does not support NULLS"):
+            compile_order_by(dialect, created.desc(nulls="LAST"))
+        order_sql, order_params = compile_order_by(dialect, created.desc())
+        assert order_sql == f"{q('users')}.{q('created_at')} DESC"
+        assert order_params == []
+    else:
+        order_sql, order_params = compile_order_by(dialect, created.desc(nulls="LAST"))
+        assert order_sql == f"{q('users')}.{q('created_at')} DESC NULLS LAST"
+        assert order_params == []
 
     like_sql, like_params = compile_expr(dialect, name.ilike("%alice%"))
     if dialect.supports_ilike:
@@ -110,3 +118,19 @@ def test_placeholder_styles() -> None:
     assert MySQLDialect().placeholder(1) == "%s"
     assert TiDBDialect().placeholder(3) == "%s"
     assert SQLiteDialect().placeholder(1) == "?"
+
+
+def test_raw_sql_rebinding_on_postgres() -> None:
+    age = Column[int]("users", "age")
+    expr = and_(age == 1, raw_sql("x = $1", 2))
+    sql, params = compile_expr(PostgresDialect(), expr)
+    assert sql == '("users"."age" = $1 AND x = $2)'
+    assert params == [1, 2]
+
+
+def test_raw_sql_rebinding_on_sqlite_keeps_qmark() -> None:
+    age = Column[int]("users", "age")
+    expr = and_(age == 1, raw_sql("x = ?", 2))
+    sql, params = compile_expr(SQLiteDialect(), expr)
+    assert sql == '("users"."age" = ? AND x = ?)'
+    assert params == [1, 2]

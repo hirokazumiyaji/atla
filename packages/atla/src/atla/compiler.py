@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from atla.dialect import Dialect
@@ -63,8 +64,7 @@ class SQLCompiler:
             self._visit_func(node)
             return
         if isinstance(node, RawSQL):
-            self.write(node.sql)
-            self.params.extend(node.params)
+            self._visit_raw(node)
             return
         msg = f"unsupported expression node: {type(node).__name__}"
         raise TypeError(msg)
@@ -72,8 +72,15 @@ class SQLCompiler:
     def visit_order_by(self, clause: OrderByClause) -> None:
         self.visit(clause.expr)
         self.write(f" {clause.direction}")
-        if clause.nulls is not None:
-            self.write(f" NULLS {clause.nulls}")
+        if clause.nulls is None:
+            return
+        if self.dialect.name in {"mysql", "tidb"}:
+            msg = (
+                f"{self.dialect.name} does not support NULLS {clause.nulls} in ORDER BY; "
+                "omit nulls= or use a dialect that supports NULLS FIRST/LAST"
+            )
+            raise ValueError(msg)
+        self.write(f" NULLS {clause.nulls}")
 
     def build(self) -> tuple[str, list[Any]]:
         return "".join(self.buf), self.params
@@ -151,6 +158,32 @@ class SQLCompiler:
                     self.write(", ")
                 self.visit(arg)
         self.write(")")
+
+    def _visit_raw(self, node: RawSQL[Any]) -> None:
+        if not node.params:
+            self.write(node.sql)
+            return
+
+        # Re-bind fragment parameters at the current compiler offset so composed
+        # expressions do not reuse stale placeholder indexes (especially `$n`).
+        rebound = [self.add_param(value) for value in node.params]
+        if self.dialect.positional_style == "dollar":
+
+            def _replace(match: re.Match[str]) -> str:
+                index = int(match.group(1)) - 1
+                if index < 0 or index >= len(rebound):
+                    msg = (
+                        f"RawSQL placeholder ${index + 1} is out of range for "
+                        f"{len(rebound)} parameter(s)"
+                    )
+                    raise ValueError(msg)
+                return rebound[index]
+
+            self.write(re.sub(r"\$(\d+)", _replace, node.sql))
+            return
+
+        # `%s` / `?` placeholders are order-based; SQL text stays unchanged.
+        self.write(node.sql)
 
 
 def compile_expr(dialect: Dialect, expr: Expr[Any]) -> tuple[str, list[Any]]:
