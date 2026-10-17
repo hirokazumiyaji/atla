@@ -34,6 +34,10 @@ async def run_in_transaction[T](
 
     ``max_retries`` is the number of *retries* after the first attempt (so the
     callback may run up to ``max_retries + 1`` times).
+
+    *fn* must be idempotent: serialization failures re-run the whole callback
+    (including any non-DB side effects). ``CancelledError`` and other
+    ``BaseException`` subclasses are not retried.
     """
     if max_retries < 0:
         msg = "max_retries must be >= 0"
@@ -63,22 +67,34 @@ def begin_sql(
     readonly: bool,
     deferrable: bool,
 ) -> list[str]:
-    """Return dialect-specific statements to configure a new transaction."""
+    """Return dialect-specific statements to configure a new transaction.
+
+    Support matrix:
+
+    - Postgres / Cockroach: ``isolation``, ``readonly``, ``deferrable``
+    - MySQL / TiDB: ``isolation``, ``readonly`` (``deferrable`` raises)
+    - SQLite: none of the options (any non-default raises)
+    """
     statements: list[str] = []
+    if dialect_name == "sqlite" and (isolation is not None or readonly or deferrable):
+        msg = "SQLite does not support isolation/readonly/deferrable transaction options"
+        raise ValueError(msg)
+    if deferrable and dialect_name not in {"postgres", "cockroach"}:
+        msg = f"{dialect_name} does not support deferrable transactions"
+        raise ValueError(msg)
     if isolation is not None:
         level = isolation.replace("_", " ").upper()
-        if dialect_name in {"postgres", "cockroach"}:
+        if dialect_name in {"postgres", "cockroach", "mysql", "tidb"}:
             statements.append(f"SET TRANSACTION ISOLATION LEVEL {level}")
-        elif dialect_name in {"mysql", "tidb"}:
-            statements.append(f"SET TRANSACTION ISOLATION LEVEL {level}")
-        elif dialect_name == "sqlite":
-            # SQLite ignores most isolation knobs; BEGIN IMMEDIATE approximates write locks.
-            pass
+        else:
+            msg = f"{dialect_name} does not support isolation level {isolation!r}"
+            raise ValueError(msg)
     if readonly:
-        if dialect_name in {"postgres", "cockroach"}:
+        if dialect_name in {"postgres", "cockroach", "mysql", "tidb"}:
             statements.append("SET TRANSACTION READ ONLY")
-        elif dialect_name in {"mysql", "tidb"}:
-            statements.append("SET TRANSACTION READ ONLY")
+        else:
+            msg = f"{dialect_name} does not support readonly transactions"
+            raise ValueError(msg)
     if deferrable and dialect_name in {"postgres", "cockroach"}:
         statements.append("SET TRANSACTION DEFERRABLE")
     return statements

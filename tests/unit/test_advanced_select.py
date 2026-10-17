@@ -8,7 +8,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect, TiDBDialect
 from atla.expressions import Column, count, exists
 from atla.query import BaseSelectQuery
@@ -59,7 +59,13 @@ class FakeAdapter:
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         return None
 
-    def transaction(self) -> AbstractAsyncContextManager[DBAdapter]:
+    def transaction(
+        self,
+        *,
+        isolation: IsolationLevel | None = None,
+        readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AbstractAsyncContextManager[DBAdapter]:
         raise NotImplementedError
 
 
@@ -83,11 +89,7 @@ PUBLISHED = Column[bool]("posts", "published")
 def test_group_by_having_sql() -> None:
     adapter = FakeAdapter()
     sql, params = (
-        UserQuery(adapter)
-        .select(ROLE, count())
-        .group_by(ROLE)
-        .having(count() > 10)
-        .to_sql()
+        UserQuery(adapter).select(ROLE, count()).group_by(ROLE).having(count() > 10).to_sql()
     )
     assert sql.startswith('SELECT "users"."role", COUNT(*) FROM "users"')
     assert " GROUP BY " in sql
@@ -162,9 +164,7 @@ def test_exists_predicate() -> None:
 @pytest.mark.asyncio
 async def test_stream_batches() -> None:
     adapter = FakeAdapter()
-    rows = [
-        row async for row in UserQuery(adapter).order_by(ID.asc()).stream(batch_size=2)
-    ]
+    rows = [row async for row in UserQuery(adapter).order_by(ID.asc()).stream(batch_size=2)]
     assert len(rows) == 4
     assert rows[0].role == "admin"
     assert any("LIMIT" in call[1] for call in adapter.calls)

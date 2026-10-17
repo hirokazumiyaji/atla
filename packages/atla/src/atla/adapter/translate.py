@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 from atla.errors import (
     CheckViolationError,
-    DataError,
     DatabaseError,
+    DataError,
     ForeignKeyViolationError,
     IntegrityError,
     NotNullViolationError,
@@ -18,8 +18,7 @@ from atla.errors import (
     UniqueViolationError,
 )
 
-P = ParamSpec("P")
-R = TypeVar("R")
+_DRIVER_MODULES = ("asyncpg", "asyncmy", "aiosqlite", "sqlite3", "psycopg")
 
 _PG_UNIQUE = {"23505"}
 _PG_FK = {"23503"}
@@ -55,9 +54,9 @@ def translate_exception(exc: BaseException) -> DatabaseError | None:
 
     name = type(exc).__name__
     module = type(exc).__module__
-    if "UniqueViolation" in name or (
-        "IntegrityError" in name and "unique" in message.lower()
-    ):
+    if not module.startswith(_DRIVER_MODULES):
+        return None
+    if "UniqueViolation" in name or ("IntegrityError" in name and "unique" in message.lower()):
         return UniqueViolationError(message)
     if "ForeignKeyViolation" in name:
         return ForeignKeyViolationError(message)
@@ -71,11 +70,12 @@ def translate_exception(exc: BaseException) -> DatabaseError | None:
         return DataError(message)
     if "OperationalError" in name or "InterfaceError" in name:
         return OperationalError(message)
-    if module.startswith(("asyncpg", "asyncmy", "aiosqlite", "sqlite3", "psycopg")):
-        if "IntegrityError" in name:
-            return IntegrityErrorFallback(message)
-        return DatabaseError(message)
-    return None
+    if "IntegrityError" in name:
+        return IntegrityErrorFallback(message)
+    if "ProgrammingError" in name:
+        # Programmer mistakes (bad SQL / bind counts) stay as driver errors.
+        return None
+    return DatabaseError(message)
 
 
 class IntegrityErrorFallback(IntegrityError):
@@ -83,7 +83,7 @@ class IntegrityErrorFallback(IntegrityError):
 
 
 def _sqlstate(exc: BaseException) -> str | None:
-    for attr in ("sqlstate", "pgcode", "sqlstate"):
+    for attr in ("sqlstate", "pgcode"):
         value = getattr(exc, attr, None)
         if isinstance(value, str) and value:
             return value
@@ -121,7 +121,7 @@ def reraise_translated(exc: BaseException) -> None:
     raise mapped from exc
 
 
-def with_translated_errors(
+def with_translated_errors[**P, R](
     func: Callable[P, Coroutine[Any, Any, R]],
 ) -> Callable[P, Coroutine[Any, Any, R]]:
     """Wrap an async adapter method so driver errors become atla errors."""

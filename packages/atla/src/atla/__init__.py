@@ -1,5 +1,6 @@
 """atla: zero-overhead, compile-time type-safe SQL runtime core."""
 
+from atla.adapter.routing import RoutingAdapter
 from atla.advanced import BaseInsertManyQuery, ProjectedSelectQuery, UpsertQuery
 from atla.compiler import SQLCompiler, compile_expr, compile_order_by
 from atla.dialect import (
@@ -10,12 +11,11 @@ from atla.dialect import (
     SQLiteDialect,
     TiDBDialect,
 )
-from atla.adapter.routing import RoutingAdapter
 from atla.errors import (
     AtlaError,
     CheckViolationError,
-    DataError,
     DatabaseError,
+    DataError,
     ForeignKeyViolationError,
     IntegrityError,
     MultipleResultsError,
@@ -26,7 +26,6 @@ from atla.errors import (
     UniqueViolationError,
     UnsafeMutationError,
 )
-from atla.transaction import IsolationLevel, run_in_transaction
 from atla.expressions import (
     AliasedExpr,
     BetweenOp,
@@ -77,6 +76,7 @@ from atla.query import (
     PreloadSelectQuery,
 )
 from atla.table import TableRef
+from atla.transaction import IsolationLevel, run_in_transaction
 from atla.types import UNSET, UnsetType
 
 __version__ = "0.1.0"
@@ -85,18 +85,6 @@ __all__ = [
     "UNSET",
     "AliasedExpr",
     "AtlaError",
-    "CheckViolationError",
-    "DataError",
-    "DatabaseError",
-    "ForeignKeyViolationError",
-    "IntegrityError",
-    "IsolationLevel",
-    "NotNullViolationError",
-    "OperationalError",
-    "RoutingAdapter",
-    "SerializationError",
-    "UniqueViolationError",
-    "run_in_transaction",
     "BaseDeleteQuery",
     "BaseInsertManyQuery",
     "BaseInsertQuery",
@@ -106,13 +94,19 @@ __all__ = [
     "BinaryOp",
     "CaseExpr",
     "CastExpr",
+    "CheckViolationError",
     "CockroachDialect",
     "Column",
+    "DataError",
+    "DatabaseError",
     "Dialect",
     "ExistsOp",
     "Expr",
+    "ForeignKeyViolationError",
     "FuncCall",
     "InOp",
+    "IntegrityError",
+    "IsolationLevel",
     "JoinedSelectQuery",
     "Literal",
     "LogicalOp",
@@ -120,18 +114,23 @@ __all__ = [
     "MultipleResultsError",
     "MySQLDialect",
     "NotFoundError",
+    "NotNullViolationError",
+    "OperationalError",
     "OrderByClause",
     "PostgresDialect",
     "PreloadOneSelectQuery",
     "PreloadSelectQuery",
     "ProjectedSelectQuery",
     "RawSQL",
+    "RoutingAdapter",
     "SQLCompiler",
     "SQLiteDialect",
+    "SerializationError",
     "SubqueryExpr",
     "TableRef",
     "TiDBDialect",
     "UnaryOp",
+    "UniqueViolationError",
     "UnsafeMutationError",
     "UnsetType",
     "UpsertQuery",
@@ -156,6 +155,7 @@ __all__ = [
     "nullif",
     "or_",
     "raw_sql",
+    "run_in_transaction",
     "sum_",
     "upper",
     "when",

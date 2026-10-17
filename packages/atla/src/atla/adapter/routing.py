@@ -13,13 +13,32 @@ from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import Dialect
 
 _LOCK_CLAUSE = re.compile(r"\bFOR\s+(UPDATE|SHARE)\b", re.IGNORECASE)
+_WRITE_PREFIX = re.compile(
+    r"^\s*(INSERT|UPDATE|DELETE|MERGE|REPLACE|CREATE|DROP|ALTER|TRUNCATE)\b",
+    re.IGNORECASE,
+)
+_WRITE_IN_CTE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+
+
+def _is_write_sql(sql: str) -> bool:
+    """Return True for DML/DDL, including ``WITH … INSERT/UPDATE/DELETE``."""
+    if _WRITE_PREFIX.search(sql):
+        return True
+    stripped = sql.lstrip()
+    return stripped.upper().startswith("WITH") and _WRITE_IN_CTE.search(stripped) is not None
 
 
 class RoutingAdapter:
     """Route reads to replicas and writes / transactions to primary.
 
-    Non-transactional ``fetch_*`` calls go to a replica (round-robin by default).
-    Statements containing ``FOR UPDATE`` / ``FOR SHARE`` always hit primary.
+    Non-transactional ``fetch_*`` calls go to a replica (round-robin by default)
+    unless the SQL is a write (including ``INSERT … RETURNING`` via ``fetch_*``)
+    or contains ``FOR UPDATE`` / ``FOR SHARE``.
+
+    Replica selection is per-call, so multi-statement logical operations may see
+    different replicas (and therefore replication lag). Prefer a single replica,
+    sticky session, or primary reads when read-your-writes consistency matters.
+    Transactions always use primary.
     """
 
     __slots__ = ("_primary", "_replicas", "_rr", "_strategy")
@@ -48,7 +67,7 @@ class RoutingAdapter:
         return self._replicas[next(self._rr)]
 
     def _read_target(self, sql: str) -> DBAdapter:
-        if _LOCK_CLAUSE.search(sql):
+        if _LOCK_CLAUSE.search(sql) or _is_write_sql(sql):
             return self._primary
         return self._pick_replica()
 

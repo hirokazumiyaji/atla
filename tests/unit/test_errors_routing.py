@@ -107,6 +107,25 @@ async def test_routing_adapter_splits_read_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_routing_adapter_sends_returning_writes_to_primary() -> None:
+    primary = RecordingAdapter("primary")
+    replica = RecordingAdapter("replica")
+    router = RoutingAdapter(primary, [replica])
+    sql = 'INSERT INTO "users" ("name") VALUES ($1) RETURNING "id", "name"'
+    await router.fetch_one(sql, ("x",))
+    assert primary.calls == [("fetch_one", sql)]
+    assert replica.calls == []
+
+
+def test_translate_ignores_non_driver_exceptions() -> None:
+    class AppSerializationFailure(Exception):
+        pass
+
+    assert translate_exception(AppSerializationFailure("nope")) is None
+    assert translate_exception(Exception("UNIQUE constraint failed: t.c")) is not None
+
+
+@pytest.mark.asyncio
 async def test_run_in_transaction_retries_serialization() -> None:
     class Flaky(RecordingAdapter):
         def __init__(self) -> None:
