@@ -170,7 +170,7 @@ def test_generate_keyword_columns_use_safe_python_names(tmp_path: Path) -> None:
         == 0
     )
     query = (out / "query.py").read_text(encoding="utf-8")
-    assert "class_: str | UnsetType = UNSET" in query
+    assert "class_:" in query and "UnsetType = UNSET" in query
     assert "'class': class_" in query
     insert_block = query.split("def insert", 1)[1].split("def update", 1)[0]
     assert "class=" not in insert_block

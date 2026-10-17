@@ -137,7 +137,8 @@ def _emit_table_builders(table: TableIR, *, dialect: str) -> list[str]:
     for column in required:
         lines.append(f"        {column.attr_name}: {column.base_python_type},")
     for column in optional:
-        lines.append(f"        {column.attr_name}: {column.base_python_type} | UnsetType = UNSET,")
+        value_type = column.python_type or column.base_python_type
+        lines.append(f"        {column.attr_name}: {value_type} | UnsetType = UNSET,")
     lines.append(f"    ) -> {table.model_name}InsertBuilder:")
     lines.extend(
         _emit_mapped_call(
