@@ -261,9 +261,7 @@ def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, 
     return relations
 
 
-def _outbound_relations(
-    table: TableIR, schema: SchemaIR
-) -> list[tuple[TableIR, str, str, bool]]:
+def _outbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, str, str, bool]]:
     """Return ``(parent_table, fk_attr, parent_key_attr, nullable)`` for outbound FKs."""
     relations: list[tuple[TableIR, str, str, bool]] = []
     for foreign_key in table.foreign_keys:
@@ -271,15 +269,26 @@ def _outbound_relations(
             continue
         fk_name = foreign_key.columns[0]
         ref_col = foreign_key.ref_columns[0]
-        ref_leaf = foreign_key.ref_table.rsplit(".", 1)[-1]
+        ref_table = foreign_key.ref_table
+        ref_leaf = ref_table.rsplit(".", 1)[-1]
         parent = next(
-            (candidate for candidate in schema.tables if candidate.name.rsplit(".", 1)[-1] == ref_leaf),
+            (candidate for candidate in schema.tables if candidate.name == ref_table),
             None,
         )
+        if parent is None:
+            parent = next(
+                (
+                    candidate
+                    for candidate in schema.tables
+                    if candidate.name.rsplit(".", 1)[-1] == ref_leaf
+                ),
+                None,
+            )
         if parent is None:
             continue
         parent_pk = parent.primary_key[0] if parent.primary_key else None
         if parent_pk is None or ref_col != parent_pk:
+            # Non-PK / alternate-key FKs: no with_* helper (silent skip, documented here).
             continue
         fk_column = next((column for column in table.columns if column.name == fk_name), None)
         fk_attr = fk_column.attr_name if fk_column is not None else fk_name
@@ -290,6 +299,13 @@ def _outbound_relations(
         )
         relations.append((parent, fk_attr, parent_key_attr, nullable))
     return relations
+
+
+def _with_name_from_fk(fk_attr: str, parent_accessor: str) -> str:
+    """Derive ``with_<name>`` from the FK attribute when it ends with ``_id``."""
+    if fk_attr.endswith("_id") and len(fk_attr) > 3:
+        return f"with_{fk_attr[:-3]}"
+    return f"with_{parent_accessor}"
 
 
 def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> list[str]:
@@ -330,15 +346,13 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
         )
 
     for parent, fk_attr, parent_key_attr, nullable in _outbound_relations(table, schema):
-        # Prefer singular accessor (``user``) so callers get ``with_user()``, not ``with_users()``.
-        method = f"with_{parent.accessor_name}"
+        # Prefer FK-derived names (``manager_id`` → ``with_manager``) over parent accessor.
+        method = _with_name_from_fk(fk_attr, parent.accessor_name)
         if method in used_names:
-            method = f"with_{parent.accessor_name}_{fk_attr}"
+            method = f"{method}_{fk_attr}"
         used_names.add(method)
         parent_type = (
-            f"{parent.model_name}Record | None"
-            if nullable
-            else f"{parent.model_name}Record"
+            f"{parent.model_name}Record | None" if nullable else f"{parent.model_name}Record"
         )
         lines.extend(
             [

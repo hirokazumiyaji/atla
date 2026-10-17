@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Self, cast, overload
@@ -1283,13 +1284,13 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
                 continue
             related = by_key.get(fk_value)
             if related is None:
-                if self._spec.nullable:
+                # Predicates on the parent query can filter out a real parent —
+                # that is not the same as a dangling FK. Only raise when the
+                # relation is non-nullable and no parent-side filters were applied.
+                if self._spec.nullable or self._spec.related_where:
                     results.append((child, cast(ParentT, None)))
                 else:
-                    msg = (
-                        f"missing related row for non-nullable belongs-to "
-                        f"{fk_attr}={fk_value!r}"
-                    )
+                    msg = f"missing related row for non-nullable belongs-to {fk_attr}={fk_value!r}"
                     raise NotFoundError(msg)
             else:
                 results.append((child, cast(ParentT, related)))
@@ -1374,9 +1375,9 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
         if not parents:
             return []
         adapter = self._parent.adapter
-        grouped_list: list[dict[Any, list[Any]]] = []
-        for spec in self._specs:
-            grouped_list.append(await _load_many(adapter, parents, spec))
+        grouped_list = list(
+            await asyncio.gather(*(_load_many(adapter, parents, spec) for spec in self._specs))
+        )
         rows: list[tuple[ParentT, *Ts]] = []
         for parent in parents:
             parts: list[Any] = [parent]
