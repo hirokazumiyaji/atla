@@ -18,11 +18,7 @@ def _is_unset(value: object) -> bool:
 
 def _compile_value(compiler: SQLCompiler, value: Any) -> str:
     if isinstance(value, Expr):
-        start = len(compiler.buf)
-        compiler.visit(value)  # pyright: ignore[reportUnknownArgumentType]
-        fragment = "".join(compiler.buf[start:])
-        del compiler.buf[start:]
-        return fragment
+        return compiler.compile_fragment(value)  # pyright: ignore[reportUnknownArgumentType]
     return compiler.add_param(value)
 
 
@@ -299,10 +295,7 @@ class BaseUpdateQuery[RecordT]:
         ]
         sql = f"UPDATE {self._TABLE_NAME} SET {', '.join(assignments)}"
         if self._where:
-            where_start = len(compiler.buf)
-            compiler.visit(and_(*self._where))
-            where_sql = "".join(compiler.buf[where_start:])
-            del compiler.buf[where_start:]
+            where_sql = compiler.compile_fragment(and_(*self._where))
             sql = f"{sql} WHERE {where_sql}"
         if self._returning:
             if not dialect.supports_returning:
