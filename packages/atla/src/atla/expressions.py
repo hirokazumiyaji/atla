@@ -21,8 +21,9 @@ class Expr[T_co]:
 
     __slots__ = ()
 
-    # ``__eq__`` builds SQL predicates, so value hashing is undefined; keep
-    # identity hashing so Expr nodes remain usable as ``set`` / ``dict`` keys.
+    # ``__eq__`` builds SQL predicates, not value equality. Identity hashing is
+    # intentional (``object.__hash__``): do not derive a value hash from SQL form.
+    # ``set`` / ``dict`` membership is therefore by object identity only.
     __hash__ = object.__hash__  # type: ignore[assignment, unused-ignore]  # pyright: ignore[reportAssignmentType]
 
     def __bool__(self) -> NoReturn:
@@ -343,9 +344,9 @@ class OrderByClause:
 class Column[T](Expr[T]):
     """Typed column descriptor used in generated table models.
 
-    ``__eq__`` / ``__ne__`` return SQL predicates, so equality is not
-    identity-based. Hashing uses object identity (``__hash__ = object.__hash__``)
-    so columns remain usable as ``set`` / ``dict`` keys by descriptor identity.
+    ``__eq__`` / ``__ne__`` return SQL predicates, not value equality.
+    ``__hash__ = object.__hash__`` is intentional so hashing stays identity-based;
+    ``set`` / ``dict`` keys compare by descriptor identity, never by SQL text.
     """
 
     __slots__ = ("alias", "name", "table")
