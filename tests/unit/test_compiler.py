@@ -1,0 +1,112 @@
+"""Unit tests for dialects and the single-pass SQLCompiler."""
+
+from __future__ import annotations
+
+import pytest
+
+from atla import (
+    CockroachDialect,
+    Column,
+    Dialect,
+    MySQLDialect,
+    PostgresDialect,
+    SQLiteDialect,
+    TiDBDialect,
+    and_,
+    compile_expr,
+    compile_order_by,
+    count,
+    or_,
+)
+
+DIALECTS: list[Dialect] = [
+    PostgresDialect(),
+    CockroachDialect(),
+    MySQLDialect(),
+    TiDBDialect(),
+    SQLiteDialect(),
+]
+
+
+def _ph(dialect: Dialect, index: int) -> str:
+    return dialect.placeholder(index)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS, ids=lambda d: d.name)
+def test_compound_predicate_and_params(dialect: Dialect) -> None:
+    age = Column[int]("users", "age")
+    active = Column[bool]("users", "is_active")
+    expr = and_(age >= 20, active.eq(True), or_(age < 65, age.is_null()))
+    sql, params = compile_expr(dialect, expr)
+
+    q = dialect.quote
+    age_sql = f"{q('users')}.{q('age')}"
+    active_sql = f"{q('users')}.{q('is_active')}"
+    p1, p2, p3 = _ph(dialect, 1), _ph(dialect, 2), _ph(dialect, 3)
+    expected = (
+        f"({age_sql} >= {p1} AND {active_sql} = {p2} AND ({age_sql} < {p3} OR {age_sql} IS NULL))"
+    )
+    assert sql == expected
+    assert params == [20, True, 65]
+
+
+@pytest.mark.parametrize("dialect", DIALECTS, ids=lambda d: d.name)
+def test_in_between_null_arithmetic_order_by(dialect: Dialect) -> None:
+    age = Column[int]("users", "age")
+    name = Column[str]("users", "name")
+    created = Column[object]("users", "created_at")
+    q = dialect.quote
+    age_sql = f"{q('users')}.{q('age')}"
+    name_sql = f"{q('users')}.{q('name')}"
+
+    in_sql, in_params = compile_expr(dialect, age.in_([1, 2]))
+    assert in_sql == f"{age_sql} IN ({_ph(dialect, 1)}, {_ph(dialect, 2)})"
+    assert in_params == [1, 2]
+
+    empty_in_sql, empty_in_params = compile_expr(dialect, age.in_([]))
+    assert empty_in_sql == "1 = 0"
+    assert empty_in_params == []
+
+    empty_not_in_sql, empty_not_in_params = compile_expr(dialect, age.not_in([]))
+    assert empty_not_in_sql == "1 = 1"
+    assert empty_not_in_params == []
+
+    between_sql, between_params = compile_expr(dialect, age.between(18, 30))
+    assert between_sql == (f"{age_sql} BETWEEN {_ph(dialect, 1)} AND {_ph(dialect, 2)}")
+    assert between_params == [18, 30]
+
+    null_sql, null_params = compile_expr(dialect, age.is_null())
+    assert null_sql == f"{age_sql} IS NULL"
+    assert null_params == []
+
+    arith_sql, arith_params = compile_expr(dialect, age + 1)
+    assert arith_sql == f"{age_sql} + {_ph(dialect, 1)}"
+    assert arith_params == [1]
+
+    order_sql, order_params = compile_order_by(dialect, created.desc(nulls="LAST"))
+    assert order_sql == f"{q('users')}.{q('created_at')} DESC NULLS LAST"
+    assert order_params == []
+
+    like_sql, like_params = compile_expr(dialect, name.ilike("%alice%"))
+    if dialect.supports_ilike:
+        assert like_sql == f"{name_sql} ILIKE {_ph(dialect, 1)}"
+    else:
+        assert like_sql == f"LOWER({name_sql}) LIKE LOWER({_ph(dialect, 1)})"
+    assert like_params == ["%alice%"]
+
+
+@pytest.mark.parametrize("dialect", DIALECTS, ids=lambda d: d.name)
+def test_count_and_alias_column(dialect: Dialect) -> None:
+    age = Column[int]("users", "age", alias="u")
+    sql, params = compile_expr(dialect, count(age, distinct=True))
+    q = dialect.quote
+    assert sql == f"COUNT(DISTINCT {q('u')}.{q('age')})"
+    assert params == []
+
+
+def test_placeholder_styles() -> None:
+    assert PostgresDialect().placeholder(1) == "$1"
+    assert CockroachDialect().placeholder(2) == "$2"
+    assert MySQLDialect().placeholder(1) == "%s"
+    assert TiDBDialect().placeholder(3) == "%s"
+    assert SQLiteDialect().placeholder(1) == "?"

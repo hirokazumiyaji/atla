@@ -1,5 +1,14 @@
 """atla: zero-overhead, compile-time type-safe SQL runtime core."""
 
+from atla.compiler import SQLCompiler, compile_expr, compile_order_by
+from atla.dialect import (
+    CockroachDialect,
+    Dialect,
+    MySQLDialect,
+    PostgresDialect,
+    SQLiteDialect,
+    TiDBDialect,
+)
 from atla.expressions import (
     BetweenOp,
     BinaryOp,
@@ -28,18 +37,27 @@ __version__ = "0.1.0"
 __all__ = [
     "BetweenOp",
     "BinaryOp",
+    "CockroachDialect",
     "Column",
+    "Dialect",
     "Expr",
     "FuncCall",
     "InOp",
     "Literal",
     "LogicalOp",
+    "MySQLDialect",
     "OrderByClause",
+    "PostgresDialect",
     "RawSQL",
+    "SQLCompiler",
+    "SQLiteDialect",
+    "TiDBDialect",
     "UnaryOp",
     "__version__",
     "and_",
     "avg",
+    "compile_expr",
+    "compile_order_by",
     "count",
     "max_",
     "min_",
