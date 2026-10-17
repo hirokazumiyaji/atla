@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from atla.adapter.base import IsolationLevel
-from atla.adapter.translate import with_translated_errors
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import CockroachDialect, Dialect, PostgresDialect
 from atla.transaction import map_asyncpg_isolation
 
@@ -120,15 +120,21 @@ class AsyncpgAdapter:
             self._tx_active = True
             try:
                 async with self._target.acquire() as conn:
-                    async with conn.transaction(**tx_kwargs):
-                        yield AsyncpgAdapter(conn, dialect=self._dialect, _depth=1)
+                    try:
+                        async with conn.transaction(**tx_kwargs):
+                            yield AsyncpgAdapter(conn, dialect=self._dialect, _depth=1)
+                    except Exception as exc:
+                        reraise_translated(exc)
             finally:
                 self._tx_active = False
             return
 
-        async with self._target.transaction(**tx_kwargs):
-            yield AsyncpgAdapter(
-                self._target,
-                dialect=self._dialect,
-                _depth=self._depth + 1,
-            )
+        try:
+            async with self._target.transaction(**tx_kwargs):
+                yield AsyncpgAdapter(
+                    self._target,
+                    dialect=self._dialect,
+                    _depth=self._depth + 1,
+                )
+        except Exception as exc:
+            reraise_translated(exc)

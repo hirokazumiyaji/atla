@@ -36,6 +36,8 @@ _MYSQL_DEADLOCK = {1213}
 
 def translate_exception(exc: BaseException) -> DatabaseError | None:
     """Return a normalized :class:`DatabaseError` for *exc*, or ``None`` if unknown."""
+    if isinstance(exc, DatabaseError):
+        return None
     sqlstate = _sqlstate(exc)
     errno = _errno(exc)
     message = str(exc)
@@ -111,6 +113,14 @@ def _sqlite_match(message: str, token: str) -> bool:
     return token in upper and "CONSTRAINT" in upper
 
 
+def reraise_translated(exc: BaseException) -> None:
+    """Re-raise *exc* as a normalized atla error when a mapping exists."""
+    mapped = translate_exception(exc)
+    if mapped is None:
+        raise exc
+    raise mapped from exc
+
+
 def with_translated_errors(
     func: Callable[P, Coroutine[Any, Any, R]],
 ) -> Callable[P, Coroutine[Any, Any, R]]:
@@ -121,9 +131,7 @@ def with_translated_errors(
         try:
             return await func(*args, **kwargs)
         except Exception as exc:
-            mapped = translate_exception(exc)
-            if mapped is None:
-                raise
-            raise mapped from exc
+            reraise_translated(exc)
+            raise  # pragma: no cover — reraise_translated always raises
 
     return wrapper

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from atla.adapter.base import IsolationLevel
-from atla.adapter.translate import with_translated_errors
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
 from atla.transaction import begin_sql
 
@@ -139,13 +139,14 @@ class AsyncmyAdapter:
                 raise
             try:
                 try:
-                    await active.begin()
+                    # MySQL/TiDB apply SET TRANSACTION to the *next* transaction.
                     await self._apply_tx_options(
                         active,
                         isolation=isolation,
                         readonly=readonly,
                         deferrable=deferrable,
                     )
+                    await active.begin()
                 except BaseException:
                     try:
                         await active.rollback()
@@ -155,18 +156,20 @@ class AsyncmyAdapter:
                 pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
                 try:
                     yield pinned
-                except BaseException:
+                except BaseException as exc:
                     await active.rollback()
+                    if isinstance(exc, Exception):
+                        reraise_translated(exc)
                     raise
                 else:
                     try:
                         await active.commit()
-                    except BaseException:
+                    except Exception as exc:
                         try:
                             await active.rollback()
                         except BaseException:
                             pass
-                        raise
+                        reraise_translated(exc)
             finally:
                 try:
                     await self._pool.release(active)
@@ -176,28 +179,30 @@ class AsyncmyAdapter:
 
         assert self._conn is not None
         if self._depth == 0:
-            await self._conn.begin()
             await self._apply_tx_options(
                 self._conn,
                 isolation=isolation,
                 readonly=readonly,
                 deferrable=deferrable,
             )
+            await self._conn.begin()
             pinned = AsyncmyAdapter(self._conn, dialect=self._dialect, _depth=1)
             try:
                 yield pinned
-            except BaseException:
+            except BaseException as exc:
                 await self._conn.rollback()
+                if isinstance(exc, Exception):
+                    reraise_translated(exc)
                 raise
             else:
                 try:
                     await self._conn.commit()
-                except BaseException:
+                except Exception as exc:
                     try:
                         await self._conn.rollback()
                     except BaseException:
                         pass
-                    raise
+                    reraise_translated(exc)
             return
 
         savepoint = f"atla_sp_{self._depth}"

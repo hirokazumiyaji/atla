@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from atla.adapter.base import IsolationLevel
-from atla.adapter.translate import with_translated_errors
+from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, SQLiteDialect
 
 
@@ -134,11 +134,16 @@ class AiosqliteAdapter:
                 )
                 try:
                     yield pinned
-                except BaseException:
+                except BaseException as exc:
                     await self._exec_control("ROLLBACK")
+                    if isinstance(exc, Exception):
+                        reraise_translated(exc)
                     raise
                 else:
-                    await self._exec_control("COMMIT")
+                    try:
+                        await self._exec_control("COMMIT")
+                    except Exception as exc:
+                        reraise_translated(exc)
             finally:
                 self._tx_active = False
             return
@@ -154,9 +159,11 @@ class AiosqliteAdapter:
         )
         try:
             yield pinned
-        except BaseException:
+        except BaseException as exc:
             await self._exec_control(f"ROLLBACK TO SAVEPOINT {savepoint}")
             await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+            if isinstance(exc, Exception):
+                reraise_translated(exc)
             raise
         else:
             await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
