@@ -107,7 +107,7 @@ async def test_upsert_on_conflict_do_update_postgres() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict("email")
-        ._do_update_values(email="a@example.com")  # pyright: ignore[reportPrivateUsage]
+        .do_update(email="a@example.com")
         .to_sql()
     )
     assert 'ON CONFLICT ("email") DO UPDATE SET "email" = $3' in sql
@@ -131,7 +131,7 @@ async def test_upsert_on_duplicate_key_mysql() -> None:
         UserInsert(adapter)
         .values(email="a@example.com", id=1)
         .on_conflict()
-        ._do_update_values(email="b@example.com")  # pyright: ignore[reportPrivateUsage]
+        .do_update(email="b@example.com")
         .to_sql()
     )
     assert "ON DUPLICATE KEY UPDATE" in sql
@@ -212,7 +212,7 @@ def test_excluded_compiles_for_conflict_and_duplicate_dialects() -> None:
         UserInsert(pg)
         .values(email="a@example.com")
         .on_conflict("email")
-        ._do_update_values(email=excluded(email_col))  # pyright: ignore[reportPrivateUsage]
+        .do_update(email=excluded(email_col))
         .to_sql()
     )
     assert 'DO UPDATE SET "email" = EXCLUDED."email"' in sql
@@ -223,7 +223,7 @@ def test_excluded_compiles_for_conflict_and_duplicate_dialects() -> None:
         UserInsert(mysql)
         .values(email="a@example.com", id=1)
         .on_conflict()
-        ._do_update_values(email=excluded(email_col))  # pyright: ignore[reportPrivateUsage]
+        .do_update(email=excluded(email_col))
         .to_sql()
     )
     assert "ON DUPLICATE KEY UPDATE `email` = VALUES(`email`)" in sql
@@ -238,7 +238,7 @@ async def test_upsert_returning_all_and_one() -> None:
         UserInsert(adapter)
         .values(email="a@example.com")
         .on_conflict("email")
-        ._do_update_values(email="a@example.com")  # pyright: ignore[reportPrivateUsage]
+        .do_update(email="a@example.com")
         .returning()
     )
     rows = await q.all()

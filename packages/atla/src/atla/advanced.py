@@ -175,14 +175,18 @@ class UpsertQuery[RecordT]:
             returning=self._returning,
         )
 
-    def _do_update_values(self, **columns: Any) -> Self:
+    def do_update(self, **columns: Any) -> Self:
         """Accumulate DO UPDATE columns (bare SQL identifiers).
 
         Generated ``*UpsertBuilder.do_update`` maps Python attribute names onto
-        SQL identifiers before calling this method. Hand-written callers may
-        invoke it directly with SQL names, or use :meth:`do_update_attrs` for
-        ``_ATTR_TO_SQL`` remapping.
+        SQL identifiers before calling :meth:`_do_update_values`. Hand-written
+        callers may use this method with SQL names, or :meth:`do_update_attrs`
+        for ``_ATTR_TO_SQL`` remapping.
         """
+        return self._do_update_values(**columns)
+
+    def _do_update_values(self, **columns: Any) -> Self:
+        """Internal DO UPDATE accumulation shared with generated builders."""
         pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
         if not pairs:
             msg = "do_update() requires at least one column"
