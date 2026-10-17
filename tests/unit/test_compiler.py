@@ -204,6 +204,13 @@ def test_raw_sql_mysql_backslash_string_not_placeholder() -> None:
     assert sql == "note = 'it\\'s %s' AND id = %s"
     assert params == [7]
 
+    dbl_sql, dbl_params = compile_expr(
+        MySQLDialect(),
+        raw_sql('SELECT "a\\"b" , %s', 1),
+    )
+    assert dbl_sql == 'SELECT "a\\"b" , %s'
+    assert dbl_params == [1]
+
 
 def test_raw_sql_postgres_nested_block_comment() -> None:
     sql, params = compile_expr(
