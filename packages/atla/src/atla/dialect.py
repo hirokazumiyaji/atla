@@ -57,6 +57,19 @@ class Dialect:
         escaped = ident.replace(q, q + q)
         return f"{q}{escaped}{q}"
 
+    def quote_string_literal(self, value: str) -> str:
+        """Quote a SQL string literal (e.g. ``ESCAPE`` character).
+
+        MySQL/TiDB treat ``\\`` as an escape inside string literals by default,
+        so a literal backslash must be emitted as ``\\\\``. Other dialects only
+        need ``'`` doubled.
+        """
+        if self.name in {"mysql", "tidb"}:
+            escaped = value.replace("\\", "\\\\").replace("'", "''")
+        else:
+            escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
     def placeholder(self, index: int) -> str:
         if self.positional_style == "dollar":
             return f"${index}"

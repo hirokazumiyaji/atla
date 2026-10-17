@@ -11,12 +11,13 @@ from typing import TextIO
 
 # ``user:password@`` -> ``user:***@``. The userinfo starts right after ``://`` or,
 # for schemeless DSNs (e.g. MySQL ``user:pass@tcp(host)/db``), at the start of a
-# token. The password is matched greedily up to the *last* ``@`` before the first
-# ``/``, ``?``, ``#`` or whitespace so passwords that contain ``@`` do not leak.
+# token. Username may be empty (``:pass@host``). The password is matched greedily
+# up to the *last* ``@`` before the first ``/``, ``?``, or whitespace so passwords
+# that contain ``@`` or ``#`` (legal in Go MySQL/TiDB DSNs) do not leak.
 _CREDENTIAL_RE = re.compile(
     r"(?:(?<=://)|(?<![\w@:/.%+-]))"
-    r"(?P<user>[^\s:/?#@'\"]+):"
-    r"(?P<password>[^\s/?#]*)@"
+    r"(?P<user>[^\s:/?#@'\"]*):"
+    r"(?P<password>[^\s/?]*)@"
 )
 
 

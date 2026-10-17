@@ -61,6 +61,29 @@ def test_contains_escape_clause_portable_on_mysql() -> None:
     assert params == ["%a!%b%"]
 
 
+def test_like_escape_backslash_is_dialect_safe() -> None:
+    from atla.dialect import MySQLDialect, TiDBDialect
+    from atla.expressions import LikeOp
+
+    name = Column[str]("users", "name")
+    expr = LikeOp("LIKE", name, "%x%", escape="\\")
+
+    mysql = SQLCompiler(MySQLDialect())
+    mysql.visit(expr)
+    mysql_sql, _ = mysql.build()
+    assert " ESCAPE '\\\\'" in mysql_sql
+
+    tidb = SQLCompiler(TiDBDialect())
+    tidb.visit(expr)
+    tidb_sql, _ = tidb.build()
+    assert " ESCAPE '\\\\'" in tidb_sql
+
+    pg = SQLCompiler(PostgresDialect())
+    pg.visit(expr)
+    pg_sql, _ = pg.build()
+    assert " ESCAPE '\\'" in pg_sql
+
+
 def test_quote_rejects_empty_and_nul() -> None:
     dialect = PostgresDialect()
     with pytest.raises(ValueError, match="empty"):
@@ -114,6 +137,26 @@ def test_mask_credentials_redacts_password() -> None:
             "postgres://alice:s3cret@db.example:5432/app?x=a@b",
             "postgres://alice:***@db.example:5432/app?x=a@b",
             "s3cret",
+        ),
+        (
+            "user:pa#ss@tcp(127.0.0.1:3306)/db",
+            "user:***@tcp(127.0.0.1:3306)/db",
+            "pa#ss",
+        ),
+        (
+            "mysql://root:p#ssw0rd@127.0.0.1:3306/db",
+            "mysql://root:***@127.0.0.1:3306/db",
+            "p#ssw0rd",
+        ),
+        (
+            ":pass@tcp(127.0.0.1:3306)/db",
+            ":***@tcp(127.0.0.1:3306)/db",
+            "pass",
+        ),
+        (
+            "mysql://:emptyuserpass@127.0.0.1/db",
+            "mysql://:***@127.0.0.1/db",
+            "emptyuserpass",
         ),
     ],
 )

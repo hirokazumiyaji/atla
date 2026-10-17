@@ -126,8 +126,7 @@ class SQLCompiler:
             self.visit(node.left)
             self.write(f" {node.op} ")
             self.visit(node.right)
-        lit = node.escape.replace("'", "''")
-        self.write(f" ESCAPE '{lit}'")
+        self.write(f" ESCAPE {self.dialect.quote_string_literal(node.escape)}")
 
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
         if node.postfix:
