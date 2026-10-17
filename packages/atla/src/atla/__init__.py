@@ -61,6 +61,8 @@ from atla.query import (
     BaseSelectQuery,
     BaseUpdateQuery,
     JoinedSelectQuery,
+    MultiPreloadSelectQuery,
+    PreloadOneSelectQuery,
     PreloadSelectQuery,
 )
 from atla.table import TableRef
@@ -91,11 +93,13 @@ __all__ = [
     "JoinedSelectQuery",
     "Literal",
     "LogicalOp",
+    "MultiPreloadSelectQuery",
     "MultipleResultsError",
     "MySQLDialect",
     "NotFoundError",
     "OrderByClause",
     "PostgresDialect",
+    "PreloadOneSelectQuery",
     "PreloadSelectQuery",
     "ProjectedSelectQuery",
     "RawSQL",

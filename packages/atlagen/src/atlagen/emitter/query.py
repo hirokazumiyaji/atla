@@ -12,15 +12,22 @@ def emit_query(schema: SchemaIR) -> str:
             if column.import_symbol is not None:
                 imports.add(column.import_symbol)
 
-    needs_preload = any(_inbound_relations(table, schema) for table in schema.tables)
+    needs_many = any(_inbound_relations(table, schema) for table in schema.tables)
+    needs_one = any(_outbound_relations(table, schema) for table in schema.tables)
+    needs_preload = needs_many or needs_one
     query_imports = [
         "BaseDeleteQuery",
         "BaseInsertQuery",
         "BaseSelectQuery",
         "BaseUpdateQuery",
     ]
-    if needs_preload:
+    if needs_many:
         query_imports.append("PreloadSelectQuery")
+    if needs_one:
+        query_imports.append("PreloadOneSelectQuery")
+    expr_imports = ["Expr"]
+    if needs_preload:
+        expr_imports.append("OrderByClause")
     lines = [
         "from __future__ import annotations",
         "",
@@ -29,7 +36,7 @@ def emit_query(schema: SchemaIR) -> str:
         "",
         "from atla.adapter.base import DBAdapter",
         "from atla.advanced import BaseInsertManyQuery, insert_many_rows",
-        "from atla.expressions import Expr",
+        f"from atla.expressions import {', '.join(expr_imports)}",
         "from atla.query import (",
         *[f"    {name}," for name in query_imports],
         ")",
@@ -80,13 +87,18 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"    _SELECT_SQL = {('SELECT ' + select_cols + ' FROM ' + quoted_table)!r}",
         f"    _COUNT_SQL = {('SELECT COUNT(*) FROM ' + quoted_table)!r}",
         row_mapper,
-        "",
-        f"class {table.model_name}InsertBuilder(BaseInsertQuery[{table.model_name}Record]):",
-        "    __slots__ = ()",
-        f"    _TABLE_NAME = {quoted_table!r}",
-        f"    _RETURNING_COLS = {returning_cols!r}",
-        row_mapper,
     ]
+    lines.extend(_emit_with_methods(table, schema=schema, on_query=True))
+    lines.extend(
+        [
+            "",
+            f"class {table.model_name}InsertBuilder(BaseInsertQuery[{table.model_name}Record]):",
+            "    __slots__ = ()",
+            f"    _TABLE_NAME = {quoted_table!r}",
+            f"    _RETURNING_COLS = {returning_cols!r}",
+            row_mapper,
+        ]
+    )
     if dialect in {"mysql", "tidb"}:
         lines.extend(
             [
@@ -200,7 +212,7 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
             f"        return BaseDeleteQuery(self._adapter, table_name={quoted_table!r})",
         ]
     )
-    lines.extend(_emit_with_methods(table, schema=schema))
+    lines.extend(_emit_with_methods(table, schema=schema, on_query=False))
     many_cls = f"{table.model_name}InsertManyBuilder"
     insert_many_cls = [
         "",
@@ -249,10 +261,48 @@ def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, 
     return relations
 
 
-def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
-    """Emit ``with_<child>`` batch eager-load helpers from inbound foreign keys."""
+def _outbound_relations(
+    table: TableIR, schema: SchemaIR
+) -> list[tuple[TableIR, str, str, bool]]:
+    """Return ``(parent_table, fk_attr, parent_key_attr, nullable)`` for outbound FKs."""
+    relations: list[tuple[TableIR, str, str, bool]] = []
+    for foreign_key in table.foreign_keys:
+        if len(foreign_key.columns) != 1 or len(foreign_key.ref_columns) != 1:
+            continue
+        fk_name = foreign_key.columns[0]
+        ref_col = foreign_key.ref_columns[0]
+        ref_leaf = foreign_key.ref_table.rsplit(".", 1)[-1]
+        parent = next(
+            (candidate for candidate in schema.tables if candidate.name.rsplit(".", 1)[-1] == ref_leaf),
+            None,
+        )
+        if parent is None:
+            continue
+        parent_pk = parent.primary_key[0] if parent.primary_key else None
+        if parent_pk is None or ref_col != parent_pk:
+            continue
+        fk_column = next((column for column in table.columns if column.name == fk_name), None)
+        fk_attr = fk_column.attr_name if fk_column is not None else fk_name
+        nullable = fk_column.nullable if fk_column is not None else True
+        parent_key_attr = next(
+            (column.attr_name for column in parent.columns if column.name == parent_pk),
+            parent_pk,
+        )
+        relations.append((parent, fk_attr, parent_key_attr, nullable))
+    return relations
+
+
+def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> list[str]:
+    """Emit ``with_<relation>`` batch eager-load helpers.
+
+    When ``on_query`` is true, methods call ``self.preload`` / ``self.preload_one``
+    so filters already applied on the query are preserved. Repository methods
+    construct a fresh ``{Model}Query`` instead.
+    """
     lines: list[str] = []
     used_names: set[str] = set()
+    receiver = "self" if on_query else f"{table.model_name}Query(self._adapter)"
+
     for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):
         child_sql = child.name.rsplit(".", 1)[-1]
         method = f"with_{child_sql}"
@@ -262,14 +312,46 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR) -> list[str]:
         lines.extend(
             [
                 "",
-                f"    def {method}(self) -> PreloadSelectQuery["
-                f"{table.model_name}Record, {child.model_name}Record]:",
-                f"        return {table.model_name}Query(self._adapter).preload(",
+                f"    def {method}(",
+                "        self,",
+                "        *predicates: Expr[bool],",
+                "        order_by: Sequence[OrderByClause] = (),",
+                f"    ) -> PreloadSelectQuery[{table.model_name}Record, {child.model_name}Record]:",
+                f"        return {receiver}.preload(",
                 f"            {child.model_name},",
+                "            *predicates,",
                 f"            fk={child.model_name}.{fk_attr},",
                 f"            key={table.model_name}.{parent_key_attr},",
                 f"            fk_attr={fk_attr!r},",
                 f"            key_attr={parent_key_attr!r},",
+                "            order_by=order_by,",
+                "        )",
+            ]
+        )
+
+    for parent, fk_attr, parent_key_attr, nullable in _outbound_relations(table, schema):
+        # Prefer singular accessor (``user``) so callers get ``with_user()``, not ``with_users()``.
+        method = f"with_{parent.accessor_name}"
+        if method in used_names:
+            method = f"with_{parent.accessor_name}_{fk_attr}"
+        used_names.add(method)
+        lines.extend(
+            [
+                "",
+                f"    def {method}(",
+                "        self,",
+                "        *predicates: Expr[bool],",
+                "        order_by: Sequence[OrderByClause] = (),",
+                f"    ) -> PreloadOneSelectQuery[{table.model_name}Record, {parent.model_name}Record]:",
+                f"        return {receiver}.preload_one(",
+                f"            {parent.model_name},",
+                "            *predicates,",
+                f"            fk={table.model_name}.{fk_attr},",
+                f"            key={parent.model_name}.{parent_key_attr},",
+                f"            fk_attr={fk_attr!r},",
+                f"            key_attr={parent_key_attr!r},",
+                "            order_by=order_by,",
+                f"            nullable={nullable!r},",
                 "        )",
             ]
         )
