@@ -1,0 +1,46 @@
+{
+  "schemas": [
+    {
+      "name": "main",
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {
+              "name": "id",
+              "type": "INTEGER",
+              "null": false,
+              "attrs": [{ "name": "auto_increment" }]
+            },
+            {
+              "name": "email",
+              "type": "TEXT",
+              "null": false
+            },
+            {
+              "name": "type",
+              "type": "TEXT",
+              "null": true
+            },
+            {
+              "name": "created_at",
+              "type": "DATETIME",
+              "null": false,
+              "default": "CURRENT_TIMESTAMP"
+            }
+          ],
+          "primary_key": {
+            "columns": [{ "name": "id" }]
+          },
+          "indexes": [
+            {
+              "name": "sqlite_autoindex_users_1",
+              "unique": true,
+              "parts": [{ "column": { "name": "email" } }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
