@@ -768,10 +768,9 @@ def insert_many_rows(
             raise ValueError(msg)
         if identity_mapping:
             by_sql: Mapping[str, Any] = row
-        elif attr_to_sql:
-            by_sql = {attr_to_sql[attr]: value for attr, value in row.items()}
         else:
-            by_sql = dict(row)
+            # ``identity_mapping`` is false only for a non-empty, non-identity map.
+            by_sql = {attr_to_sql[attr]: value for attr, value in row.items()}
         if not initialized:
             # The first row defines the column order; an empty first row leaves
             # an empty order and later rows report the mismatch below.
