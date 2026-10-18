@@ -167,16 +167,16 @@ uv run python tests/benchmarks/bench_pk_lookup.py      # AOT get() vs builder vs
 uv run python tests/benchmarks/bench_fetch.py          # full-table hydration vs SQLAlchemy
 ```
 
-Measured on SQLite with 40,000 rows (`bench_suite.py` defaults):
+Measured on SQLite with 60,000 rows (`bench_suite.py` defaults):
 
 | Scenario | atla vs raw driver | vs SQLAlchemy 2.0 |
 | :--- | :--- | :--- |
-| AOT PK lookup (`get`) | 1.0x | ~2.3x faster (round-trip bound) |
+| AOT PK lookup (`get`) | 1.0x | ~2.2x faster (round-trip bound) |
 | Filtered query compile (`prepare`) | — | ~7.5x faster than building `to_sql()` per call |
 | Bulk fetch (hydration) | 1.0x | ~5.2x faster |
 | Record materialization (no DB) | — | ~17x faster |
-| JOIN fetch | ~1.3x | ~3.3x faster |
-| Bulk insert (10k+ rows) | ~1.5x | ~5.1x faster than the ORM unit-of-work path |
+| JOIN fetch | ~1.3x | ~3.1x faster |
+| Bulk insert (10k+ rows) | ~1.5x | ~5.0x faster than the ORM unit-of-work path |
 
 Each figure is the best of `--repeats` samples (the estimator that survives the
 collector pauses allocation-heavy scenarios provoke). Absolute numbers depend on
