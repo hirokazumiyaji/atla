@@ -229,6 +229,11 @@ def _load_generated(tmp_dir: Path) -> Any:
         raise RuntimeError(msg)
     sys.path.insert(0, str(tmp_dir))
     try:
+        # A second run() in the same process must load the freshly generated
+        # package, not the one cached by the previous call.
+        stale = [name for name in sys.modules if name == "benchapp" or name.startswith("benchapp.")]
+        for module_name in stale:
+            del sys.modules[module_name]
         return importlib.import_module("benchapp")
     finally:
         sys.path.remove(str(tmp_dir))
@@ -725,53 +730,57 @@ async def run(rows: int, lookups: int, repeats: int) -> list[str]:
         try:
             app = _load_generated(tmp_dir)
             db = app.AtlaClient(adapter)
-            try:
-                await _scenario_pk_lookup(
-                    db,
-                    app,
-                    conn,
-                    sa,
-                    rows=rows,
-                    lookups=lookups,
-                    repeats=repeats,
-                    failures=failures,
-                )
-                await _scenario_filtered_query(db, app, sa, repeats=repeats, failures=failures)
-                await _scenario_bulk_fetch(
-                    db,
-                    app,
-                    conn,
-                    sa,
-                    rows=rows,
-                    repeats=repeats,
-                    failures=failures,
-                )
-                await _scenario_materialize(
-                    app,
-                    sa,
-                    rows=rows,
-                    repeats=repeats,
-                    failures=failures,
-                )
-                await _scenario_join_fetch(
-                    db,
-                    app,
-                    conn,
-                    sa,
-                    repeats=repeats,
-                    failures=failures,
-                )
-                await _scenario_bulk_insert(
-                    db,
-                    conn,
-                    sa,
-                    rows=rows,
-                    repeats=repeats,
-                    failures=failures,
-                )
-            finally:
-                await sa.dispose()
+            await _scenario_pk_lookup(
+                db,
+                app,
+                conn,
+                sa,
+                rows=rows,
+                lookups=lookups,
+                repeats=repeats,
+                failures=failures,
+            )
+            await _scenario_filtered_query(
+                db,
+                app,
+                sa,
+                repeats=repeats,
+                failures=failures,
+            )
+            await _scenario_bulk_fetch(
+                db,
+                app,
+                conn,
+                sa,
+                rows=rows,
+                repeats=repeats,
+                failures=failures,
+            )
+            await _scenario_materialize(
+                app,
+                sa,
+                rows=rows,
+                repeats=repeats,
+                failures=failures,
+            )
+            await _scenario_join_fetch(
+                db,
+                app,
+                conn,
+                sa,
+                repeats=repeats,
+                failures=failures,
+            )
+            await _scenario_bulk_insert(
+                db,
+                conn,
+                sa,
+                rows=rows,
+                repeats=repeats,
+                failures=failures,
+            )
         finally:
+            await sa.dispose()
             await conn.close()
     return failures
 

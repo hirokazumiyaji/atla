@@ -408,4 +408,6 @@ async def test_compiled_query_without_row_mapper_rejects_row_fetches() -> None:
 
     with pytest.raises(ValueError, match="does not return rows"):
         await compiled.first()
+    with pytest.raises(ValueError, match="returns rows"):
+        await compiled.execute()
     assert await compiled.all() == []

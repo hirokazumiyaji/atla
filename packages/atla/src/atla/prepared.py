@@ -118,8 +118,11 @@ class CompiledQuery[RowT]:
             raise TypeError(msg)
         bound = list(self._fixed)
         encode = self._adapter.dialect.encode_param
+        # Encode once per distinct name: a name reused by several occurrences must
+        # not pay the dialect conversion (JSON/UUID/datetime) more than once.
+        encoded = {name: encode(values[name]) for name in names}
         for name, index in self._occurrences:
-            bound[index] = encode(values[name])
+            bound[index] = encoded[name]
         return bound
 
     def bind(self, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
@@ -159,7 +162,11 @@ class CompiledQuery[RowT]:
 
     async def execute(self, *args: Any, **kwargs: Any) -> int:
         """Run a statement that returns no rows and report the affected row count."""
-        if self._row_mapper is not None:
-            msg = "this compiled query returns rows; use all() or first()"
+        if (
+            self._row_mapper is not None
+            or self._rows_mapper is not None
+            or self._scalar_mapper is not None
+        ):
+            msg = "this compiled query returns rows; use all(), first(), or fetch_val()"
             raise ValueError(msg)
         return await self._adapter.execute(self._sql, self._bound_params(args, kwargs))
