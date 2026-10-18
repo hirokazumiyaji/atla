@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import keyword
 import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, NoReturn, overload
@@ -501,7 +502,10 @@ class Param[T](Expr[T]):
         if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             msg = f"Param name must be a string, got {type(name).__name__}"
             raise TypeError(msg)
-        if not _PARAM_NAME_RE.fullmatch(name):
+        # Keywords are not valid keyword-argument names (``all(class=1)`` is a
+        # SyntaxError), so a slot named after one could never be bound by name.
+        # Soft keywords (``match``, ``case``, ``type``) are fine.
+        if not _PARAM_NAME_RE.fullmatch(name) or keyword.iskeyword(name):
             msg = f"Param name must be a valid Python identifier, got {name!r}"
             raise ValueError(msg)
         self.name = name
