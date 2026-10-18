@@ -287,7 +287,10 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"class {many_cls}(BaseInsertManyQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _RETURNING_COLS = {returning_cols!r}",
-        # Raw (unquoted) name so the PostgreSQL binary COPY path can quote it.
+        # Raw form of the same name used for ``_TABLE_NAME``: bare for the
+        # selected schema (matching the generated unqualified SQL and its
+        # search_path resolution), or "schema.table" when the name is qualified.
+        # The COPY adapter splits the dotted form and quotes each part itself.
         f"    _COPY_TABLE = {table.name!r}",
         (
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"

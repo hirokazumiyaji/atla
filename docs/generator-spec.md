@@ -372,9 +372,11 @@ as tuples for `get_many`):
 - `get_many()` chunks keys into `WHERE pk IN (…)` batches (500 bind parameters for
   single-column keys; width-aware for composite keys), and documents that result
   order follows the database, duplicates collapse, and missing keys are omitted.
-- `_COPY_TABLE` carries the raw table name so `insert_many(...).copy()` can use
-  PostgreSQL binary `COPY` without re-deriving the name from the quoted SQL
-  identifier.
+- `_COPY_TABLE` carries the raw (unquoted) form of the very same name used for
+  `_TABLE_NAME`, so `insert_many(...).copy()` targets exactly the table the
+  generated `INSERT` targets: bare for the selected schema (the generated SQL is
+  unqualified and resolves through `search_path`), or `schema.table` when the
+  schema is named. The COPY adapter splits the dotted form and quotes each part.
 
 ### 4.3 Example `client.py` Output
 
