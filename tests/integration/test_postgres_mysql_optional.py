@@ -146,7 +146,7 @@ async def _postgres_adapter() -> AsyncGenerator[Any]:
 @asynccontextmanager
 async def _postgres_pool_adapter() -> AsyncGenerator[Any]:
     """Pool-backed adapter: the documented production setup for asyncpg."""
-    import asyncpg
+    import asyncpg  # pyright: ignore[reportMissingTypeStubs]
 
     from atla.adapter.asyncpg import AsyncpgAdapter
 
