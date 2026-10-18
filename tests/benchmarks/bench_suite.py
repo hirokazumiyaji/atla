@@ -4,7 +4,8 @@
 Both ORMs run on the *same* aiosqlite driver, so the numbers isolate ORM /
 hydration / compilation overhead instead of driver differences.
 
-Scenarios (median wall time over ``--repeats`` samples, after warm-up):
+Scenarios (best wall time over ``--repeats`` samples, after warm-up; see
+``_best_of`` for why the fastest sample is the estimator):
 
 1. ``pk_lookup``      — AOT ``db.user.get(id)`` vs query builder vs ``session.get``
 2. ``filtered_query`` — compile-only (builder ``to_sql`` vs prepared template) and
@@ -19,6 +20,7 @@ Scenarios (median wall time over ``--repeats`` samples, after warm-up):
 Usage:
   uv run python tests/benchmarks/bench_suite.py
   uv run python tests/benchmarks/bench_suite.py --rows 50000 --lookups 2000
+  uv run python tests/benchmarks/bench_suite.py --strict   # non-zero exit on a missed target
 
 Design targets (issue #33): atla stays within ~15% of the raw driver and beats
 SQLAlchemy 2.0 by 5x-20x on PK lookup, filtered fetch, bulk fetch, and join fetch.
@@ -31,7 +33,6 @@ import asyncio
 import gc
 import importlib
 import json
-import statistics
 import sys
 import tempfile
 import time
@@ -107,16 +108,28 @@ class Timing:
     seconds: float
 
 
+def _best_of(samples: Sequence[float]) -> float:
+    """Best sample, the standard estimator when collector pauses can intrude.
+
+    The garbage collector stays enabled (ORM object churn is part of what these
+    scenarios compare), so a single generational collection can land inside one
+    sample and inflate a median by tens of percent. The fastest run is the one
+    least disturbed by that interference, and it is applied to every contender
+    identically.
+    """
+    return min(samples)
+
+
 def _time_sync(fn: Callable[[], object], repeats: int) -> float:
-    # Collect leftovers from previous scenarios once, before sampling, so a
-    # stray collection cannot land inside one sample's timed window.
+    # Clear the previous scenario's garbage once so the first sample does not pay
+    # for it.
     gc.collect()
     samples: list[float] = []
     for _ in range(repeats):
         start = time.perf_counter()
         fn()
         samples.append(time.perf_counter() - start)
-    return statistics.median(samples)
+    return _best_of(samples)
 
 
 async def _time_async(fn: Callable[[], Awaitable[object]], repeats: int) -> float:
@@ -126,7 +139,7 @@ async def _time_async(fn: Callable[[], Awaitable[object]], repeats: int) -> floa
         start = time.perf_counter()
         await fn()
         samples.append(time.perf_counter() - start)
-    return statistics.median(samples)
+    return _best_of(samples)
 
 
 def _report(title: str, timings: Sequence[Timing], baseline: str) -> None:
@@ -147,14 +160,17 @@ def _check_slower_than(
     reference: str,
     contender: str,
     max_factor: float,
+    failures: list[str],
 ) -> None:
-    """Assert ``contender`` is at most ``max_factor`` times slower than ``reference``."""
+    """Report whether ``contender`` stays within ``max_factor`` of ``reference``."""
     ratio = _seconds(timings, contender) / _seconds(timings, reference)
     passed = ratio <= max_factor
     print(
         f"  target {contender} within {max_factor:g}x of {reference}: "
         f"{ratio:.2f}x {'PASS' if passed else 'FAIL'}"
     )
+    if not passed:
+        failures.append(f"{contender} was {ratio:.2f}x {reference} (want <= {max_factor:g}x)")
 
 
 def _check_faster_than(
@@ -163,14 +179,17 @@ def _check_faster_than(
     faster: str,
     slower: str,
     min_speedup: float,
+    failures: list[str],
 ) -> None:
-    """Assert ``faster`` is at least ``min_speedup`` times quicker than ``slower``."""
+    """Report whether ``faster`` beats ``slower`` by at least ``min_speedup``."""
     ratio = _seconds(timings, slower) / _seconds(timings, faster)
     passed = ratio >= min_speedup
     print(
         f"  target {faster} vs {slower}: {ratio:.2f}x faster "
         f"(want >= {min_speedup:g}) {'PASS' if passed else 'FAIL'}"
     )
+    if not passed:
+        failures.append(f"{faster} was only {ratio:.2f}x faster than {slower}")
 
 
 def _note(
@@ -205,7 +224,9 @@ def _load_generated(tmp_dir: Path) -> Any:
             str(out),
         ]
     )
-    assert code == 0, "atlagen generate failed"
+    if code != 0:
+        msg = "atlagen generate failed"
+        raise RuntimeError(msg)
     sys.path.insert(0, str(tmp_dir))
     try:
         return importlib.import_module("benchapp")
@@ -292,6 +313,7 @@ async def _scenario_pk_lookup(
     rows: int,
     lookups: int,
     repeats: int,
+    failures: list[str],
 ) -> None:
     user_model = app.User
     keys = list(range(lookups))
@@ -337,6 +359,7 @@ async def _scenario_pk_lookup(
         reference="raw_aiosqlite",
         contender="atla_get",
         max_factor=1.15,
+        failures=failures,
     )
     # A PK lookup is one round trip; no layer can be 5x faster than the driver,
     # so this stays a measured ratio rather than an asserted target.
@@ -349,6 +372,7 @@ async def _scenario_filtered_query(
     sa: SqlAlchemyModels,
     *,
     repeats: int,
+    failures: list[str],
 ) -> None:
     user_model = app.User
     limit = 500
@@ -410,6 +434,7 @@ async def _scenario_filtered_query(
         faster="prepared_bind",
         slower="builder_to_sql",
         min_speedup=5.0,
+        failures=failures,
     )
 
     fetch_timings = [
@@ -434,6 +459,7 @@ async def _scenario_bulk_fetch(
     *,
     rows: int,
     repeats: int,
+    failures: list[str],
 ) -> None:
     async def raw() -> object:
         fetched = await conn.execute_fetchall("SELECT id, email, name FROM users")
@@ -463,12 +489,14 @@ async def _scenario_bulk_fetch(
         reference="raw_aiosqlite",
         contender="atla_query_all",
         max_factor=1.15,
+        failures=failures,
     )
     _check_faster_than(
         timings,
         faster="atla_query_all",
         slower="sqlalchemy_orm",
         min_speedup=5.0,
+        failures=failures,
     )
 
 
@@ -478,6 +506,7 @@ async def _scenario_materialize(
     *,
     rows: int,
     repeats: int,
+    failures: list[str],
 ) -> None:
     """Hydration-only comparison: no database round trip at all."""
     source = [(i, f"user{i}@example.com", f"User {i % 100}") for i in range(rows)]
@@ -502,6 +531,7 @@ async def _scenario_materialize(
         faster="atla_materialize",
         slower="sqlalchemy_materialize",
         min_speedup=5.0,
+        failures=failures,
     )
 
 
@@ -512,6 +542,7 @@ async def _scenario_join_fetch(
     sa: SqlAlchemyModels,
     *,
     repeats: int,
+    failures: list[str],
 ) -> None:
     user_model = app.User
     post_model = app.Post
@@ -561,6 +592,7 @@ async def _scenario_join_fetch(
         faster="atla_join_prepared",
         slower="sqlalchemy_orm",
         min_speedup=3.0,
+        failures=failures,
     )
 
 
@@ -571,6 +603,7 @@ async def _scenario_bulk_insert(
     *,
     rows: int,
     repeats: int,
+    failures: list[str],
 ) -> None:
     payload = [{"id": i, "email": f"bulk{i}@example.com", "name": f"Bulk {i}"} for i in range(rows)]
     sa_payload = [dict(row) for row in payload]
@@ -627,13 +660,17 @@ async def _scenario_bulk_insert(
         "sqlalchemy_orm_flush": sqlalchemy_orm_flush,
     }
 
+    gc.collect()
+
     async def stored_rows() -> int:
         cursor = await conn.execute("SELECT COUNT(*) FROM users")
         try:
             row = await cursor.fetchone()
         finally:
             await cursor.close()
-        assert row is not None
+        if row is None:
+            msg = "SELECT COUNT(*) returned no row"
+            raise RuntimeError(msg)
         return int(row[0])
 
     samples: dict[str, list[float]] = {label: [] for label in runners}
@@ -649,9 +686,11 @@ async def _scenario_bulk_insert(
             # Count the rows in the table rather than trusting each runner's own
             # (sometimes constant) return value, so a partial insert is caught.
             stored = await stored_rows()
-            assert stored == rows, f"{label} stored {stored} of {rows} rows"
+            if stored != rows:
+                msg = f"{label} stored {stored} of {rows} rows"
+                raise RuntimeError(msg)
 
-    timings = [Timing(label, statistics.median(values)) for label, values in samples.items()]
+    timings = [Timing(label, _best_of(values)) for label, values in samples.items()]
     _report(f"bulk_insert rows={rows} (single transaction each)", timings, "raw_executemany")
     # SQLAlchemy 2.0's tuned bulk path (insertmanyvalues) is within ~1.5x of raw;
     # the ORM unit-of-work path is where the order-of-magnitude gap shows up.
@@ -666,14 +705,17 @@ async def _scenario_bulk_insert(
         faster="atla_execute",
         slower="sqlalchemy_orm_flush",
         min_speedup=5.0,
+        failures=failures,
     )
 
 
-async def run(rows: int, lookups: int, repeats: int) -> None:
+async def run(rows: int, lookups: int, repeats: int) -> list[str]:
     print(
         f"atla benchmark suite: rows={rows} lookups={lookups} repeats={repeats} "
-        "(SQLAlchemy 2.0 async ORM on the same aiosqlite driver)"
+        "(SQLAlchemy 2.0 async ORM on the same aiosqlite driver; best of "
+        f"{repeats} samples per figure)"
     )
+    failures: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         db_path = tmp_dir / "bench.db"
@@ -692,31 +734,67 @@ async def run(rows: int, lookups: int, repeats: int) -> None:
                     rows=rows,
                     lookups=lookups,
                     repeats=repeats,
+                    failures=failures,
                 )
-                await _scenario_filtered_query(db, app, sa, repeats=repeats)
-                await _scenario_bulk_fetch(db, app, conn, sa, rows=rows, repeats=repeats)
-                await _scenario_materialize(app, sa, rows=rows, repeats=repeats)
-                await _scenario_join_fetch(db, app, conn, sa, repeats=repeats)
+                await _scenario_filtered_query(db, app, sa, repeats=repeats, failures=failures)
+                await _scenario_bulk_fetch(
+                    db,
+                    app,
+                    conn,
+                    sa,
+                    rows=rows,
+                    repeats=repeats,
+                    failures=failures,
+                )
+                await _scenario_materialize(
+                    app,
+                    sa,
+                    rows=rows,
+                    repeats=repeats,
+                    failures=failures,
+                )
+                await _scenario_join_fetch(
+                    db,
+                    app,
+                    conn,
+                    sa,
+                    repeats=repeats,
+                    failures=failures,
+                )
                 await _scenario_bulk_insert(
                     db,
                     conn,
                     sa,
                     rows=rows,
                     repeats=repeats,
+                    failures=failures,
                 )
             finally:
                 await sa.dispose()
         finally:
             await conn.close()
+    return failures
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=40_000)
     parser.add_argument("--lookups", type=int, default=1_000)
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero when a design target misses (default: report only)",
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.rows, args.lookups, args.repeats))
+    failures = asyncio.run(run(args.rows, args.lookups, args.repeats))
+    if failures:
+        print("\nmissed design target(s):")
+        for failure in failures:
+            print(f"  - {failure}")
+        if args.strict:
+            raise SystemExit(1)
+        print("re-run with --strict to fail the process on these.")
 
 
 if __name__ == "__main__":

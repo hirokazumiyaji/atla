@@ -389,3 +389,18 @@ async def test_insert_many_copy_rejects_returning_and_expr() -> None:
     expr_rows = ((("a", id_col),),)
     with pytest.raises(ValueError, match="requires literal values"):
         await CopyUserInsertMany(adapter, table_name='"users"', rows=expr_rows).copy()
+
+
+def test_insert_many_dollar_placeholders_advance_per_row() -> None:
+    """Dollar placeholders embed the position, so rows must not share numbering."""
+    adapter = FakeAdapter(PostgresDialect())
+    rows = ((("a", 1), ("b", "x")), (("a", 2), ("b", "y")))
+    sql, params = UserInsertMany(adapter, table_name='"t"', rows=rows).to_sql()
+
+    assert sql == 'INSERT INTO "t" ("a", "b") VALUES ($1, $2), ($3, $4)'
+    assert params == [1, "x", 2, "y"]
+
+
+def test_insert_many_rows_reports_column_set_mismatch_after_empty_first_row() -> None:
+    with pytest.raises(ValueError, match="same column set"):
+        insert_many_rows([{}, {"a": 1}], attr_to_sql={})

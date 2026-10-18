@@ -369,3 +369,43 @@ async def test_prepared_upsert_without_returning_rejects_all() -> None:
 
     with pytest.raises(ValueError, match="does not return rows"):
         await prepared.all()
+
+
+def _upper(value: Any) -> Any:
+    return str(value).upper()
+
+
+@pytest.mark.asyncio
+async def test_prepared_scalar_fetch_val_applies_column_decoder() -> None:
+    adapter = FakeAdapter()
+    adapter.scalar = "abc"
+    decoded_col: Column[str] = Column("users", "email", decoder=_upper)
+    prepared = UserQuery(adapter).select(decoded_col).prepare()
+
+    assert await prepared.fetch_val() == "ABC"
+
+
+@pytest.mark.asyncio
+async def test_prepared_scalar_fetch_val_skips_decoder_for_none() -> None:
+    adapter = FakeAdapter()
+    adapter.scalar = None
+    decoded_col: Column[str] = Column("users", "email", decoder=_upper)
+    prepared = UserQuery(adapter).select(decoded_col).prepare()
+
+    assert await prepared.fetch_val() is None
+
+
+@pytest.mark.asyncio
+async def test_compiled_query_without_row_mapper_rejects_row_fetches() -> None:
+    adapter = FakeAdapter()
+    compiled: CompiledQuery[UserRecord] = CompiledQuery(
+        adapter,
+        sql="SELECT 1",
+        params=[],
+        slot_occurrences=[],
+        rows_mapper=lambda rows: [],
+    )
+
+    with pytest.raises(ValueError, match="does not return rows"):
+        await compiled.first()
+    assert await compiled.all() == []

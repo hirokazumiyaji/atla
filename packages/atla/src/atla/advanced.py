@@ -113,14 +113,23 @@ class BaseInsertManyQuery[RecordT]:
         dialect = self._adapter.dialect
         cols_sql = ", ".join(dialect.quote(name) for name in columns)
         if self._rows_are_literals(rows):
-            # Every row reuses one placeholder template: build the group once and
-            # join it, instead of re-deriving placeholders per row. Each chunk is
-            # compiled as its own statement, so numbering restarts at 1 here.
-            group = (
-                "(" + ", ".join(dialect.placeholder(i) for i in range(1, len(columns) + 1)) + ")"
-            )
-            value_groups = ", ".join([group] * len(rows))
+            width = len(columns)
             params = [value for row in rows for _, value in row]
+            if dialect.positional_style == "dollar":
+                # ``$n`` embeds the position, so each row counts up from where the
+                # previous row stopped. This chunk is its own statement, so the
+                # first row still starts at ``$1``.
+                value_groups = ", ".join(
+                    "("
+                    + ", ".join(dialect.placeholder(start + offset) for offset in range(width))
+                    + ")"
+                    for start in range(1, len(params) + 1, width)
+                )
+            else:
+                # ``%s`` / ``?`` are position-independent: derive one row template
+                # and repeat it instead of re-deriving placeholders per row.
+                group = "(" + ", ".join(dialect.placeholder(i) for i in range(1, width + 1)) + ")"
+                value_groups = ", ".join([group] * len(rows))
             sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {value_groups}"
             if self._returning:
                 if not dialect.supports_returning:
@@ -628,6 +637,11 @@ class ProjectedSelectQuery[*Ts]:
         )
         write_locking(compiler, dialect, self._locking)
 
+    def _scalar_value(self, value: Any) -> Any:
+        """Decode one projected column exactly like :meth:`_hydrate` does."""
+        decoder = self._decoders[0]
+        return value if decoder is None or value is None else decoder(value)
+
     def prepare(self) -> CompiledQuery[tuple[*Ts]]:
         """Compile this projection once into a reusable template."""
         compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
@@ -640,7 +654,9 @@ class ProjectedSelectQuery[*Ts]:
             slot_occurrences=compiler.slot_occurrences,
             row_mapper=self._hydrate,
             rows_mapper=rows_mapper_from_record(self._hydrate),
-            scalar=len(self._columns) == 1,
+            # Single-column projections may be fetched as a bare scalar; keep the
+            # column decoder (UUID/datetime/JSON) applied on that path too.
+            scalar_mapper=self._scalar_value if len(self._columns) == 1 else None,
         )
 
     def as_subquery(self) -> SubqueryExpr[Any]:
@@ -744,6 +760,7 @@ def insert_many_rows(
     normalized: list[tuple[tuple[str, Any], ...]] = []
     column_order: list[str] = []
     column_set: set[str] = set()
+    initialized = False
     for row in rows:
         if known_attrs is not None and any(key not in known_attrs for key in row):
             unknown = sorted(str(key) for key in row if key not in known_attrs)
@@ -755,10 +772,12 @@ def insert_many_rows(
             by_sql = {attr_to_sql[attr]: value for attr, value in row.items()}
         else:
             by_sql = dict(row)
-        if not column_order:
-            # First row (or every row, for a column-less mapping) defines the order.
+        if not initialized:
+            # The first row defines the column order; an empty first row leaves
+            # an empty order and later rows report the mismatch below.
             column_order = list(by_sql)
             column_set = set(column_order)
+            initialized = True
         elif len(by_sql) != len(column_order) or not column_set.issuperset(by_sql):
             msg = "insert_many() requires every row to use the same column set"
             raise ValueError(msg)

@@ -58,7 +58,7 @@ class CompiledQuery[RowT]:
         "_occurrences",
         "_row_mapper",
         "_rows_mapper",
-        "_scalar",
+        "_scalar_mapper",
         "_slot_names",
         "_sql",
     )
@@ -72,7 +72,7 @@ class CompiledQuery[RowT]:
         slot_occurrences: Sequence[tuple[str, int]],
         row_mapper: RowMapper | None = None,
         rows_mapper: RowsMapper | None = None,
-        scalar: bool = False,
+        scalar_mapper: Callable[[Any], Any] | None = None,
     ) -> None:
         self._adapter = adapter
         self._sql = sql
@@ -84,7 +84,9 @@ class CompiledQuery[RowT]:
         )
         self._row_mapper = row_mapper
         self._rows_mapper = rows_mapper
-        self._scalar = scalar
+        # Set only for single-column projections; decodes the fetched scalar the
+        # same way the row mapper decodes that column.
+        self._scalar_mapper = scalar_mapper
 
     @property
     def sql(self) -> str:
@@ -128,32 +130,32 @@ class CompiledQuery[RowT]:
         """
         return tuple(self._bound_params(args, kwargs))
 
-    def _require_rows(self) -> None:
-        if self._rows_mapper is None:
-            msg = "this compiled query does not return rows; use execute()"
-            raise ValueError(msg)
-
     async def all(self, *args: Any, **kwargs: Any) -> list[RowT]:
         """Fetch every matching row and hydrate them into ``RowT`` values."""
-        self._require_rows()
+        rows_mapper = self._rows_mapper
+        if rows_mapper is None:
+            msg = "this compiled query does not return rows; use execute()"
+            raise ValueError(msg)
         rows = await self._adapter.fetch_all(self._sql, self._bound_params(args, kwargs))
-        assert self._rows_mapper is not None
-        return self._rows_mapper(rows)
+        return rows_mapper(rows)
 
     async def first(self, *args: Any, **kwargs: Any) -> RowT | None:
         """Fetch the first row of the template (no implicit ``LIMIT``), or ``None``."""
-        self._require_rows()
+        row_mapper = self._row_mapper
+        if row_mapper is None:
+            msg = "this compiled query does not return rows; use execute()"
+            raise ValueError(msg)
         row = await self._adapter.fetch_one(self._sql, self._bound_params(args, kwargs))
-        assert self._row_mapper is not None
-        return None if row is None else self._row_mapper(row)
+        return None if row is None else row_mapper(row)
 
     async def fetch_val(self, *args: Any, **kwargs: Any) -> Any:
         """Fetch the first column of the first row (single-column projections only)."""
-        self._require_rows()
-        if not self._scalar:
+        scalar_mapper = self._scalar_mapper
+        if scalar_mapper is None:
             msg = "fetch_val() requires a single-column projection; use all() or first()"
             raise ValueError(msg)
-        return await self._adapter.fetch_val(self._sql, self._bound_params(args, kwargs))
+        value = await self._adapter.fetch_val(self._sql, self._bound_params(args, kwargs))
+        return scalar_mapper(value)
 
     async def execute(self, *args: Any, **kwargs: Any) -> int:
         """Run a statement that returns no rows and report the affected row count."""

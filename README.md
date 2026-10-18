@@ -171,15 +171,17 @@ Measured on SQLite with 40,000 rows (`bench_suite.py` defaults):
 
 | Scenario | atla vs raw driver | vs SQLAlchemy 2.0 |
 | :--- | :--- | :--- |
-| AOT PK lookup (`get`) | 1.0x | 2.1x faster (round-trip bound) |
-| Filtered query compile (`prepare`) | — | 7.5x faster than building `to_sql()` per call |
-| Bulk fetch (hydration) | 1.0x | 5.4x faster |
-| Record materialization (no DB) | — | 18x faster |
-| JOIN fetch | 1.3x | 3.6x faster |
-| Bulk insert (10k+ rows) | 1.5x | 5.2x faster than the ORM unit-of-work path |
+| AOT PK lookup (`get`) | 1.0x | ~2.3x faster (round-trip bound) |
+| Filtered query compile (`prepare`) | — | ~7.5x faster than building `to_sql()` per call |
+| Bulk fetch (hydration) | 1.0x | ~5.2x faster |
+| Record materialization (no DB) | — | ~17x faster |
+| JOIN fetch | ~1.3x | ~3.3x faster |
+| Bulk insert (10k+ rows) | ~1.5x | ~5.1x faster than the ORM unit-of-work path |
 
-Absolute numbers depend on hardware and driver; the suite prints PASS/FAIL lines for
-the design targets and measured ratios for round-trip-bound scenarios.
+Each figure is the best of `--repeats` samples (the estimator that survives the
+collector pauses allocation-heavy scenarios provoke). Absolute numbers depend on
+hardware and driver; `--strict` makes a missed design target exit non-zero, and
+round-trip-bound scenarios are printed as measured ratios instead.
 
 ---
 
