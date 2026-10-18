@@ -13,7 +13,7 @@ from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import PostgresDialect, SQLiteDialect
 from atla.expressions import Column, Param, count
 from atla.prepared import CompiledQuery
-from atla.query import BaseInsertQuery, BaseSelectQuery, BaseUpdateQuery
+from atla.query import BaseDeleteQuery, BaseInsertQuery, BaseSelectQuery, BaseUpdateQuery
 
 
 class UserRecord(NamedTuple):
@@ -324,3 +324,48 @@ def test_param_inside_in_list_requires_prepare() -> None:
     query = UserQuery(adapter).where(id_col.in_([Param[int]("first")]))
     with pytest.raises(ValueError, match="requires a precompiled query"):
         query.to_sql()
+
+
+class UserDelete(BaseDeleteQuery[UserRecord]):
+    __slots__ = ()
+    _RETURNING_COLS = '"id", "email"'
+    _ROW_MAPPER = UserRecord.from_row
+
+
+@pytest.mark.asyncio
+async def test_prepared_delete_binds_where_values() -> None:
+    adapter = FakeAdapter()
+    prepared = UserDelete(adapter, table_name='"users"').where(id_col == Param("id")).prepare()
+
+    assert prepared.sql == 'DELETE FROM "users" WHERE "users"."id" = $1'
+    assert prepared.param_names == ("id",)
+    assert await prepared.execute(id=7) == 3
+    assert adapter.calls[0][2] == [7]
+
+
+@pytest.mark.asyncio
+async def test_prepared_upsert_binds_values_and_conflict_clause() -> None:
+    adapter = FakeAdapter(PostgresDialect())
+    prepared = (
+        UserInsert(adapter)
+        .values(email=Param("email"), id=Param("id"))
+        .on_conflict("email")
+        .do_update(email=Param("email"))
+        .prepare()
+    )
+
+    assert 'ON CONFLICT ("email") DO UPDATE SET "email" = $3' in prepared.sql
+    assert prepared.param_names == ("email", "id")
+    assert await prepared.execute(email="a@example.com", id=1) == 3
+    assert adapter.calls[0][2] == ["a@example.com", 1, "a@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_prepared_upsert_without_returning_rejects_all() -> None:
+    adapter = FakeAdapter(PostgresDialect())
+    prepared = (
+        UserInsert(adapter).values(email=Param("email")).on_conflict("email").do_nothing().prepare()
+    )
+
+    with pytest.raises(ValueError, match="does not return rows"):
+        await prepared.all()
