@@ -488,11 +488,18 @@ def _emit_do_update_method(table: TableIR) -> list[str]:
     columns = list(table.columns)
     if not columns:
         return [
-            f"    def do_update(self) -> {table.model_name}UpsertBuilder:",
+            # Same intentional narrowing as the typed overload below.
+            "    def do_update(  # type: ignore[override]"
+            "  # pyright: ignore[reportIncompatibleMethodOverride]",
+            "        self,",
+            f"    ) -> {table.model_name}UpsertBuilder:",
             '        raise ValueError("table has no updatable columns")',
         ]
     lines = [
-        "    def do_update(",
+        # Generated builders intentionally narrow the base ``do_update(**columns)``
+        # (bare SQL names, for hand-written builders) to typed keyword arguments.
+        "    def do_update(  # type: ignore[override]"
+        "  # pyright: ignore[reportIncompatibleMethodOverride]",
         "        self,",
         "        *,",
     ]
