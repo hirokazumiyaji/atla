@@ -592,22 +592,24 @@ async def _scenario_bulk_insert(
         except BaseException:
             await conn.rollback()
             raise
-        return rows
+        return None
 
     async def atla_execute() -> object:
         # Use the client yielded by transaction(): it is pinned to the tx connection.
         async with db.transaction() as tx:
-            return await tx.user.insert_many(payload).execute()
+            await tx.user.insert_many(payload).execute()
+        return None
 
     async def atla_execute_many() -> object:
         async with db.transaction() as tx:
-            return await tx.user.insert_many(payload).execute_many()
+            await tx.user.insert_many(payload).execute_many()
+        return None
 
     async def sqlalchemy_bulk() -> object:
         async with sa.session() as session:
             await session.execute(sa.insert(sa.User), sa_payload)
             await session.commit()
-        return rows
+        return None
 
     async def sqlalchemy_orm_flush() -> object:
         async with sa.session() as session:
@@ -615,7 +617,7 @@ async def _scenario_bulk_insert(
                 [sa.User(id=row["id"], email=row["email"], name=row["name"]) for row in payload]
             )
             await session.commit()
-        return rows
+        return None
 
     runners: dict[str, Callable[[], Awaitable[object]]] = {
         "raw_executemany": raw_executemany,
@@ -624,6 +626,16 @@ async def _scenario_bulk_insert(
         "sqlalchemy_insertmanyvalues": sqlalchemy_bulk,
         "sqlalchemy_orm_flush": sqlalchemy_orm_flush,
     }
+
+    async def stored_rows() -> int:
+        cursor = await conn.execute("SELECT COUNT(*) FROM users")
+        try:
+            row = await cursor.fetchone()
+        finally:
+            await cursor.close()
+        assert row is not None
+        return int(row[0])
+
     samples: dict[str, list[float]] = {label: [] for label in runners}
     for label, runner in runners.items():
         for _ in range(2):
@@ -632,9 +644,12 @@ async def _scenario_bulk_insert(
         for _ in range(repeats):
             await reset()
             start = time.perf_counter()
-            inserted = await runner()
+            await runner()
             samples[label].append(time.perf_counter() - start)
-            assert inserted == rows, f"{label} inserted {inserted} of {rows} rows"
+            # Count the rows in the table rather than trusting each runner's own
+            # (sometimes constant) return value, so a partial insert is caught.
+            stored = await stored_rows()
+            assert stored == rows, f"{label} stored {stored} of {rows} rows"
 
     timings = [Timing(label, statistics.median(values)) for label, values in samples.items()]
     _report(f"bulk_insert rows={rows} (single transaction each)", timings, "raw_executemany")

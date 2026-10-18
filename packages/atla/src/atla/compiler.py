@@ -62,6 +62,13 @@ class SQLCompiler:
         return self.dialect.placeholder(len(self.params))
 
     def _add_slot(self, name: str) -> str:
+        """Reserve a placeholder for a prepared ``Param`` slot."""
+        if not self.slots_enabled:
+            msg = (
+                f"Param({name!r}) requires a precompiled query; call prepare() "
+                "and bind the value when executing"
+            )
+            raise ValueError(msg)
         self.slot_occurrences.append((name, len(self.params)))
         self.params.append(UNBOUND_SLOT)
         return self.dialect.placeholder(len(self.params))
@@ -139,12 +146,6 @@ class SQLCompiler:
         self.write(self.add_param(node.value))
 
     def _visit_param(self, node: Param[Any]) -> None:
-        if not self.slots_enabled:
-            msg = (
-                f"Param({node.name!r}) requires a precompiled query; call prepare() "
-                "and bind the value when executing"
-            )
-            raise ValueError(msg)
         self.write(self._add_slot(node.name))
 
     def visit_order_by(self, clause: OrderByClause) -> None:
@@ -279,7 +280,7 @@ class SQLCompiler:
             if isinstance(value, Param):
                 # Fixed-arity prepared IN lists; a variable-length list needs a
                 # different query shape per arity.
-                self._visit_param(value)
+                self.write(self._add_slot(value.name))
             else:
                 self.write(self.add_param(value))
         self.write(")")
