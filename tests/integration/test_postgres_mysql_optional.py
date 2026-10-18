@@ -100,39 +100,63 @@ def _generate(tmp_path: Path, *, dialect: str) -> None:
     )
 
 
+async def _reset_postgres_schema(conn: Any) -> None:
+    await conn.execute("DROP TABLE IF EXISTS posts")
+    await conn.execute("DROP TABLE IF EXISTS users")
+    await conn.execute(
+        """
+        CREATE TABLE users (
+            id BIGSERIAL PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE posts (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id),
+            title TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _postgres_dsn() -> str:
+    assert POSTGRES_DSN is not None
+    _require_dedicated_test_db(POSTGRES_DSN, label="ATLA_TEST_POSTGRES_DSN")
+    return POSTGRES_DSN
+
+
 @asynccontextmanager
 async def _postgres_adapter() -> AsyncGenerator[Any]:
     import asyncpg  # type: ignore[import-untyped]
 
     from atla.adapter.asyncpg import AsyncpgAdapter
 
-    assert POSTGRES_DSN is not None
-    _require_dedicated_test_db(POSTGRES_DSN, label="ATLA_TEST_POSTGRES_DSN")
-    conn = await asyncpg.connect(POSTGRES_DSN)
+    conn = await asyncpg.connect(_postgres_dsn())
     try:
-        await conn.execute("DROP TABLE IF EXISTS posts")
-        await conn.execute("DROP TABLE IF EXISTS users")
-        await conn.execute(
-            """
-            CREATE TABLE users (
-                id BIGSERIAL PRIMARY KEY,
-                email TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL
-            )
-            """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE posts (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL REFERENCES users(id),
-                title TEXT NOT NULL
-            )
-            """
-        )
+        await _reset_postgres_schema(conn)
         yield AsyncpgAdapter(conn)
     finally:
         await conn.close()
+
+
+@asynccontextmanager
+async def _postgres_pool_adapter() -> AsyncGenerator[Any]:
+    """Pool-backed adapter: the documented production setup for asyncpg."""
+    import asyncpg  # type: ignore[import-untyped]
+
+    from atla.adapter.asyncpg import AsyncpgAdapter
+
+    pool = await asyncpg.create_pool(_postgres_dsn(), min_size=1, max_size=2)
+    try:
+        async with pool.acquire() as conn:
+            await _reset_postgres_schema(conn)
+        yield AsyncpgAdapter(pool)
+    finally:
+        await pool.close()
 
 
 @asynccontextmanager
@@ -262,6 +286,26 @@ async def test_postgres_insert_many_copy(
         assert await client.user.query().count() == 500
         last = await client.user.where(appdb.User.email == "copy499@example.com").one()
         assert last.name == "Copy 499"
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="Set ATLA_TEST_POSTGRES_DSN to enable")
+@pytest.mark.asyncio
+async def test_postgres_insert_many_copy_through_pool(
+    tmp_path: Path,
+    load_appdb: Callable[[Path], Any],
+) -> None:
+    """asyncpg.Pool proxies copy_records_to_table; the pool path must work too."""
+    _generate(tmp_path, dialect="postgres")
+    appdb = load_appdb(tmp_path)
+
+    async with _postgres_pool_adapter() as adapter:
+        client = appdb.AtlaClient(adapter)
+        copied = await client.user.insert_many(
+            [{"email": f"pool{i}@example.com", "name": f"Pool {i}"} for i in range(100)]
+        ).copy()
+
+        assert copied == 100
+        assert await client.user.query().count() == 100
 
 
 @pytest.mark.skipif(not MYSQL_DSN, reason="Set ATLA_TEST_MYSQL_DSN to enable")
