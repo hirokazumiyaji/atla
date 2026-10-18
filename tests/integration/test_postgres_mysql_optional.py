@@ -308,6 +308,63 @@ async def test_postgres_insert_many_copy_through_pool(
         assert await client.user.query().count() == 100
 
 
+@pytest.mark.skipif(not POSTGRES_DSN, reason="Set ATLA_TEST_POSTGRES_DSN to enable")
+@pytest.mark.asyncio
+async def test_postgres_copy_targets_the_same_relation_as_insert(
+    tmp_path: Path,
+    load_appdb: Callable[[Path], Any],
+) -> None:
+    """COPY must hit the relation the generated (unqualified) SQL resolves to.
+
+    The generated client emits unqualified names, so both ``insert_many().execute()``
+    and ``copy()`` resolve through ``search_path``. Point ``search_path`` at a
+    non-default schema holding a decoy table of the same name in ``public`` and
+    check where each path actually wrote.
+    """
+    import asyncpg  # pyright: ignore[reportMissingTypeStubs]
+
+    from atla.adapter.asyncpg import AsyncpgAdapter
+
+    _generate(tmp_path, dialect="postgres")
+    appdb = load_appdb(tmp_path)
+
+    conn = await asyncpg.connect(_postgres_dsn())
+    try:
+        await conn.execute("DROP SCHEMA IF EXISTS atla_other CASCADE")
+        # posts references users, so drop it first (see _reset_postgres_schema).
+        await conn.execute("DROP TABLE IF EXISTS public.posts")
+        await conn.execute("DROP TABLE IF EXISTS public.users")
+        await conn.execute("CREATE SCHEMA atla_other")
+        for schema in ("public", "atla_other"):
+            await conn.execute(
+                f"""
+                CREATE TABLE {schema}.users (
+                    id BIGSERIAL PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL
+                )
+                """
+            )
+        await conn.execute("SET search_path TO atla_other")
+        adapter = AsyncpgAdapter(conn)
+        client = appdb.AtlaClient(adapter)
+
+        await client.user.insert_many([{"email": "insert@example.com", "name": "Insert"}]).execute()
+        copied = await client.user.insert_many(
+            [{"email": "copy@example.com", "name": "Copy"}]
+        ).copy()
+
+        assert copied == 1
+        other_rows = await conn.fetch("SELECT email FROM atla_other.users ORDER BY email")
+        public_rows = await conn.fetch("SELECT email FROM public.users")
+        assert [row["email"] for row in other_rows] == ["copy@example.com", "insert@example.com"]
+        assert public_rows == []
+    finally:
+        await conn.execute("DROP SCHEMA IF EXISTS atla_other CASCADE")
+        await conn.execute("DROP TABLE IF EXISTS public.users")
+        await conn.close()
+
+
 @pytest.mark.skipif(not MYSQL_DSN, reason="Set ATLA_TEST_MYSQL_DSN to enable")
 @pytest.mark.asyncio
 async def test_mysql_e2e(

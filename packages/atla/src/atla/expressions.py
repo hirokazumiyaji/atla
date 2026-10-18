@@ -502,10 +502,11 @@ class Param[T](Expr[T]):
         if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             msg = f"Param name must be a string, got {type(name).__name__}"
             raise TypeError(msg)
-        # Keywords are not valid keyword-argument names (``all(class=1)`` is a
-        # SyntaxError), so a slot named after one could never be bound by name.
-        # Soft keywords (``match``, ``case``, ``type``) are fine.
-        if not _PARAM_NAME_RE.fullmatch(name) or keyword.iskeyword(name):
+        # Names must be bindable as keyword arguments: keywords are not
+        # (``all(class=1)`` is a SyntaxError), and ``self`` is taken positionally
+        # by every ``CompiledQuery`` execution method. Soft keywords (``match``,
+        # ``case``, ``type``) are fine.
+        if not _PARAM_NAME_RE.fullmatch(name) or keyword.iskeyword(name) or name == "self":
             msg = f"Param name must be a valid Python identifier, got {name!r}"
             raise ValueError(msg)
         self.name = name

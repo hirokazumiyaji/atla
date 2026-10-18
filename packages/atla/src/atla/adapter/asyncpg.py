@@ -123,6 +123,11 @@ class AsyncpgAdapter:
             msg = "copy requires at least one column"
             raise ValueError(msg)
         schema, _, leaf = table.rpartition(".")
+        if schema and "." in schema:
+            # ``schema.table`` is the only qualified form COPY can target; a
+            # three-part name would silently quote a different relation.
+            msg = f"copy table name must be 'table' or 'schema.table', got {table!r}"
+            raise ValueError(msg)
         encoded_rows = self._dialect.encode_params_seq(records)
         status = await self._target.copy_records_to_table(
             leaf,

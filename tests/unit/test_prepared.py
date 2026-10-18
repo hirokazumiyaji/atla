@@ -102,6 +102,8 @@ def test_param_validates_name() -> None:
         Param("not a name")
     with pytest.raises(ValueError, match="valid Python identifier"):
         Param("class")
+    with pytest.raises(ValueError, match="valid Python identifier"):
+        Param("self")
     # Soft keywords remain usable as keyword arguments.
     assert Param("match").name == "match"
 

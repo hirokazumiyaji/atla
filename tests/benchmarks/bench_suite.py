@@ -197,13 +197,10 @@ def _note(
     *,
     baseline: str,
     contender: str,
-    higher_is_better: bool = True,
     comment: str = "",
 ) -> None:
-    """Print a measured ratio that is not an asserted design target."""
-    base = _seconds(timings, baseline)
-    other = _seconds(timings, contender)
-    ratio = other / base if higher_is_better else base / other
+    """Print ``contender / baseline`` for context that is not a design target."""
+    ratio = _seconds(timings, contender) / _seconds(timings, baseline)
     suffix = f" ({comment})" if comment else ""
     print(f"  note {contender} vs {baseline}: {ratio:.2f}x{suffix}")
 
@@ -796,6 +793,8 @@ def main() -> None:
         help="exit non-zero when a design target misses (default: report only)",
     )
     args = parser.parse_args()
+    if args.rows < 1 or args.lookups < 0 or args.repeats < 1:
+        parser.error("--rows and --repeats must be >= 1, and --lookups >= 0")
     failures = asyncio.run(run(args.rows, args.lookups, args.repeats))
     if failures:
         print("\nmissed design target(s):")

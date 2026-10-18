@@ -254,6 +254,8 @@ async def test_asyncpg_copy_records_to_table_splits_schema() -> None:
         await adapter.copy_records_to_table("", columns=["id"], records=[(1,)])
     with pytest.raises(ValueError, match="at least one column"):
         await adapter.copy_records_to_table("users", columns=[], records=[(1,)])
+    with pytest.raises(ValueError, match=r"schema\.table"):
+        await adapter.copy_records_to_table("db.public.users", columns=["id"], records=[(1,)])
 
 
 @pytest.mark.asyncio
