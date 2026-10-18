@@ -270,6 +270,35 @@ async def test_asyncpg_copy_encodes_params_and_rejects_untyped_adapters() -> Non
 
 
 @pytest.mark.asyncio
+async def test_asyncpg_copy_reports_submitted_rows_without_status_tag() -> None:
+    """A driver build that reports no status tag must not report zero rows."""
+
+    class NoStatusConnection:
+        def __init__(self) -> None:
+            self.copies: list[tuple[Any, ...]] = []
+
+        async def copy_records_to_table(
+            self,
+            table_name: str,
+            *,
+            records: Sequence[Sequence[Any]],
+            columns: Sequence[str] | None = None,
+            schema_name: str | None = None,
+        ) -> None:
+            self.copies.append(
+                (schema_name, table_name, list(columns or []), [tuple(row) for row in records])
+            )
+
+    conn = NoStatusConnection()
+    adapter = AsyncpgAdapter(FakeAsyncpgPool(conn), dialect=PostgresDialect())
+
+    copied = await adapter.copy_records_to_table("users", columns=["id"], records=[(1,), (2,)])
+
+    assert copied == 2
+    assert conn.copies == [(None, "users", ["id"], [(1,), (2,)])]
+
+
+@pytest.mark.asyncio
 async def test_asyncmy_adapter_with_mocks() -> None:
     conn = FakeAsyncmyConnection()
     pool = FakeAsyncmyPool(conn)
