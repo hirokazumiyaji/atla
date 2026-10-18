@@ -277,6 +277,11 @@ row = await prepared.first(email="bob@example.com")
   There is deliberately no `one()`: proving uniqueness requires materializing rows,
   so use `.limit(2)` plus `first()` instead.
 
+`PreloadSelectQuery` / `PreloadOneSelectQuery` / `MultiPreloadSelectQuery` are
+two-query batch loaders (parent fetch plus ``WHERE fk IN (...)``); they compose
+builders instead of exposing ``prepare()``, because the follow-up ``IN`` list
+length is decided at execution time.
+
 Every builder also supports prepared mutations:
 `db.user.insert(email=Param("email")).prepare().execute(email=...)`,
 `db.user.update().set(name=Param("name")).where(User.id == Param("id")).prepare()`,
