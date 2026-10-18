@@ -14,6 +14,8 @@ NullsPosition = TypingLiteral["FIRST", "LAST"]
 
 _SQL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\([\d,\s]+\))?(\[\])?$")
 _FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+# Prepared-query slot names double as Python keyword arguments.
+_PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Exact tokens emitted by the expression API / compiler (no free-form SQL).
 _BINARY_OPS = frozenset(
@@ -478,6 +480,31 @@ class RawSQL[T](Expr[T]):
     def __init__(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self.sql = sql
         self.params = params
+
+
+class Param[T](Expr[T]):
+    """Named bind-parameter slot for precompiled queries.
+
+    ``Param("email")`` occupies one placeholder in the compiled SQL template and
+    takes its value when the prepared query is executed, e.g.
+    ``db.user.where(User.email == Param("email")).prepare().all(email="a@example.com")``.
+
+    The same name may appear more than once; every occurrence is filled from the
+    single bound value. Names must be valid Python identifiers so they can be
+    passed as keyword arguments. Using a ``Param`` in a query that is not
+    prepared (for example ``.to_sql()``) raises ``ValueError``.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            msg = f"Param name must be a string, got {type(name).__name__}"
+            raise TypeError(msg)
+        if not _PARAM_NAME_RE.fullmatch(name):
+            msg = f"Param name must be a valid Python identifier, got {name!r}"
+            raise ValueError(msg)
+        self.name = name
 
 
 class AliasedExpr[T](Expr[T]):

@@ -326,7 +326,55 @@ class UserRepository:
 
     def delete(self) -> BaseDeleteQuery:
         return BaseDeleteQuery(self._adapter, table_name='"users"')
+
+    # --- AOT primary-key lookups: no AST nodes, no builder, no SQL string join ---
+    _GET_BY_PK_SQL = (
+        'SELECT "users"."id", "users"."email", "users"."name", "users"."age", '
+        '"users"."is_active", "users"."deleted_at", "users"."created_at" '
+        'FROM "users" WHERE "users"."id" = $1 LIMIT 1'
+    )
+    _GET_MANY_PREFIX = (
+        'SELECT "users"."id", "users"."email", ... FROM "users" WHERE "users"."id" IN ('
+    )
+
+    async def get(self, id: int) -> UserRecord | None:
+        row = await self._adapter.fetch_one(self._GET_BY_PK_SQL, (id,))
+        return None if row is None else UserRecord._from_row(row)
+
+    async def get_one(self, id: int) -> UserRecord:
+        row = await self.get(id)
+        if row is None:
+            raise NotFoundError("User not found")
+        return row
+
+    async def get_many(self, keys: Sequence[int]) -> list[UserRecord]:
+        """Batched ``WHERE pk IN (...)``; result order follows the database."""
+        ...
+
+
+class UserInsertManyBuilder(BaseInsertManyQuery[UserRecord]):
+    __slots__ = ()
+    _RETURNING_COLS = '"id", "email", "name", "age", "is_active", "deleted_at", "created_at"'
+    # Raw (unquoted) name, used by the asyncpg binary COPY path.
+    _COPY_TABLE = 'users'
+    _ROW_MAPPER = UserRecord._from_row
 ```
+
+#### AOT Primary-Key Lookups
+
+Every table with a primary key gets `get()` / `get_one()` / `get_many()` on its
+repository (composite keys are passed as keyword arguments for `get` / `get_one` and
+as tuples for `get_many`):
+
+- `_GET_BY_PK_SQL` is emitted at codegen time, so `get()` performs **zero** AST node
+  allocation, builder cloning, or SQL string joining — it calls the driver's
+  `fetch_one` directly (see `tests/benchmarks/bench_pk_lookup.py`).
+- `get_many()` chunks keys into `WHERE pk IN (…)` batches (500 bind parameters for
+  single-column keys; width-aware for composite keys), and documents that result
+  order follows the database, duplicates collapse, and missing keys are omitted.
+- `_COPY_TABLE` carries the raw table name so `insert_many(...).copy()` can use
+  PostgreSQL binary `COPY` without re-deriving the name from the quoted SQL
+  identifier.
 
 ### 4.3 Example `client.py` Output
 

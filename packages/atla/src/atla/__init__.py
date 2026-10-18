@@ -41,6 +41,7 @@ from atla.expressions import (
     Literal,
     LogicalOp,
     OrderByClause,
+    Param,
     RawSQL,
     SubqueryExpr,
     UnaryOp,
@@ -67,6 +68,7 @@ from atla.expressions import (
     upper,
     when,
 )
+from atla.prepared import CompiledQuery
 from atla.query import (
     BaseDeleteQuery,
     BaseInsertQuery,
@@ -99,6 +101,7 @@ __all__ = [
     "CheckViolationError",
     "CockroachDialect",
     "Column",
+    "CompiledQuery",
     "DataError",
     "DatabaseError",
     "Dialect",
@@ -120,6 +123,7 @@ __all__ = [
     "NotNullViolationError",
     "OperationalError",
     "OrderByClause",
+    "Param",
     "PostgresDialect",
     "PreloadOneSelectQuery",
     "PreloadSelectQuery",

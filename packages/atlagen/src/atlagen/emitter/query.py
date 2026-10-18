@@ -287,6 +287,8 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"class {many_cls}(BaseInsertManyQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _RETURNING_COLS = {returning_cols!r}",
+        # Raw (unquoted) name so the PostgreSQL binary COPY path can quote it.
+        f"    _COPY_TABLE = {table.name!r}",
         (
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"
             "  # pyright: ignore[reportPrivateUsage]"

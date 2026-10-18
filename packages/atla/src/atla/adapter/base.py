@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from atla.dialect import Dialect
 
@@ -50,4 +50,30 @@ class DBAdapter(Protocol):
         deferrable: bool = False,
     ) -> AbstractAsyncContextManager[DBAdapter]:
         """Begin a transaction and yield a connection-pinned adapter."""
+        ...
+
+
+@runtime_checkable
+class CopyAdapter(Protocol):
+    """Optional adapter capability: bulk binary ``COPY`` insert.
+
+    Implemented by :class:`~atla.adapter.asyncpg.AsyncpgAdapter` (PostgreSQL /
+    CockroachDB) and forwarded by the routing / observability wrappers. Query
+    builders detect it with ``isinstance(adapter, CopyAdapter)`` before choosing
+    the ``COPY`` bulk path, so adapters without native support keep working.
+    """
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Copy *records* into *table* and return the number of rows copied.
+
+        ``table`` is the raw (unquoted) name, optionally schema-qualified as
+        ``schema.table``. Column values are dialect-encoded before reaching the
+        driver.
+        """
         ...

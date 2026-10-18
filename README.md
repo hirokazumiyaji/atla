@@ -129,7 +129,57 @@ async def main() -> None:
     )
     for user, post in rows:
         print(f"{user.name}: {post.title}")
+
+    # 5. AOT primary-key lookup: pre-computed SQL constant, no AST/builder/compiler
+    user = await db.user.get(user_id)          # -> UserRecord | None
+    user = await db.user.get_one(user_id)      # -> UserRecord (NotFoundError if missing)
+    users = await db.user.get_many([1, 2, 3])  # batched WHERE id IN (...)
+
+    # 6. Prepared query templates: compile once, then only swap parameter values
+    prepared = (
+        db.user.query()
+        .where(User.age >= Param("min_age"), User.is_active.eq(True))
+        .order_by(User.created_at.desc())
+        .limit(10)
+        .prepare()
+    )
+    page_a = await prepared.all(min_age=20)
+    page_b = await prepared.all(min_age=30)
+
+    # 7. Bulk insert paths: multi-VALUES (atomic per chunk), driver executemany, binary COPY
+    await db.user.insert_many(rows).execute()        # default, chunk-atomic
+    await db.user.insert_many(rows).execute_many()   # opt-in driver bulk API
+    # await db.user.insert_many(rows).copy()         # PostgreSQL binary COPY (asyncpg)
 ```
+
+---
+
+---
+
+## Performance
+
+`tests/benchmarks/` contains reproducible, driver-matched comparisons against
+SQLAlchemy 2.0 (both on the same `aiosqlite` driver):
+
+```bash
+uv run python tests/benchmarks/bench_suite.py          # PK lookup, filtered, bulk, join, materialize, bulk insert
+uv run python tests/benchmarks/bench_pk_lookup.py      # AOT get() vs builder vs raw driver
+uv run python tests/benchmarks/bench_fetch.py          # full-table hydration vs SQLAlchemy
+```
+
+Measured on SQLite with 40,000 rows (`bench_suite.py` defaults):
+
+| Scenario | atla vs raw driver | vs SQLAlchemy 2.0 |
+| :--- | :--- | :--- |
+| AOT PK lookup (`get`) | 1.0x | 2.1x faster (round-trip bound) |
+| Filtered query compile (`prepare`) | — | 7.5x faster than building `to_sql()` per call |
+| Bulk fetch (hydration) | 1.0x | 5.4x faster |
+| Record materialization (no DB) | — | 18x faster |
+| JOIN fetch | 1.3x | 3.6x faster |
+| Bulk insert (10k+ rows) | 1.5x | 5.2x faster than the ORM unit-of-work path |
+
+Absolute numbers depend on hardware and driver; the suite prints PASS/FAIL lines for
+the design targets and measured ratios for round-trip-bound scenarios.
 
 ---
 

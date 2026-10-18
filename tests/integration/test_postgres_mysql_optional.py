@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
+from atla.expressions import Param
 from atlagen.cli import main
 
 POSTGRES_DSN = os.environ.get("ATLA_TEST_POSTGRES_DSN")
@@ -210,6 +211,12 @@ async def _exercise_client(client: Any, *, models: Any, supports_returning: bool
     assert preloaded[0].id == user_id
     assert len(preloaded[1]) == 1
 
+    prepared = client.user.where(user_model.email == Param("email")).prepare()
+    assert prepared.param_names == ("email",)
+    fetched = await prepared.first(email="b@example.com")
+    assert fetched is not None and fetched.name == "Bob"
+    assert await prepared.first(email="missing@example.com") is None
+
     async with client.transaction():
         await client.user.update().set(name="Alicia").where(user_model.id == user_id).execute()
         updated = await client.user.where(user_model.id == user_id).one()
@@ -234,6 +241,27 @@ async def test_postgres_e2e(
             models=appdb,
             supports_returning=True,
         )
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="Set ATLA_TEST_POSTGRES_DSN to enable")
+@pytest.mark.asyncio
+async def test_postgres_insert_many_copy(
+    tmp_path: Path,
+    load_appdb: Callable[[Path], Any],
+) -> None:
+    _generate(tmp_path, dialect="postgres")
+    appdb = load_appdb(tmp_path)
+
+    async with _postgres_adapter() as adapter:
+        client = appdb.AtlaClient(adapter)
+        copied = await client.user.insert_many(
+            [{"email": f"copy{i}@example.com", "name": f"Copy {i}"} for i in range(500)]
+        ).copy()
+
+        assert copied == 500
+        assert await client.user.query().count() == 500
+        last = await client.user.where(appdb.User.email == "copy499@example.com").one()
+        assert last.name == "Copy 499"
 
 
 @pytest.mark.skipif(not MYSQL_DSN, reason="Set ATLA_TEST_MYSQL_DSN to enable")

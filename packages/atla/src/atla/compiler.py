@@ -23,24 +23,47 @@ from atla.expressions import (
     Literal,
     LogicalOp,
     OrderByClause,
+    Param,
     RawSQL,
     SubqueryExpr,
     UnaryOp,
 )
 
 
+class _UnboundSlot:
+    """Sentinel replacing a ``Param`` slot in a compiled template's parameter list."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<unbound param>"
+
+
+UNBOUND_SLOT = _UnboundSlot()
+
+
 class SQLCompiler:
     """Compile expression AST nodes into SQL text and bind parameters."""
 
-    __slots__ = ("buf", "dialect", "params")
+    __slots__ = ("buf", "dialect", "params", "slot_occurrences", "slots_enabled")
 
-    def __init__(self, dialect: Dialect, initial_sql: str = "") -> None:
+    def __init__(
+        self, dialect: Dialect, initial_sql: str = "", *, slots_enabled: bool = False
+    ) -> None:
         self.dialect = dialect
         self.buf: list[str] = [initial_sql] if initial_sql else []
         self.params: list[Any] = []
+        self.slots_enabled = slots_enabled
+        # ``(name, params[index])`` per ``Param`` occurrence, in placeholder order.
+        self.slot_occurrences: list[tuple[str, int]] = []
 
     def add_param(self, value: Any) -> str:
         self.params.append(self.dialect.encode_param(value))
+        return self.dialect.placeholder(len(self.params))
+
+    def _add_slot(self, name: str) -> str:
+        self.slot_occurrences.append((name, len(self.params)))
+        self.params.append(UNBOUND_SLOT)
         return self.dialect.placeholder(len(self.params))
 
     def compile_value(self, value: Any) -> str:
@@ -60,6 +83,9 @@ class SQLCompiler:
         # Subclass fallback (rare); keep isinstance chain for extensibility.
         if isinstance(node, Literal):
             self.write(self.add_param(node.value))
+            return
+        if isinstance(node, Param):
+            self._visit_param(node)
             return
         if isinstance(node, Column):
             self._visit_column(node)
@@ -111,6 +137,15 @@ class SQLCompiler:
 
     def _visit_literal(self, node: Literal[Any]) -> None:
         self.write(self.add_param(node.value))
+
+    def _visit_param(self, node: Param[Any]) -> None:
+        if not self.slots_enabled:
+            msg = (
+                f"Param({node.name!r}) requires a precompiled query; call prepare() "
+                "and bind the value when executing"
+            )
+            raise ValueError(msg)
+        self.write(self._add_slot(node.name))
 
     def visit_order_by(self, clause: OrderByClause) -> None:
         # direction/nulls are validated once in ``OrderByClause.__init__``.
@@ -241,7 +276,12 @@ class SQLCompiler:
         for index, value in enumerate(node.values):
             if index:
                 self.write(", ")
-            self.write(self.add_param(value))
+            if isinstance(value, Param):
+                # Fixed-arity prepared IN lists; a variable-length list needs a
+                # different query shape per arity.
+                self._visit_param(value)
+            else:
+                self.write(self.add_param(value))
         self.write(")")
 
     def _visit_subquery(self, node: SubqueryExpr[Any]) -> None:
@@ -561,6 +601,7 @@ def _scan_code_span(span: str, style: str, placeholders: list[int]) -> None:
 # it intentionally binds the compiler's own protected ``_visit_*`` methods.
 _VISIT_BY_TYPE: dict[type[Any], Callable[[SQLCompiler, Any], None]] = {
     Literal: SQLCompiler._visit_literal,  # pyright: ignore[reportPrivateUsage]
+    Param: SQLCompiler._visit_param,  # pyright: ignore[reportPrivateUsage]
     Column: SQLCompiler._visit_column,  # pyright: ignore[reportPrivateUsage]
     BinaryOp: SQLCompiler._visit_binary,  # pyright: ignore[reportPrivateUsage]
     UnaryOp: SQLCompiler._visit_unary,  # pyright: ignore[reportPrivateUsage]

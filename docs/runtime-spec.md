@@ -169,6 +169,7 @@ class Column(Expr[T]):
 | `BetweenOp[T]` | `Expr[bool]` | `("expr", "low", "high")` | `"users"."age" BETWEEN $1 AND $2`. |
 | `FuncCall[T]` | `Expr[T]` | `("name", "args", "distinct")` | SQL function calls (`COUNT(*)`, `MAX("users"."age")`, `COALESCE(...)`). |
 | `RawSQL[T]` | `Expr[T]` | `("sql", "params")` | Type-annotated raw SQL escape hatch `raw_sql[bool]("...", params)`. |
+| `Param[T]` | `Expr[T]` | `("name",)` | Named bind slot for prepared queries (`Param("email")`). Only valid inside `prepare()`; plain `to_sql()` raises `ValueError`. |
 | `OrderByClause`| - | `("expr", "direction", "nulls")` | `ORDER BY "users"."created_at" DESC NULLS LAST`. |
 
 ### 2.4 Logical & Aggregate Helper Functions (`atla/__init__.py`)
@@ -242,6 +243,47 @@ class SQLCompiler:
 
 ---
 
+### 3.3 Prepared Queries (`atla/prepared.py`)
+
+`Param[T]` marks a bind slot that is resolved per execution, and every query builder
+exposes `prepare()`, which runs the compiler **exactly once** and returns a
+`CompiledQuery`:
+
+```python
+prepared = (
+    db.user.where(User.email == Param("email"), User.is_active.eq(True))
+    .order_by(User.created_at.desc())
+    .limit(10)
+    .prepare()
+)
+
+# Reuses the compiled SQL verbatim: only the parameter tuple is rebuilt.
+rows = await prepared.all(email="alice@example.com")
+row = await prepared.first(email="bob@example.com")
+```
+
+- `CompiledQuery.sql` / `.param_names` expose the template; `.bind(**values)` returns
+  the driver-ready parameter tuple without touching the database.
+- Values bind by name (`**kwargs`) or positionally (`*args`, following each slot's
+  first appearance). One name may fill several `Param` occurrences; every occurrence
+  still gets its own placeholder so `%s` / `?` dialects stay positional.
+- Bind values are dialect-encoded at bind time, so `UUID` / `Decimal` / `datetime` /
+  JSON values can change between executions without recompiling.
+- `all()` maps rows through the builder's AOT `_ROW_MAPPER` (or `starmap` over
+  `_ROW_CTOR` for codec-free tables), `fetch_val()` requires a single-column
+  projection, `execute()` only accepts statements without `RETURNING`.
+- `first()` issues the template unchanged (`fetch_one`) and does **not** add a
+  `LIMIT`; bake `.limit(1)` into the query when a single-row lookup is required.
+  There is deliberately no `one()`: proving uniqueness requires materializing rows,
+  so use `.limit(2)` plus `first()` instead.
+
+Every builder also supports prepared mutations:
+`db.user.insert(email=Param("email")).prepare().execute(email=...)`,
+`db.user.update().set(name=Param("name")).where(User.id == Param("id")).prepare()`,
+and upsert builders (whose `do_update` accepts `Param` via `Expr[T]`).
+
+---
+
 ## 4. Database Adapter & Transaction Specification (`atla/adapter/`)
 
 ### 4.1 `DBAdapter` Protocol
@@ -279,6 +321,28 @@ class DBAdapter(Protocol):
         ...
 ```
 
+@runtime_checkable
+class CopyAdapter(Protocol):
+    """Optional capability implemented by drivers with native binary COPY."""
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Copy records into ``schema.table`` (raw, unquoted names) and return the row count."""
+        ...
+```
+
+`CopyAdapter` is structural: query builders detect it with
+`isinstance(adapter, CopyAdapter)` before choosing the PostgreSQL binary `COPY` bulk
+path, so adapters without native support keep working. `AsyncpgAdapter` implements it;
+`RoutingAdapter`, `InstrumentedAdapter`, and `OTelAdapter` forward it (routing pins to
+the primary, observability wrappers synthesize a `COPY … FROM STDIN` statement for
+timing and span attributes).
+
 ### 4.2 Concrete Driver Adapters
 
 #### 1. `AsyncpgAdapter` (PostgreSQL / CockroachDB)
@@ -297,6 +361,20 @@ class DBAdapter(Protocol):
 #### 3. `AiosqliteAdapter` (SQLite)
 - Wraps `aiosqlite.Connection`.
 - Supports `PRAGMA foreign_keys = ON` and `SAVEPOINT`-based transaction isolation.
+
+### 4.3 Bulk Insert Execution Paths (`atla/advanced.py`)
+
+`BaseInsertManyQuery` (``insert_many``) offers three execution paths with different
+atomicity/throughput trade-offs:
+
+| Method | SQL sent | Atomicity | Notes |
+| :--- | :--- | :--- | :--- |
+| `execute()` | multi-row `INSERT … VALUES (…), (…)` chunked to the bind-parameter limit | per chunk | Default. One placeholder group is built once and joined per row; literal rows skip `SQLCompiler` and `_compile_value` entirely. |
+| `execute_many()` | one-row `INSERT` executed through the driver's bulk API | per row | Opt-in throughput path for drivers that pipeline/prepare per-row statements (`asyncpg.executemany`). Wrap in `adapter.transaction()` for all-or-nothing behavior. |
+| `copy()` | `COPY … FROM STDIN BINARY` | single statement | Fastest path on PostgreSQL/CockroachDB; requires `CopyAdapter` (`AsyncpgAdapter`) and a generated builder (`_COPY_TABLE`). |
+
+`execute_many()` and `copy()` reject `RETURNING` and `Expr` values; use `all()` /
+`execute()` for those.
 
 ---
 

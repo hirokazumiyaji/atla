@@ -102,6 +102,36 @@ class AsyncpgAdapter:
         encoded_seq = self._dialect.encode_params_seq(params_seq)
         await self._target.executemany(sql, encoded_seq)
 
+    @with_translated_errors
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Bulk-insert *records* with PostgreSQL binary ``COPY``.
+
+        ``table`` is the raw (unquoted) name; ``schema.table`` is split so asyncpg
+        quotes each part itself. Returns the number of rows copied.
+        """
+        ensure_not_checked_out(self._checkout_owners)
+        if not table:
+            msg = "copy table name must not be empty"
+            raise ValueError(msg)
+        if not columns:
+            msg = "copy requires at least one column"
+            raise ValueError(msg)
+        schema, _, leaf = table.rpartition(".")
+        encoded_rows = self._dialect.encode_params_seq(records)
+        status = await self._target.copy_records_to_table(
+            leaf,
+            schema_name=schema or None,
+            columns=list(columns),
+            records=[tuple(row) for row in encoded_rows],
+        )
+        return _parse_status(str(status))
+
     @asynccontextmanager
     async def transaction(
         self,

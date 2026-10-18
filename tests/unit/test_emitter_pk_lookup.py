@@ -115,3 +115,25 @@ async def test_composite_get_many_uses_row_value_in_batches(
     finally:
         for name in [m for m in sys.modules if m.startswith("gen_composite_pk")]:
             del sys.modules[name]
+
+
+def test_insert_many_builder_carries_raw_copy_table() -> None:
+    table = TableIR(
+        name="memberships",
+        model_name="Membership",
+        accessor_name="membership",
+        columns=(
+            _column("tenant_id", pk=True),
+            _column("id", pk=True),
+            _column("name", pk=False, py="str"),
+        ),
+        primary_key=("tenant_id", "id"),
+        foreign_keys=(),
+    )
+    files = generate_files(SchemaIR(name="s", dialect="postgres", tables=(table,)))
+    query_src = files["query.py"]
+
+    assert "_COPY_TABLE = 'memberships'" in query_src
+    assert "class MembershipInsertManyBuilder" in query_src
+    # Raw name (not the quoted SQL identifier) is what asyncpg COPY needs.
+    assert "_COPY_TABLE = '\"memberships\"'" not in query_src

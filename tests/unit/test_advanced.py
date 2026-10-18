@@ -84,6 +84,30 @@ class UserInsertMany(BaseInsertManyQuery[UserRecord]):
     _ROW_MAPPER = UserRecord.from_row
 
 
+class CopyFakeAdapter(FakeAdapter):
+    """Adapter exposing the optional PostgreSQL binary COPY capability."""
+
+    def __init__(self, dialect: Any = None) -> None:
+        super().__init__(dialect or PostgresDialect())
+        self.copies: list[tuple[str, list[str], list[list[Any]]]] = []
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        rows = [list(row) for row in records]
+        self.copies.append((table, list(columns), rows))
+        return len(rows)
+
+
+class CopyUserInsertMany(UserInsertMany):
+    __slots__ = ()
+    _COPY_TABLE = "users"
+
+
 id_col: Column[int] = Column("users", "id")
 email_col: Column[str] = Column("users", "email")
 
@@ -289,3 +313,79 @@ async def test_mutation_one_skips_mapper_when_multiple_rows() -> None:
     adapter.rows = [(1, "a@example.com")]
     assert await q.one() == UserRecord(1, "a@example.com")
     assert mapped == [(1, "a@example.com")]
+
+
+@pytest.mark.asyncio
+async def test_insert_many_execute_many_uses_single_row_driver_bulk() -> None:
+    adapter = FakeAdapter(PostgresDialect())
+    rows = tuple((("a", f"v{i}"), ("b", i)) for i in range(3))
+    q = UserInsertMany(adapter, table_name='"t"', rows=rows)
+
+    assert await q.execute_many() == 3
+
+    calls = [call for call in adapter.calls if call[0] == "execute_many"]
+    assert len(calls) == 1
+    assert calls[0][1] == 'INSERT INTO "t" ("a", "b") VALUES ($1, $2)'
+    assert calls[0][2] == [["v0", 0], ["v1", 1], ["v2", 2]]
+    assert not [call for call in adapter.calls if call[0] == "execute"]
+
+
+@pytest.mark.asyncio
+async def test_insert_many_execute_many_rejects_returning_and_expr() -> None:
+    adapter = FakeAdapter()
+    rows = ((("a", 1),),)
+    with pytest.raises(ValueError, match="does not support RETURNING"):
+        await UserInsertMany(adapter, table_name='"t"', rows=rows).returning().execute_many()
+
+    expr_rows = ((("a", id_col),),)
+    with pytest.raises(ValueError, match="requires literal values"):
+        await UserInsertMany(adapter, table_name='"t"', rows=expr_rows).execute_many()
+
+
+def test_insert_many_multi_values_uses_one_placeholder_template() -> None:
+    adapter = FakeAdapter(SQLiteDialect())
+    rows = tuple((("a", i), ("b", i)) for i in range(4))
+    sql, params = UserInsertMany(adapter, table_name='"t"', rows=rows).to_sql()
+
+    assert sql == 'INSERT INTO "t" ("a", "b") VALUES (?, ?), (?, ?), (?, ?), (?, ?)'
+    assert params == [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+@pytest.mark.asyncio
+async def test_insert_many_copy_uses_copy_adapter() -> None:
+    adapter = CopyFakeAdapter()
+    rows = ((("a", "x"), ("b", 1)), (("a", "y"), ("b", 2)))
+    q = CopyUserInsertMany(adapter, table_name='"users"', rows=rows)
+
+    assert await q.copy() == 2
+
+    assert adapter.copies == [("users", ["a", "b"], [["x", 1], ["y", 2]])]
+    assert not adapter.calls
+
+
+@pytest.mark.asyncio
+async def test_insert_many_copy_requires_copy_capable_adapter() -> None:
+    adapter = FakeAdapter()
+    q = CopyUserInsertMany(adapter, table_name='"users"', rows=((("a", 1),),))
+    with pytest.raises(TypeError, match="CopyAdapter"):
+        await q.copy()
+
+
+@pytest.mark.asyncio
+async def test_insert_many_copy_requires_raw_table_name() -> None:
+    adapter = CopyFakeAdapter()
+    q = UserInsertMany(adapter, table_name='"users"', rows=((("a", 1),),))
+    with pytest.raises(ValueError, match="known table name"):
+        await q.copy()
+
+
+@pytest.mark.asyncio
+async def test_insert_many_copy_rejects_returning_and_expr() -> None:
+    adapter = CopyFakeAdapter()
+    rows = ((("a", 1),),)
+    with pytest.raises(ValueError, match="does not support RETURNING"):
+        await CopyUserInsertMany(adapter, table_name='"users"', rows=rows).returning().copy()
+
+    expr_rows = ((("a", id_col),),)
+    with pytest.raises(ValueError, match="requires literal values"):
+        await CopyUserInsertMany(adapter, table_name='"users"', rows=expr_rows).copy()

@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Self, cast
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import CopyAdapter, DBAdapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
+from atla.prepared import CompiledQuery, rows_mapper_from_record
 from atla.select_clauses import (
     LockClause,
     fetch_first,
@@ -42,10 +43,13 @@ def conflict_column_names(*columns: Column[Any] | str) -> tuple[str, ...]:
 class BaseInsertManyQuery[RecordT]:
     """Multi-row INSERT builder (``VALUES (...), (...), ...``)."""
 
-    __slots__ = ("_adapter", "_returning", "_rows", "_table_name")
+    __slots__ = ("_adapter", "_columns_cache", "_returning", "_rows", "_table_name")
 
     _RETURNING_COLS: str
     _ROW_MAPPER: Callable[[Sequence[Any]], RecordT]
+    # Raw (unquoted) table name for ``copy()``; emitted by atlagen for generated
+    # builders. Hand-written builders may set it when they need the COPY path.
+    _COPY_TABLE: ClassVar[str | None] = None
 
     def __init__(
         self,
@@ -59,6 +63,8 @@ class BaseInsertManyQuery[RecordT]:
         self._table_name = table_name
         self._rows = rows
         self._returning = returning
+        # Validating every row is O(rows); the builder is immutable, so cache it.
+        self._columns_cache: list[str] | None = None
 
     def returning(self) -> Self:
         return type(self)(
@@ -69,6 +75,9 @@ class BaseInsertManyQuery[RecordT]:
         )
 
     def _validated_columns(self) -> list[str]:
+        cached = self._columns_cache
+        if cached is not None:
+            return cached
         if not self._rows:
             msg = "insert_many() requires at least one row"
             raise ValueError(msg)
@@ -76,11 +85,15 @@ class BaseInsertManyQuery[RecordT]:
         if not columns:
             msg = "insert_many() rows must include at least one column"
             raise ValueError(msg)
+        width = len(columns)
         for row in self._rows[1:]:
-            row_cols = [name for name, _ in row]
-            if row_cols != columns:
+            # Positional compare avoids building a name list per row.
+            if len(row) != width or any(
+                row[index][0] != name for index, name in enumerate(columns)
+            ):
                 msg = "insert_many() requires every row to use the same column set"
                 raise ValueError(msg)
+        self._columns_cache = columns
         return columns
 
     def _chunk_rows(self) -> list[tuple[tuple[tuple[str, Any], ...], ...]]:
@@ -100,21 +113,15 @@ class BaseInsertManyQuery[RecordT]:
         dialect = self._adapter.dialect
         cols_sql = ", ".join(dialect.quote(name) for name in columns)
         if self._rows_are_literals(rows):
-            # Expand placeholders without per-value Expr dispatch.
-            params: list[Any] = []
-            value_groups: list[str] = []
-            for row in rows:
-                start = len(params) + 1
-                ph = (
-                    "("
-                    + ", ".join(
-                        dialect.placeholder(start + offset) for offset in range(len(columns))
-                    )
-                    + ")"
-                )
-                value_groups.append(ph)
-                params.extend(value for _, value in row)
-            sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
+            # Every row reuses one placeholder template: build the group once and
+            # join it, instead of re-deriving placeholders per row. Each chunk is
+            # compiled as its own statement, so numbering restarts at 1 here.
+            group = (
+                "(" + ", ".join(dialect.placeholder(i) for i in range(1, len(columns) + 1)) + ")"
+            )
+            value_groups = ", ".join([group] * len(rows))
+            params = [value for row in rows for _, value in row]
+            sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {value_groups}"
             if self._returning:
                 if not dialect.supports_returning:
                     msg = f"{dialect.name} does not support RETURNING"
@@ -123,17 +130,37 @@ class BaseInsertManyQuery[RecordT]:
             return sql, params
 
         compiler = SQLCompiler(dialect)
-        value_groups = []
+        expr_groups: list[str] = []
         for row in rows:
             placeholders = [compiler.compile_value(value) for _, value in row]
-            value_groups.append(f"({', '.join(placeholders)})")
-        sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(value_groups)}"
+            expr_groups.append(f"({', '.join(placeholders)})")
+        sql = f"INSERT INTO {self._table_name} ({cols_sql}) VALUES {', '.join(expr_groups)}"
         if self._returning:
             if not dialect.supports_returning:
                 msg = f"{dialect.name} does not support RETURNING"
                 raise ValueError(msg)
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
         return sql, compiler.params
+
+    def _single_row_insert_sql(self, columns: list[str]) -> str:
+        """One-row INSERT used by the driver-level bulk paths."""
+        dialect = self._adapter.dialect
+        cols_sql = ", ".join(dialect.quote(name) for name in columns)
+        placeholders = ", ".join(dialect.placeholder(i) for i in range(1, len(columns) + 1))
+        return f"INSERT INTO {self._table_name} ({cols_sql}) VALUES ({placeholders})"
+
+    def _literal_rows(self, *, method: str) -> list[list[Any]]:
+        """Return plain per-row parameter lists, refusing ``Expr`` values."""
+        if self._returning:
+            msg = f"{method}() does not support RETURNING; use execute() or all()"
+            raise ValueError(msg)
+        if not self._rows_are_literals(self._rows):
+            msg = (
+                f"{method}() requires literal values in every row; "
+                "SQL expressions (Expr) need execute()"
+            )
+            raise ValueError(msg)
+        return [[value for _, value in row] for row in self._rows]
 
     def to_sql(self) -> tuple[str, list[Any]]:
         columns = self._validated_columns()
@@ -169,6 +196,63 @@ class BaseInsertManyQuery[RecordT]:
             rows = await self._adapter.fetch_all(sql, params)
             result.extend(mapper(row) for row in rows)
         return result
+
+    async def execute_many(self) -> int:
+        """Insert every row through the driver's bulk-execute API.
+
+        Sends one single-row ``INSERT`` per row through ``execute_many``, which
+        server-side drivers such as asyncpg pipeline as prepared statements —
+        faster there than one giant ``VALUES`` list. On aiosqlite the reverse
+        holds (one big multi-``VALUES`` statement wins), so keep :meth:`execute`
+        as the default and reach for this when the driver pipelines. Returns the
+        number of rows submitted.
+
+        Atomicity: this is *not* one statement. Drivers run the batch row by row,
+        so a failure on row N can leave rows ``1..N-1`` applied. Wrap the call in
+        ``adapter.transaction()`` when the batch must commit or roll back as a
+        unit — or use :meth:`copy` (PostgreSQL) / :meth:`execute` (chunk-atomic
+        multi-``VALUES``) instead. ``RETURNING`` and ``Expr`` values are not
+        supported here.
+        """
+        columns = self._validated_columns()
+        param_rows = self._literal_rows(method="execute_many")
+        await self._adapter.execute_many(self._single_row_insert_sql(columns), param_rows)
+        return len(param_rows)
+
+    async def copy(self) -> int:
+        """Insert every row with PostgreSQL binary ``COPY`` (asyncpg only).
+
+        This is the fastest bulk path: one ``COPY … FROM STDIN BINARY`` statement
+        per call (atomic), no SQL text scaling with row count, and no per-row
+        parse. Requires an adapter that implements
+        :class:`~atla.adapter.base.CopyAdapter` — currently
+        :class:`~atla.adapter.asyncpg.AsyncpgAdapter` and the wrappers
+        (:class:`~atla.adapter.routing.RoutingAdapter`, observability adapters)
+        that forward it. Generated ``*InsertManyBuilder`` subclasses carry the raw
+        table name (``_COPY_TABLE``) needed here.
+
+        Returns the number of rows copied. ``RETURNING`` and ``Expr`` values are
+        not supported; server-side constraints still apply. Column defaults are
+        *not* filled in for omitted columns, so every row must carry the full
+        column set.
+        """
+        if not isinstance(self._adapter, CopyAdapter):
+            msg = (
+                "copy() requires an adapter implementing CopyAdapter "
+                "(AsyncpgAdapter); use execute_many() or execute() instead"
+            )
+            raise TypeError(msg)
+        copy_table = type(self)._COPY_TABLE
+        if copy_table is None:
+            msg = "copy() requires a generated InsertManyBuilder with a known table name"
+            raise ValueError(msg)
+        columns = self._validated_columns()
+        records = self._literal_rows(method="copy")
+        return await self._adapter.copy_records_to_table(
+            copy_table,
+            columns=columns,
+            records=records,
+        )
 
 
 class UpsertQuery[RecordT]:
@@ -264,18 +348,22 @@ class UpsertQuery[RecordT]:
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
+        return compiler.build()
+
+    def _write_sql(self, compiler: SQLCompiler) -> None:
         if not self._values:
             msg = "upsert requires INSERT values"
             raise ValueError(msg)
-        if not self._conflict_columns and self._adapter.dialect.upsert_style == "conflict":
+        dialect = compiler.dialect
+        if not self._conflict_columns and dialect.upsert_style == "conflict":
             msg = "on_conflict() requires at least one conflict target column"
             raise ValueError(msg)
         if not self._do_nothing and not self._set_values:
             msg = "upsert requires do_nothing() or do_update(...)"
             raise ValueError(msg)
-        dialect = self._adapter.dialect
         cols = ", ".join(dialect.quote(name) for name, _ in self._values)
-        compiler = SQLCompiler(dialect)
         placeholders = [compiler.compile_value(value) for _, value in self._values]
         sql = f"INSERT INTO {self._table_name} ({cols}) VALUES ({', '.join(placeholders)})"
         if dialect.upsert_style == "duplicate":
@@ -305,7 +393,22 @@ class UpsertQuery[RecordT]:
                 msg = f"{dialect.name} does not support RETURNING"
                 raise ValueError(msg)
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
-        return sql, compiler.params
+        compiler.write(sql)
+
+    def prepare(self) -> CompiledQuery[RecordT]:
+        """Compile this upsert once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        sql, params = compiler.build()
+        mapper = type(self)._ROW_MAPPER if self._returning else None
+        return CompiledQuery(
+            self._adapter,
+            sql=sql,
+            params=params,
+            slot_occurrences=compiler.slot_occurrences,
+            row_mapper=mapper,
+            rows_mapper=None if mapper is None else rows_mapper_from_record(mapper),
+        )
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
@@ -492,8 +595,12 @@ class ProjectedSelectQuery[*Ts]:
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
-        dialect = self._adapter.dialect
-        compiler = SQLCompiler(dialect)
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
+        return compiler.build()
+
+    def _write_sql(self, compiler: SQLCompiler) -> None:
+        dialect = compiler.dialect
         compiler.write("SELECT ")
         write_distinct(
             compiler,
@@ -520,7 +627,21 @@ class ProjectedSelectQuery[*Ts]:
             offset=self._offset,
         )
         write_locking(compiler, dialect, self._locking)
-        return compiler.build()
+
+    def prepare(self) -> CompiledQuery[tuple[*Ts]]:
+        """Compile this projection once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        sql, params = compiler.build()
+        return CompiledQuery(
+            self._adapter,
+            sql=sql,
+            params=params,
+            slot_occurrences=compiler.slot_occurrences,
+            row_mapper=self._hydrate,
+            rows_mapper=rows_mapper_from_record(self._hydrate),
+            scalar=len(self._columns) == 1,
+        )
 
     def as_subquery(self) -> SubqueryExpr[Any]:
         sql, params = self.to_sql()
@@ -617,25 +738,29 @@ def insert_many_rows(
     if not rows:
         return ()
     known_attrs = set(attr_to_sql) if attr_to_sql else None
+    # Generated mappings are usually the identity (``email`` -> ``email``); copying
+    # every dict then is pure overhead in the bulk-insert hot path.
+    identity_mapping = not attr_to_sql or all(attr == sql for attr, sql in attr_to_sql.items())
     normalized: list[tuple[tuple[str, Any], ...]] = []
-    column_order: list[str] | None = None
-    column_set: set[str] | None = None
+    column_order: list[str] = []
+    column_set: set[str] = set()
     for row in rows:
-        if known_attrs is not None:
-            unknown = [key for key in row if key not in known_attrs]
-            if unknown:
-                msg = f"insert_many() got unknown column(s): {', '.join(sorted(map(str, unknown)))}"
-                raise ValueError(msg)
-        by_sql = (
-            {attr_to_sql[attr]: value for attr, value in row.items()} if attr_to_sql else dict(row)
-        )
-        names = set(by_sql)
-        if column_order is None:
+        if known_attrs is not None and any(key not in known_attrs for key in row):
+            unknown = sorted(str(key) for key in row if key not in known_attrs)
+            msg = f"insert_many() got unknown column(s): {', '.join(unknown)}"
+            raise ValueError(msg)
+        if identity_mapping:
+            by_sql: Mapping[str, Any] = row
+        elif attr_to_sql:
+            by_sql = {attr_to_sql[attr]: value for attr, value in row.items()}
+        else:
+            by_sql = dict(row)
+        if not column_order:
+            # First row (or every row, for a column-less mapping) defines the order.
             column_order = list(by_sql)
-            column_set = names
-        elif names != column_set:
+            column_set = set(column_order)
+        elif len(by_sql) != len(column_order) or not column_set.issuperset(by_sql):
             msg = "insert_many() requires every row to use the same column set"
             raise ValueError(msg)
-        assert column_order is not None
         normalized.append(tuple((name, by_sql[name]) for name in column_order))
     return tuple(normalized)

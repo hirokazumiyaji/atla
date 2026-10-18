@@ -7,11 +7,13 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import aiosqlite
 import pytest
 
 from atla.adapter import AiosqliteAdapter, AsyncmyAdapter, AsyncpgAdapter
+from atla.adapter.base import CopyAdapter
 from atla.dialect import MySQLDialect, PostgresDialect, SQLiteDialect
 
 
@@ -50,10 +52,29 @@ class FakeAsyncpgPool:
     async def executemany(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._conn.executemany(sql, params_seq)
 
+    async def copy_records_to_table(
+        self,
+        table_name: str,
+        *,
+        records: Sequence[Sequence[Any]],
+        columns: Sequence[str] | None = None,
+        schema_name: str | None = None,
+    ) -> str:
+        return cast(
+            str,
+            await self._conn.copy_records_to_table(
+                table_name,
+                records=records,
+                columns=columns,
+                schema_name=schema_name,
+            ),
+        )
+
 
 class FakeAsyncpgConnection:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.copies: list[tuple[str | None, str, list[str], list[tuple[Any, ...]]]] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
         self.calls.append(f"fetch:{sql}")
@@ -73,6 +94,18 @@ class FakeAsyncpgConnection:
 
     async def executemany(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         self.calls.append(f"executemany:{sql}")
+
+    async def copy_records_to_table(
+        self,
+        table_name: str,
+        *,
+        records: Sequence[Sequence[Any]],
+        columns: Sequence[str] | None = None,
+        schema_name: str | None = None,
+    ) -> str:
+        rows = [tuple(row) for row in records]
+        self.copies.append((schema_name, table_name, list(columns or []), rows))
+        return f"COPY {len(rows)}"
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None]:
@@ -194,6 +227,46 @@ async def test_asyncpg_adapter_with_mocks() -> None:
         async with tx.transaction() as nested:
             assert isinstance(nested, AsyncpgAdapter)
     assert conn.calls.count("transaction") == 2
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_copy_records_to_table_splits_schema() -> None:
+    conn = FakeAsyncpgConnection()
+    adapter = AsyncpgAdapter(FakeAsyncpgPool(conn), dialect=PostgresDialect())
+    assert isinstance(adapter, CopyAdapter)
+
+    copied = await adapter.copy_records_to_table(
+        "public.users",
+        columns=["id", "email"],
+        records=[(1, "a@example.com"), (2, "b@example.com")],
+    )
+
+    assert copied == 2
+    assert conn.copies == [
+        ("public", "users", ["id", "email"], [(1, "a@example.com"), (2, "b@example.com")])
+    ]
+
+    await adapter.copy_records_to_table("users", columns=["id"], records=[(3,)])
+    assert conn.copies[-1] == (None, "users", ["id"], [(3,)])
+    assert not await adapter.copy_records_to_table("users", columns=["id"], records=[])
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        await adapter.copy_records_to_table("", columns=["id"], records=[(1,)])
+    with pytest.raises(ValueError, match="at least one column"):
+        await adapter.copy_records_to_table("users", columns=[], records=[(1,)])
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_copy_encodes_params_and_rejects_untyped_adapters() -> None:
+    conn = FakeAsyncpgConnection()
+    adapter = AsyncpgAdapter(FakeAsyncpgPool(conn), dialect=PostgresDialect())
+    value = uuid4()
+
+    await adapter.copy_records_to_table("users", columns=["id"], records=[(value,)])
+
+    # PostgresDialect.native_uuid keeps UUID objects as-is for asyncpg codecs.
+    assert conn.copies[-1][3] == [(value,)]
+    assert not isinstance(FakeAsyncmyConnection(), CopyAdapter)
 
 
 @pytest.mark.asyncio
