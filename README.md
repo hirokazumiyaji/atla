@@ -175,13 +175,16 @@ Measured on SQLite with 60,000 rows (`bench_suite.py` defaults):
 | Filtered query compile (`prepare`) | — | ~7.5x faster than building `to_sql()` per call |
 | Bulk fetch (hydration) | 1.0x | ~5.2x faster |
 | Record materialization (no DB) | — | ~17x faster |
-| JOIN fetch | ~1.3x | ~3.1x faster |
+| JOIN fetch | ~1.3x | ~2.4–3.6x faster (allocation-bound; reported as a ratio) |
 | Bulk insert (10k+ rows) | ~1.5x | ~5.0x faster than the ORM unit-of-work path |
 
 Each figure is the best of `--repeats` samples (the estimator that survives the
-collector pauses allocation-heavy scenarios provoke). Absolute numbers depend on
-hardware and driver; `--strict` makes a missed design target exit non-zero, and
-round-trip-bound scenarios are printed as measured ratios instead.
+collector pauses allocation-heavy scenarios provoke), and every fetch scenario
+compares result keys against its baseline during warm-up so a partial result
+cannot look like a speed-up. Absolute numbers depend on hardware and driver;
+`--strict` makes a missed design target exit non-zero, while round-trip-bound and
+allocation-bound scenarios (PK lookup, small filtered pages, JOIN fetch) are
+printed as measured ratios instead.
 
 ---
 

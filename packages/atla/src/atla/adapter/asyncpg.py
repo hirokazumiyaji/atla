@@ -138,8 +138,7 @@ class AsyncpgAdapter:
         # asyncpg reports the "COPY n" status tag (see
         # tests/integration/test_postgres_mysql_optional.py). COPY is atomic, so a
         # driver build that reports no tag still copied every submitted row.
-        copied = 0 if status is None else _parse_status(str(status))
-        return len(encoded_rows) if status is None else copied
+        return len(encoded_rows) if status is None else _parse_status(str(status))
 
     @asynccontextmanager
     async def transaction(
