@@ -156,3 +156,26 @@ def test_copy_table_mirrors_table_name_for_qualified_names() -> None:
     assert '    _TABLE_NAME = \'"other"."users"\'' in query_src
     # Raw dotted name: the asyncpg COPY adapter re-quotes each part itself.
     assert "    _COPY_TABLE = 'other.users'" in query_src
+
+
+def test_copy_table_matches_sql_interpretation_of_dotted_names() -> None:
+    """A dot is a schema separator everywhere, including in generated SQL.
+
+    ``_quote_table`` splits on dots, so ``orders.v2`` is emitted as
+    ``"orders"."v2"``; ``_COPY_TABLE`` keeps the raw dotted form and the COPY
+    adapter splits it the same way, so both paths target one relation.
+    """
+    table = TableIR(
+        name="orders.v2",
+        model_name="Order",
+        accessor_name="order",
+        columns=(_column("id", pk=True),),
+        primary_key=("id",),
+        foreign_keys=(),
+    )
+    query_src = generate_files(SchemaIR(name="main", dialect="postgres", tables=(table,)))[
+        "query.py"
+    ]
+
+    assert '    _TABLE_NAME = \'"orders"."v2"\'' in query_src
+    assert "    _COPY_TABLE = 'orders.v2'" in query_src
