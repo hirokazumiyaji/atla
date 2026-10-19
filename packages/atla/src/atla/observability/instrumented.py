@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import CopyAdapter, DBAdapter
 from atla.dialect import Dialect
 from atla.observability.sql_meta import extract_sql_meta
 
@@ -112,6 +112,26 @@ class InstrumentedAdapter:
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._timed(sql, None, self._inner.execute_many(sql, params_seq))
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Time a bulk ``COPY`` and forward it to the wrapped adapter."""
+        inner = self._inner
+        if not isinstance(inner, CopyAdapter):
+            msg = "wrapped adapter does not support copy_records_to_table"
+            raise TypeError(msg)
+        # COPY has no SQL text of its own; synthesize one for hooks / logs.
+        sql = f"COPY {table} ({', '.join(columns)}) FROM STDIN"
+        return await self._timed(
+            sql,
+            None,
+            inner.copy_records_to_table(table, columns=columns, records=records),
+        )
 
     @asynccontextmanager
     async def transaction(

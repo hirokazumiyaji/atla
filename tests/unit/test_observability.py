@@ -43,6 +43,16 @@ class FakeAdapter:
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         self.calls.append(("execute_many", sql, [list(p) for p in params_seq]))
 
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        self.calls.append(("copy_records_to_table", table, [list(row) for row in records]))
+        return len(records)
+
     @asynccontextmanager
     async def transaction(
         self,
@@ -79,6 +89,66 @@ async def test_instrumented_adapter_slow_query_hook() -> None:
     rows = await adapter.fetch_all('SELECT id FROM "users"', [])
     assert rows == [(1,)]
     assert seen and seen[0][0] == "SELECT" and seen[0][1] == "users"
+
+
+@pytest.mark.asyncio
+async def test_instrumented_adapter_times_copy_with_synthesized_sql() -> None:
+    inner = FakeAdapter()
+    seen: list[tuple[str, str | None, float]] = []
+    adapter = InstrumentedAdapter(
+        inner,
+        on_query_end=lambda op, coll, ms, _params: seen.append((op, coll, ms)),
+    )
+
+    copied = await adapter.copy_records_to_table(
+        "users",
+        columns=["id", "email"],
+        records=[(1, "a@example.com")],
+    )
+
+    assert copied == 1
+    assert inner.calls == [("copy_records_to_table", "users", [[1, "a@example.com"]])]
+    assert seen and seen[0][0] == "COPY"
+
+
+@pytest.mark.asyncio
+async def test_instrumented_adapter_copy_requires_capable_inner() -> None:
+    class NoCopyAdapter(FakeAdapter):
+        copy_records_to_table = None  # type: ignore[assignment]
+
+    adapter = InstrumentedAdapter(NoCopyAdapter())
+    with pytest.raises(TypeError, match="copy_records_to_table"):
+        await adapter.copy_records_to_table("users", columns=["id"], records=[(1,)])
+
+
+@pytest.mark.asyncio
+async def test_otel_adapter_records_copy_span() -> None:
+    pytest.importorskip("opentelemetry")
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    adapter = OTelAdapter(
+        FakeAdapter(),
+        tracer=provider.get_tracer("test"),
+        capture_parameters=False,
+    )
+
+    copied = await adapter.copy_records_to_table(
+        "users",
+        columns=["id"],
+        records=[(1,), (2,)],
+    )
+
+    assert copied == 2
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    attrs = dict(spans[0].attributes or {})
+    assert attrs["db.operation.name"] == "COPY"
+    assert attrs["db.response.returned_rows"] == 2
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,44 @@ class AsyncpgAdapter:
         encoded_seq = self._dialect.encode_params_seq(params_seq)
         await self._target.executemany(sql, encoded_seq)
 
+    @with_translated_errors
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Bulk-insert *records* with PostgreSQL binary ``COPY``.
+
+        ``table`` is the raw (unquoted) name; ``schema.table`` is split so asyncpg
+        quotes each part itself. Returns the number of rows copied.
+        """
+        ensure_not_checked_out(self._checkout_owners)
+        if not table:
+            msg = "copy table name must not be empty"
+            raise ValueError(msg)
+        if not columns:
+            msg = "copy requires at least one column"
+            raise ValueError(msg)
+        schema, _, leaf = table.rpartition(".")
+        if schema and "." in schema:
+            # ``schema.table`` is the only qualified form COPY can target; a
+            # three-part name would silently quote a different relation.
+            msg = f"copy table name must be 'table' or 'schema.table', got {table!r}"
+            raise ValueError(msg)
+        encoded_rows = self._dialect.encode_params_seq(records)
+        status = await self._target.copy_records_to_table(
+            leaf,
+            schema_name=schema or None,
+            columns=list(columns),
+            records=encoded_rows,
+        )
+        # asyncpg reports the "COPY n" status tag (see
+        # tests/integration/test_postgres_mysql_optional.py). COPY is atomic, so a
+        # driver build that reports no tag still copied every submitted row.
+        return len(encoded_rows) if status is None else _parse_status(str(status))
+
     @asynccontextmanager
     async def transaction(
         self,

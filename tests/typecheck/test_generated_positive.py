@@ -24,10 +24,10 @@ from typing import assert_type, cast
 
 from atla.adapter.base import DBAdapter
 
-from atla import excluded
+from atla import Param, excluded
 
 from appdb import AtlaClient, User, UserRecord
-from appdb.query import UserUpsertBuilder
+from appdb.query import UserInsertManyBuilder, UserUpsertBuilder
 
 
 async def exercise(db: AtlaClient) -> None:
@@ -39,6 +39,19 @@ async def exercise(db: AtlaClient) -> None:
     one = await query.one()
     assert_type(one, UserRecord)
 
+    prepared = (
+        db.user.query()
+        .where(User.id == Param("user_id"), User.email == Param("email"))
+        .order_by(User.id.asc())
+        .limit(10)
+        .prepare()
+    )
+    assert_type(prepared.param_names, tuple[str, ...])
+    prepared_rows = await prepared.all(user_id=1, email="alice@example.com")
+    assert_type(prepared_rows, list[UserRecord])
+    prepared_first = await prepared.first(1, "alice@example.com")
+    assert_type(prepared_first, UserRecord | None)
+
     _ = db.user.insert(email="alice@example.com")
     _ = db.user.update().set(email="bob@example.com", id=1).where(User.id == 1)
     _ = db.user.delete().where(User.id == 1).returning()
@@ -48,6 +61,16 @@ async def exercise(db: AtlaClient) -> None:
     assert_type(one, UserRecord)
     many = await db.user.get_many([1, 2])
     assert_type(many, list[UserRecord])
+
+    insert_many = db.user.insert_many([{"email": "alice@example.com"}])
+    assert_type(insert_many, UserInsertManyBuilder)
+    prepared_update = (
+        db.user.update()
+        .set(email=Param[str]("email"))
+        .where(User.id == Param[int]("user_id"))
+        .prepare()
+    )
+    _ = await prepared_update.execute(email="alice@example.com", user_id=1)
 
     upsert = (
         db.user.insert(email="alice@example.com")

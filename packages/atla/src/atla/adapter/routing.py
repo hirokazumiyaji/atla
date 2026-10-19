@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from atla.adapter.base import DBAdapter, IsolationLevel
+from atla.adapter.base import CopyAdapter, DBAdapter, IsolationLevel
 from atla.dialect import Dialect
 
 # Postgres/MySQL row locks that must hit primary (incl. weaker / MySQL variants).
@@ -121,6 +121,20 @@ class RoutingAdapter:
 
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         await self._primary.execute_many(sql, params_seq)
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Forward the bulk ``COPY`` path to the primary adapter."""
+        primary = self._primary
+        if not isinstance(primary, CopyAdapter):
+            msg = "primary adapter does not support copy_records_to_table"
+            raise TypeError(msg)
+        return await primary.copy_records_to_table(table, columns=columns, records=records)
 
     @asynccontextmanager
     async def transaction(

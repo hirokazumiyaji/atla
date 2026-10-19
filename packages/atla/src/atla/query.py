@@ -13,6 +13,7 @@ from atla.advanced import ProjectedSelectQuery, UpsertQuery, conflict_column_nam
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError, UnsafeMutationError
 from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
+from atla.prepared import CompiledQuery, rows_mapper_from_ctor, rows_mapper_from_record
 from atla.select_clauses import (
     LockClause,
     fetch_one,
@@ -46,6 +47,28 @@ class _JoinClause:
     target_sql: str
     on: tuple[Expr[bool], ...]
     segment: _JoinSegment
+
+
+def _compiled_mutation[RecordT](
+    adapter: DBAdapter,
+    compiler: SQLCompiler,
+    *,
+    mapper: Callable[[Sequence[Any]], RecordT] | None,
+) -> CompiledQuery[RecordT]:
+    """Build a compiled template for one mutation statement.
+
+    ``mapper`` is ``None`` for statements without ``RETURNING``; the resulting
+    ``CompiledQuery`` then only exposes ``execute()``.
+    """
+    sql, params = compiler.build()
+    return CompiledQuery(
+        adapter,
+        sql=sql,
+        params=params,
+        slot_occurrences=compiler.slot_occurrences,
+        row_mapper=mapper,
+        rows_mapper=None if mapper is None else rows_mapper_from_record(mapper),
+    )
 
 
 class _ProjectableSelect:
@@ -497,9 +520,8 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             or self._locking is not None
         )
 
-    def to_sql(self) -> tuple[str, list[Any]]:
-        dialect = self._adapter.dialect
-        compiler = SQLCompiler(dialect)
+    def _write_sql(self, compiler: SQLCompiler) -> None:
+        dialect = compiler.dialect
         compiler.write("SELECT ")
         write_distinct(
             compiler,
@@ -519,7 +541,35 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
             offset=self._offset,
         )
         write_locking(compiler, dialect, self._locking)
+
+    def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
         return compiler.build()
+
+    def prepare(self) -> CompiledQuery[RecordT]:
+        """Compile this query once into a reusable template.
+
+        ``Param`` slots declared in the query become named bind parameters of the
+        returned :class:`~atla.prepared.CompiledQuery`; see its docstring for the
+        binding rules and for what ``first()`` does and does not do.
+        """
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        sql, params = compiler.build()
+        ctor = type(self)._ROW_CTOR
+        return CompiledQuery(
+            self._adapter,
+            sql=sql,
+            params=params,
+            slot_occurrences=compiler.slot_occurrences,
+            row_mapper=type(self)._ROW_MAPPER,
+            rows_mapper=(
+                rows_mapper_from_ctor(ctor)
+                if ctor is not None
+                else rows_mapper_from_record(type(self)._ROW_MAPPER)
+            ),
+        )
 
     def as_subquery(self) -> SubqueryExpr[Any]:
         sql, params = self.to_sql()
@@ -721,12 +771,16 @@ class BaseInsertQuery[RecordT]:
         )
 
     def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
+        return compiler.build()
+
+    def _write_sql(self, compiler: SQLCompiler) -> None:
         if not self._values:
             msg = "insert() requires at least one column value"
             raise ValueError(msg)
-        dialect = self._adapter.dialect
+        dialect = compiler.dialect
         cols = ", ".join(dialect.quote(name) for name, _ in self._values)
-        compiler = SQLCompiler(dialect)
         placeholders = [compiler.compile_value(value) for _, value in self._values]
         sql = f"INSERT INTO {self._TABLE_NAME} ({cols}) VALUES ({', '.join(placeholders)})"
         if self._returning:
@@ -734,7 +788,17 @@ class BaseInsertQuery[RecordT]:
                 msg = f"{dialect.name} does not support RETURNING"
                 raise ValueError(msg)
             sql = f"{sql} RETURNING {self._RETURNING_COLS}"
-        return sql, compiler.params
+        compiler.write(sql)
+
+    def prepare(self) -> CompiledQuery[RecordT]:
+        """Compile this mutation once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        return _compiled_mutation(
+            self._adapter,
+            compiler,
+            mapper=type(self)._ROW_MAPPER if self._returning else None,
+        )
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
@@ -831,7 +895,7 @@ class BaseUpdateQuery[RecordT]:
             returning=True,
         )
 
-    def to_sql(self) -> tuple[str, list[Any]]:
+    def _write_sql(self, compiler: SQLCompiler) -> None:
         if not self._set:
             msg = "update() requires at least one SET column"
             raise ValueError(msg)
@@ -839,8 +903,7 @@ class BaseUpdateQuery[RecordT]:
             raise UnsafeMutationError(
                 "UPDATE without WHERE is refused; call allow_full_table() to proceed"
             )
-        dialect = self._adapter.dialect
-        compiler = SQLCompiler(dialect)
+        dialect = compiler.dialect
         assignments = [
             f"{dialect.quote(name)} = {compiler.compile_value(value)}" for name, value in self._set
         ]
@@ -853,7 +916,22 @@ class BaseUpdateQuery[RecordT]:
                 msg = f"{dialect.name} does not support RETURNING"
                 raise ValueError(msg)
             sql = f"{sql} RETURNING {self._RETURNING_COLS}"
-        return sql, compiler.params
+        compiler.write(sql)
+
+    def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
+        return compiler.build()
+
+    def prepare(self) -> CompiledQuery[RecordT]:
+        """Compile this mutation once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        return _compiled_mutation(
+            self._adapter,
+            compiler,
+            mapper=type(self)._ROW_MAPPER if self._returning else None,
+        )
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
@@ -938,25 +1016,37 @@ class BaseDeleteQuery[RecordT]:
             returning=True,
         )
 
-    def to_sql(self) -> tuple[str, list[Any]]:
+    def _write_sql(self, compiler: SQLCompiler) -> None:
         if not self._where and not self._allow_full:
             raise UnsafeMutationError(
                 "DELETE without WHERE is refused; call allow_full_table() to proceed"
             )
         sql = f"DELETE FROM {self._table_name}"
-        params: list[Any] = []
         if self._where:
-            compiler = SQLCompiler(self._adapter.dialect)
-            compiler.visit(and_(*self._where))
-            where_sql, params = compiler.build()
+            where_sql = compiler.compile_fragment(and_(*self._where))
             sql = f"{sql} WHERE {where_sql}"
         if self._returning:
-            dialect = self._adapter.dialect
+            dialect = compiler.dialect
             if not dialect.supports_returning:
                 msg = f"{dialect.name} does not support RETURNING"
                 raise ValueError(msg)
             sql = f"{sql} RETURNING {type(self)._RETURNING_COLS}"
-        return sql, params
+        compiler.write(sql)
+
+    def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
+        return compiler.build()
+
+    def prepare(self) -> CompiledQuery[RecordT]:
+        """Compile this mutation once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        return _compiled_mutation(
+            self._adapter,
+            compiler,
+            mapper=type(self)._ROW_MAPPER if self._returning else None,
+        )
 
     async def execute(self) -> int:
         sql, params = self.to_sql()
@@ -1214,10 +1304,9 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
             locking=self._locking,
         )
 
-    def to_sql(self) -> tuple[str, list[Any]]:
-        dialect = self._adapter.dialect
+    def _write_sql(self, compiler: SQLCompiler) -> None:
+        dialect = compiler.dialect
         select_lists = ", ".join(segment.select_list for segment in self._segments)
-        compiler = SQLCompiler(dialect)
         compiler.write("SELECT ")
         write_distinct(
             compiler,
@@ -1240,7 +1329,25 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
             offset=self._offset,
         )
         write_locking(compiler, dialect, self._locking)
+
+    def to_sql(self) -> tuple[str, list[Any]]:
+        compiler = SQLCompiler(self._adapter.dialect)
+        self._write_sql(compiler)
         return compiler.build()
+
+    def prepare(self) -> CompiledQuery[tuple[*Ts]]:
+        """Compile this join query once into a reusable template."""
+        compiler = SQLCompiler(self._adapter.dialect, slots_enabled=True)
+        self._write_sql(compiler)
+        sql, params = compiler.build()
+        return CompiledQuery(
+            self._adapter,
+            sql=sql,
+            params=params,
+            slot_occurrences=compiler.slot_occurrences,
+            row_mapper=self._hydrate,
+            rows_mapper=rows_mapper_from_record(self._hydrate),
+        )
 
     def as_subquery(self) -> SubqueryExpr[Any]:
         sql, params = self.to_sql()

@@ -115,3 +115,67 @@ async def test_composite_get_many_uses_row_value_in_batches(
     finally:
         for name in [m for m in sys.modules if m.startswith("gen_composite_pk")]:
             del sys.modules[name]
+
+
+def test_insert_many_builder_carries_raw_copy_table() -> None:
+    table = TableIR(
+        name="memberships",
+        model_name="Membership",
+        accessor_name="membership",
+        columns=(
+            _column("tenant_id", pk=True),
+            _column("id", pk=True),
+            _column("name", pk=False, py="str"),
+        ),
+        primary_key=("tenant_id", "id"),
+        foreign_keys=(),
+    )
+    files = generate_files(SchemaIR(name="s", dialect="postgres", tables=(table,)))
+    query_src = files["query.py"]
+
+    assert "_COPY_TABLE = 'memberships'" in query_src
+    assert "class MembershipInsertManyBuilder" in query_src
+    # Raw name (not the quoted SQL identifier) is what asyncpg COPY needs.
+    assert "_COPY_TABLE = '\"memberships\"'" not in query_src
+
+
+def test_copy_table_mirrors_table_name_for_qualified_names() -> None:
+    """COPY must target exactly what the generated INSERT targets."""
+    table = TableIR(
+        name="other.users",
+        model_name="User",
+        accessor_name="user",
+        columns=(_column("id", pk=True), _column("email", pk=False, py="str")),
+        primary_key=("id",),
+        foreign_keys=(),
+    )
+    query_src = generate_files(SchemaIR(name="other", dialect="postgres", tables=(table,)))[
+        "query.py"
+    ]
+
+    assert '    _TABLE_NAME = \'"other"."users"\'' in query_src
+    # Raw dotted name: the asyncpg COPY adapter re-quotes each part itself.
+    assert "    _COPY_TABLE = 'other.users'" in query_src
+
+
+def test_copy_table_matches_sql_interpretation_of_dotted_names() -> None:
+    """A dot is a schema separator everywhere, including in generated SQL.
+
+    ``_quote_table`` splits on dots, so ``orders.v2`` is emitted as
+    ``"orders"."v2"``; ``_COPY_TABLE`` keeps the raw dotted form and the COPY
+    adapter splits it the same way, so both paths target one relation.
+    """
+    table = TableIR(
+        name="orders.v2",
+        model_name="Order",
+        accessor_name="order",
+        columns=(_column("id", pk=True),),
+        primary_key=("id",),
+        foreign_keys=(),
+    )
+    query_src = generate_files(SchemaIR(name="main", dialect="postgres", tables=(table,)))[
+        "query.py"
+    ]
+
+    assert '    _TABLE_NAME = \'"orders"."v2"\'' in query_src
+    assert "    _COPY_TABLE = 'orders.v2'" in query_src

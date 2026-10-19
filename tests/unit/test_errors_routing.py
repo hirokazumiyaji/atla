@@ -79,6 +79,16 @@ class RecordingAdapter:
     async def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         self.calls.append(("execute_many", sql))
 
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        self.calls.append(("copy_records_to_table", table))
+        return len(records)
+
     @asynccontextmanager
     async def transaction(
         self,
@@ -104,6 +114,33 @@ async def test_routing_adapter_splits_read_write() -> None:
     assert primary.calls[0][0] == "execute"
     assert primary.calls[1][0] == "fetch_all"
     assert "FOR UPDATE" in primary.calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_routing_adapter_forwards_copy_to_primary() -> None:
+    primary = RecordingAdapter("primary")
+    replica = RecordingAdapter("replica")
+    router = RoutingAdapter(primary, [replica])
+
+    copied = await router.copy_records_to_table(
+        "users",
+        columns=["id"],
+        records=[(1,), (2,)],
+    )
+
+    assert copied == 2
+    assert primary.calls == [("copy_records_to_table", "users")]
+    assert replica.calls == []
+
+
+@pytest.mark.asyncio
+async def test_routing_adapter_copy_requires_capable_primary() -> None:
+    class NoCopyAdapter(RecordingAdapter):
+        copy_records_to_table = None  # type: ignore[assignment]
+
+    router = RoutingAdapter(NoCopyAdapter("primary"))
+    with pytest.raises(TypeError, match="copy_records_to_table"):
+        await router.copy_records_to_table("users", columns=["id"], records=[(1,)])
 
 
 @pytest.mark.asyncio

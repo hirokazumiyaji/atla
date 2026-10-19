@@ -287,6 +287,11 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
         f"class {many_cls}(BaseInsertManyQuery[{table.model_name}Record]):",
         "    __slots__ = ()",
         f"    _RETURNING_COLS = {returning_cols!r}",
+        # Raw form of the same name used for ``_TABLE_NAME``: bare for the
+        # selected schema (matching the generated unqualified SQL and its
+        # search_path resolution), or "schema.table" when the name is qualified.
+        # The COPY adapter splits the dotted form and quotes each part itself.
+        f"    _COPY_TABLE = {table.name!r}",
         (
             f"    _ROW_MAPPER = {table.model_name}Record._from_row"
             "  # pyright: ignore[reportPrivateUsage]"
@@ -488,11 +493,18 @@ def _emit_do_update_method(table: TableIR) -> list[str]:
     columns = list(table.columns)
     if not columns:
         return [
-            f"    def do_update(self) -> {table.model_name}UpsertBuilder:",
+            # Same intentional narrowing as the typed overload below.
+            "    def do_update(  # type: ignore[override]"
+            "  # pyright: ignore[reportIncompatibleMethodOverride]",
+            "        self,",
+            f"    ) -> {table.model_name}UpsertBuilder:",
             '        raise ValueError("table has no updatable columns")',
         ]
     lines = [
-        "    def do_update(",
+        # Generated builders intentionally narrow the base ``do_update(**columns)``
+        # (bare SQL names, for hand-written builders) to typed keyword arguments.
+        "    def do_update(  # type: ignore[override]"
+        "  # pyright: ignore[reportIncompatibleMethodOverride]",
         "        self,",
         "        *,",
     ]

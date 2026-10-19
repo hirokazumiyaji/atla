@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from atlagen.config import ConfigError, _parse_table_overrides
+from atlagen.config import ConfigError, _parse_table_overrides  # pyright: ignore[reportPrivateUsage]
 from atlagen.naming import (
     singularize,
     singularize_identifier,

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from functools import cache
 from typing import Any
 
-from atla.adapter.base import DBAdapter
+from atla.adapter.base import CopyAdapter, DBAdapter
 from atla.dialect import Dialect
 from atla.observability.instrumented import transaction_kwargs
 from atla.observability.sql_meta import extract_sql_meta
@@ -264,6 +264,31 @@ class OTelAdapter:
             sql,
             None,
             lambda annotated: self._inner.execute_many(annotated, params_seq),
+        )
+
+    async def copy_records_to_table(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        records: Sequence[Sequence[Any]],
+    ) -> int:
+        """Trace a bulk ``COPY`` and forward it to the wrapped adapter."""
+        inner = self._inner
+        if not isinstance(inner, CopyAdapter):
+            msg = "wrapped adapter does not support copy_records_to_table"
+            raise TypeError(msg)
+        # COPY carries no SQL text; synthesize one so spans still get an operation.
+        sql = f"COPY {table} ({', '.join(columns)}) FROM STDIN"
+        return await self._run(
+            sql,
+            None,
+            lambda _annotated: inner.copy_records_to_table(
+                table,
+                columns=columns,
+                records=records,
+            ),
+            row_count=lambda result: int(result),
         )
 
     @asynccontextmanager

@@ -11,7 +11,7 @@ import pytest
 
 from atla.adapter.base import DBAdapter, IsolationLevel
 from atla.dialect import PostgresDialect
-from atla.expressions import Column
+from atla.expressions import Column, Param
 from atla.query import BaseSelectQuery
 from atla.table import TableRef
 
@@ -132,6 +132,29 @@ async def test_inner_join_hydrates_tuple_rows() -> None:
     assert sql.startswith(
         'SELECT "users"."id", "users"."email", "posts"."id", "posts"."user_id", "posts"."title"'
     )
+
+
+@pytest.mark.asyncio
+async def test_prepared_join_reuses_template_and_rebinds() -> None:
+    adapter = FakeAdapter()
+    adapter.rows = [(1, "a@example.com", 10, 1, "hello")]
+    prepared = (
+        UserQuery(adapter)
+        .join(Post, Post.user_id == User.id)
+        .where(User.email == Param("email"))
+        .prepare()
+    )
+
+    assert prepared.param_names == ("email",)
+    assert '"users"."email" = $1' in prepared.sql
+
+    first = await prepared.all(email="a@example.com")
+    second = await prepared.all(email="b@example.com")
+
+    assert first == [(UserRecord(1, "a@example.com"), PostRecord(10, 1, "hello"))]
+    assert second == first
+    assert [call[2] for call in adapter.calls] == [["a@example.com"], ["b@example.com"]]
+    assert {call[1] for call in adapter.calls} == {prepared.sql}
 
 
 @pytest.mark.asyncio
