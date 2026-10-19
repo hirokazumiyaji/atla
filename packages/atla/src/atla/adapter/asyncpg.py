@@ -133,7 +133,7 @@ class AsyncpgAdapter:
             leaf,
             schema_name=schema or None,
             columns=list(columns),
-            records=[tuple(row) for row in encoded_rows],
+            records=encoded_rows,
         )
         # asyncpg reports the "COPY n" status tag (see
         # tests/integration/test_postgres_mysql_optional.py). COPY is atomic, so a

@@ -845,10 +845,14 @@ async def run(rows: int, lookups: int, repeats: int) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         db_path = tmp_dir / "bench.db"
-        conn = await _prepare_db(db_path, rows)
-        sa = SqlAlchemyModels(db_path)
-        adapter = AiosqliteAdapter(conn)
+        # Construct inside the try so a failure while opening the connection or
+        # building the ORM models still runs the cleanup below.
+        conn: aiosqlite.Connection | None = None
+        sa: SqlAlchemyModels | None = None
         try:
+            conn = await _prepare_db(db_path, rows)
+            sa = SqlAlchemyModels(db_path)
+            adapter = AiosqliteAdapter(conn)
             app = _load_generated(tmp_dir)
             db = app.AtlaClient(adapter)
             await _scenario_pk_lookup(
@@ -901,8 +905,10 @@ async def run(rows: int, lookups: int, repeats: int) -> list[str]:
                 failures=failures,
             )
         finally:
-            await sa.dispose()
-            await conn.close()
+            if sa is not None:
+                await sa.dispose()
+            if conn is not None:
+                await conn.close()
     return failures
 
 
