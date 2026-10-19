@@ -351,7 +351,10 @@ async def _scenario_pk_lookup(
     failures: list[str],
 ) -> None:
     user_model = app.User
-    keys = list(range(lookups))
+    # Keys past the seeded rows would hydrate as None on the atla paths (``get``
+    # returns ``UserRecord | None``) while the raw and ORM baselines drop missing
+    # rows, so clamp the workload to rows that exist.
+    keys = list(range(min(lookups, rows)))
 
     async def raw() -> list[Any]:
         out: list[Any] = []
