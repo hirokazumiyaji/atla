@@ -16,8 +16,11 @@ from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
 from atla.prepared import CompiledQuery, rows_mapper_from_ctor, rows_mapper_from_record
 from atla.select_clauses import (
     LockClause,
+    fetch_first,
     fetch_one,
     lock_of_targets,
+    validate_limit,
+    validate_offset,
     write_distinct,
     write_group_having,
     write_locking,
@@ -253,10 +256,10 @@ class BaseSelectQuery[RecordT](_ProjectableSelect):
         return self._clone(order_by=self._order_by + clauses)
 
     def limit(self, n: int) -> Self:
-        return self._clone(limit=n, replace_limit=True)
+        return self._clone(limit=validate_limit(n), replace_limit=True)
 
     def offset(self, n: int) -> Self:
-        return self._clone(offset=n, replace_offset=True)
+        return self._clone(offset=validate_offset(n), replace_offset=True)
 
     def group_by(self, *exprs: Expr[Any]) -> Self:
         if not exprs:
@@ -732,10 +735,13 @@ class BaseInsertQuery[RecordT]:
         dialect-quoted once in :meth:`to_sql`. Generated repositories pass Python
         keyword names, never pre-quoted fragments.
         """
-        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
+        merged = dict(self._values)
+        for name, value in columns.items():
+            if not is_unset(value):
+                merged[name] = value
         return type(self)(
             self._adapter,
-            values=self._values + pairs,
+            values=tuple(merged.items()),
             returning=self._returning,
         )
 
@@ -857,10 +863,13 @@ class BaseUpdateQuery[RecordT]:
 
     def _set_values(self, **columns: Any) -> Self:
         """Accumulate SET columns (bare identifiers; quoted once in ``to_sql``)."""
-        pairs = tuple((name, value) for name, value in columns.items() if not is_unset(value))
+        merged = dict(self._set)
+        for name, value in columns.items():
+            if not is_unset(value):
+                merged[name] = value
         return type(self)(
             self._adapter,
-            set_values=self._set + pairs,
+            set_values=tuple(merged.items()),
             where=self._where,
             allow_full=self._allow_full,
             returning=self._returning,
@@ -1173,10 +1182,10 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
         return self._clone(order_by=self._order_by + clauses)
 
     def limit(self, n: int) -> JoinedSelectQuery[*Ts]:
-        return self._clone(limit=n, replace_limit=True)
+        return self._clone(limit=validate_limit(n), replace_limit=True)
 
     def offset(self, n: int) -> JoinedSelectQuery[*Ts]:
-        return self._clone(offset=n, replace_offset=True)
+        return self._clone(offset=validate_offset(n), replace_offset=True)
 
     def group_by(self, *exprs: Expr[Any]) -> JoinedSelectQuery[*Ts]:
         if not exprs:
@@ -1423,6 +1432,52 @@ class JoinedSelectQuery[*Ts](_ProjectableSelect):
     async def one(self) -> tuple[*Ts]:
         return await fetch_one(self._with_fetch_limit(2).all)
 
+    async def count(self) -> int:
+        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination)."""
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "count() ignores group_by/having/distinct; remove those clauses "
+                "or use select(count(...)) for grouped aggregates"
+            )
+            raise ValueError(msg)
+        compiler = SQLCompiler(self._adapter.dialect)
+        compiler.write(f"SELECT COUNT(*) FROM {self._from_sql}")
+        for join in self._joins:
+            compiler.write(f" {join.kind} JOIN {join.target_sql} ON ")
+            compiler.visit(and_(*join.on))
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        sql, params = compiler.build()
+        value = await self._adapter.fetch_val(sql, params)
+        return int(value)
+
+    async def exists(self) -> bool:
+        """Return whether any matching row exists without hydrating records."""
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "exists() ignores group_by/having/distinct; remove those clauses "
+                "or use select(...) with a subquery"
+            )
+            raise ValueError(msg)
+        if self._limit == 0:
+            return False
+        compiler = SQLCompiler(self._adapter.dialect)
+        compiler.write(f"SELECT 1 FROM {self._from_sql}")
+        for join in self._joins:
+            compiler.write(f" {join.kind} JOIN {join.target_sql} ON ")
+            compiler.visit(and_(*join.on))
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(1))
+        if self._offset is not None:
+            compiler.write(" OFFSET ")
+            compiler.write(compiler.add_param(self._offset))
+        sql, params = compiler.build()
+        return (await self._adapter.fetch_val(sql, params)) is not None
+
 
 @dataclass(slots=True, frozen=True)
 class _RelationSpec[RelatedT]:
@@ -1494,10 +1549,13 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return self._clone(self._parent.order_by(*clauses))
 
     def limit(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
-        return self._clone(self._parent.limit(n))
+        return self._clone(self._parent.limit(validate_limit(n)))
 
     def offset(self, n: int) -> PreloadSelectQuery[ParentT, ChildT]:
-        return self._clone(self._parent.offset(n))
+        return self._clone(self._parent.offset(validate_offset(n)))
+
+    def _with_fetch_limit(self, maximum: int) -> PreloadSelectQuery[ParentT, ChildT]:
+        return self._clone(self._parent._with_fetch_limit(maximum))
 
     def preload[OtherT](
         self,
@@ -1527,6 +1585,89 @@ class PreloadSelectQuery[ParentT, ChildT]:
             ),
         )
 
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[False] = False,
+    ) -> MultiPreloadSelectQuery[ParentT, list[ChildT], OtherT]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[True],
+    ) -> MultiPreloadSelectQuery[ParentT, list[ChildT], OtherT | None]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        predicate: Expr[bool],
+        /,
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> MultiPreloadSelectQuery[ParentT, list[ChildT], OtherT | None]: ...
+
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> (
+        MultiPreloadSelectQuery[ParentT, list[ChildT], OtherT]
+        | MultiPreloadSelectQuery[ParentT, list[ChildT], OtherT | None]
+    ):
+        """Chain a belongs-to relation onto this preload."""
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                self._spec,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="one",
+                    nullable=nullable or bool(predicates),
+                ),
+            ),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("with_") and hasattr(self._parent, name):
+            method = getattr(type(self._parent), name)
+            return method.__get__(self, type(self))
+        msg = f"{type(self).__name__!r} object has no attribute {name!r}"
+        raise AttributeError(msg)
+
     async def all(self) -> list[tuple[ParentT, list[ChildT]]]:
         parents = await self._parent.all()
         if not parents:
@@ -1536,22 +1677,16 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return [(parent, list(grouped.get(getattr(parent, key_attr), []))) for parent in parents]
 
     async def first(self) -> tuple[ParentT, list[ChildT]] | None:
-        rows = await self.limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> tuple[ParentT, list[ChildT]]:
-        rows = await self.limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
     async def count(self) -> int:
         return await self._parent.count()
 
     async def exists(self) -> bool:
-        return await self._parent.limit(1).first() is not None
+        return await self._parent.exists()
 
 
 class PreloadOneSelectQuery[ChildT, ParentT]:
@@ -1606,10 +1741,124 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
         return self._clone(self._parent.order_by(*clauses))
 
     def limit(self, n: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
-        return self._clone(self._parent.limit(n))
+        return self._clone(self._parent.limit(validate_limit(n)))
 
     def offset(self, n: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
-        return self._clone(self._parent.offset(n))
+        return self._clone(self._parent.offset(validate_offset(n)))
+
+    def _with_fetch_limit(self, maximum: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
+        return self._clone(self._parent._with_fetch_limit(maximum))
+
+    def preload[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+    ) -> MultiPreloadSelectQuery[ChildT, ParentT, list[OtherT]]:
+        """Chain a has-many relation onto this belongs-to preload."""
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                self._spec,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="many",
+                ),
+            ),
+        )
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[False] = False,
+    ) -> MultiPreloadSelectQuery[ChildT, ParentT, OtherT]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[True],
+    ) -> MultiPreloadSelectQuery[ChildT, ParentT, OtherT | None]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        predicate: Expr[bool],
+        /,
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> MultiPreloadSelectQuery[ChildT, ParentT, OtherT | None]: ...
+
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> (
+        MultiPreloadSelectQuery[ChildT, ParentT, OtherT]
+        | MultiPreloadSelectQuery[ChildT, ParentT, OtherT | None]
+    ):
+        """Chain another belongs-to relation onto this preload."""
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                self._spec,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="one",
+                    nullable=nullable or bool(predicates),
+                ),
+            ),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("with_") and hasattr(self._parent, name):
+            method = getattr(type(self._parent), name)
+            return method.__get__(self, type(self))
+        msg = f"{type(self).__name__!r} object has no attribute {name!r}"
+        raise AttributeError(msg)
 
     async def all(self) -> list[tuple[ChildT, ParentT]]:
         children = await self._parent.all()
@@ -1641,22 +1890,16 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
         return results
 
     async def first(self) -> tuple[ChildT, ParentT] | None:
-        rows = await self.limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> tuple[ChildT, ParentT]:
-        rows = await self.limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
     async def count(self) -> int:
         return await self._parent.count()
 
     async def exists(self) -> bool:
-        return await self._parent.limit(1).first() is not None
+        return await self._parent.exists()
 
 
 class MultiPreloadSelectQuery[ParentT, *Ts]:
@@ -1682,10 +1925,13 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
         return self._clone(self._parent.order_by(*clauses))
 
     def limit(self, n: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
-        return self._clone(self._parent.limit(n))
+        return self._clone(self._parent.limit(validate_limit(n)))
 
     def offset(self, n: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
-        return self._clone(self._parent.offset(n))
+        return self._clone(self._parent.offset(validate_offset(n)))
+
+    def _with_fetch_limit(self, maximum: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
+        return self._clone(self._parent._with_fetch_limit(maximum))
 
     def preload[OtherT](
         self,
@@ -1714,6 +1960,88 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
             ),
         )
 
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[False] = False,
+    ) -> MultiPreloadSelectQuery[ParentT, *Ts, OtherT]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        /,
+        *,
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: Literal[True],
+    ) -> MultiPreloadSelectQuery[ParentT, *Ts, OtherT | None]: ...
+
+    @overload
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        predicate: Expr[bool],
+        /,
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> MultiPreloadSelectQuery[ParentT, *Ts, OtherT | None]: ...
+
+    def preload_one[OtherT](
+        self,
+        related: TableRef[OtherT],
+        *predicates: Expr[bool],
+        fk: Column[Any],
+        key: Column[Any],
+        fk_attr: str,
+        key_attr: str,
+        order_by: Sequence[OrderByClause] = (),
+        nullable: bool = False,
+    ) -> (
+        MultiPreloadSelectQuery[ParentT, *Ts, OtherT]
+        | MultiPreloadSelectQuery[ParentT, *Ts, OtherT | None]
+    ):
+        return MultiPreloadSelectQuery(
+            self._parent,
+            (
+                *self._specs,
+                _RelationSpec(
+                    related=related,
+                    fk=fk,
+                    key=key,
+                    fk_attr=fk_attr,
+                    key_attr=key_attr,
+                    related_where=predicates,
+                    related_order_by=tuple(order_by),
+                    cardinality="one",
+                    nullable=nullable or bool(predicates),
+                ),
+            ),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("with_") and hasattr(self._parent, name):
+            method = getattr(type(self._parent), name)
+            return method.__get__(self, type(self))
+        msg = f"{type(self).__name__!r} object has no attribute {name!r}"
+        raise AttributeError(msg)
+
     async def all(self) -> list[tuple[ParentT, *Ts]]:
         parents = await self._parent.all()
         if not parents:
@@ -1721,32 +2049,55 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
         # Load relations sequentially: the same adapter may be pinned to a
         # transaction connection, so concurrent gathers on it are unsafe.
         adapter = self._parent.adapter
-        grouped_list = [await _load_many(adapter, parents, spec) for spec in self._specs]
+        data_list: list[Any] = []
+        for spec in self._specs:
+            if spec.cardinality == "many":
+                data_list.append(await _load_many(adapter, parents, spec))
+            else:
+                data_list.append(await _load_one(adapter, parents, spec))
         rows: list[tuple[ParentT, *Ts]] = []
         for parent in parents:
             parts: list[Any] = [parent]
-            for spec, grouped in zip(self._specs, grouped_list, strict=True):
-                parts.append(list(grouped.get(getattr(parent, spec.key_attr), [])))
+            for spec, data in zip(self._specs, data_list, strict=True):
+                if spec.cardinality == "many":
+                    parts.append(list(data.get(getattr(parent, spec.key_attr), [])))
+                else:
+                    fk_value = getattr(parent, spec.fk_attr)
+                    if fk_value is None:
+                        if not spec.nullable:
+                            msg = (
+                                f"belongs-to foreign key {spec.fk_attr!r} is NULL "
+                                "but relation is non-nullable"
+                            )
+                            raise NotFoundError(msg)
+                        parts.append(None)
+                    else:
+                        related = data.get(fk_value)
+                        if related is None:
+                            if spec.nullable:
+                                parts.append(None)
+                            else:
+                                msg = (
+                                    "missing related row for non-nullable belongs-to "
+                                    f"{spec.fk_attr}={fk_value!r}"
+                                )
+                                raise NotFoundError(msg)
+                        else:
+                            parts.append(related)
             rows.append(cast(tuple[ParentT, *Ts], tuple(parts)))
         return rows
 
     async def first(self) -> tuple[ParentT, *Ts] | None:
-        rows = await self.limit(1).all()
-        return rows[0] if rows else None
+        return await fetch_first(self._with_fetch_limit(1).all)
 
     async def one(self) -> tuple[ParentT, *Ts]:
-        rows = await self.limit(2).all()
-        if not rows:
-            raise NotFoundError("expected exactly one row, found 0")
-        if len(rows) > 1:
-            raise MultipleResultsError("expected exactly one row, found multiple")
-        return rows[0]
+        return await fetch_one(self._with_fetch_limit(2).all)
 
     async def count(self) -> int:
         return await self._parent.count()
 
     async def exists(self) -> bool:
-        return await self._parent.limit(1).first() is not None
+        return await self._parent.exists()
 
 
 async def _load_many[ParentT, RelatedT](

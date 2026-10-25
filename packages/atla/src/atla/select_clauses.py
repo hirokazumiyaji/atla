@@ -64,6 +64,22 @@ def write_group_having(
         compiler.visit(and_(*having))
 
 
+def validate_limit(n: int) -> int:
+    """Validate LIMIT argument; reject negative values and booleans."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        msg = f"limit must be a non-negative integer, got {n!r}"
+        raise ValueError(msg)
+    return n
+
+
+def validate_offset(n: int) -> int:
+    """Validate OFFSET argument; reject negative values and booleans."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        msg = f"offset must be a non-negative integer, got {n!r}"
+        raise ValueError(msg)
+    return n
+
+
 def write_order_limit_offset(
     compiler: SQLCompiler,
     *,
@@ -78,9 +94,11 @@ def write_order_limit_offset(
                 compiler.write(", ")
             compiler.visit_order_by(clause)
     if limit is not None:
+        validate_limit(limit)
         compiler.write(" LIMIT ")
         compiler.write(compiler.add_param(limit))
     if offset is not None:
+        validate_offset(offset)
         compiler.write(" OFFSET ")
         compiler.write(compiler.add_param(offset))
 

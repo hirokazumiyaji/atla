@@ -179,7 +179,9 @@ class SQLCompiler:
         self.write(self.dialect.quote(node.name))
 
     def _visit_binary_child(self, node: Expr[Any]) -> None:
-        if isinstance(node, (BinaryOp, LogicalOp)):
+        if isinstance(node, (BinaryOp, LogicalOp, LikeOp, BetweenOp, InOp)) or (
+            isinstance(node, UnaryOp) and node.postfix
+        ):
             self.write("(")
             self.visit(node)
             self.write(")")
@@ -212,13 +214,18 @@ class SQLCompiler:
         self.write(f" ESCAPE {self.dialect.quote_string_literal(node.escape)}")
 
     def _visit_unary(self, node: UnaryOp[Any]) -> None:
+        compound = (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp, UnaryOp)
         if node.postfix:
-            self.visit(node.operand)
+            if isinstance(node.operand, compound):
+                self.write("(")
+                self.visit(node.operand)
+                self.write(")")
+            else:
+                self.visit(node.operand)
             self.write(f" {node.op}")
             return
         self.write(node.op)
-        needs_parens = isinstance(node.operand, (LogicalOp, BinaryOp, LikeOp, BetweenOp, InOp))
-        if needs_parens:
+        if isinstance(node.operand, compound):
             self.write("(")
             self.visit(node.operand)
             self.write(")")
@@ -226,7 +233,9 @@ class SQLCompiler:
             self.visit(node.operand)
 
     def _visit_aliased(self, node: AliasedExpr[Any]) -> None:
-        if isinstance(node.expr, (BinaryOp, LogicalOp)):
+        if isinstance(node.expr, (BinaryOp, LogicalOp, LikeOp, BetweenOp, InOp)) or (
+            isinstance(node.expr, UnaryOp) and node.expr.postfix
+        ):
             self.write("(")
             self.visit(node.expr)
             self.write(")")
