@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -15,6 +16,13 @@ from atla.adapter.base import IsolationLevel
 from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, MySQLDialect, TiDBDialect
 from atla.transaction import begin_sql
+
+
+class _TxState:
+    __slots__ = ("active_depth",)
+
+    def __init__(self, depth: int = 0) -> None:
+        self.active_depth = depth
 
 
 class AsyncmyAdapter:
@@ -35,7 +43,15 @@ class AsyncmyAdapter:
         pass the yielded adapter to children instead.
     """
 
-    __slots__ = ("_checkout_owners", "_conn", "_depth", "_dialect", "_pool", "_savepoint")
+    __slots__ = (
+        "_checkout_owners",
+        "_conn",
+        "_depth",
+        "_dialect",
+        "_pool",
+        "_savepoint",
+        "_tx_state",
+    )
 
     def __init__(
         self,
@@ -44,6 +60,7 @@ class AsyncmyAdapter:
         dialect: Dialect | None = None,
         _depth: int = 0,
         _savepoint: str | None = None,
+        _tx_state: _TxState | None = None,
     ) -> None:
         self._dialect = dialect or MySQLDialect()
         if not isinstance(self._dialect, (MySQLDialect, TiDBDialect)):
@@ -55,9 +72,11 @@ class AsyncmyAdapter:
         if hasattr(pool_or_conn, "acquire") and not hasattr(pool_or_conn, "cursor"):
             self._pool = pool_or_conn
             self._conn: Any | None = None
+            self._tx_state = _TxState(0)
         else:
             self._pool = None
             self._conn = pool_or_conn
+            self._tx_state = _tx_state if _tx_state is not None else _TxState(_depth)
 
     @property
     def dialect(self) -> Dialect:
@@ -66,6 +85,12 @@ class AsyncmyAdapter:
     async def _acquire(self) -> Any:
         ensure_not_checked_out(self._checkout_owners)
         if self._conn is not None:
+            if self._tx_state.active_depth != self._depth:
+                msg = (
+                    "connection is checked out for an active transaction; "
+                    "use the adapter yielded by transaction()"
+                )
+                raise RuntimeError(msg)
             return self._conn
         assert self._pool is not None
         return await self._pool.acquire()
@@ -104,13 +129,48 @@ class AsyncmyAdapter:
             return None
         return row[0]
 
+    @staticmethod
+    async def _close_broken_connection(conn: Any) -> None:
+        try:
+            if hasattr(conn, "ensure_closed"):
+                res = conn.ensure_closed()
+                if inspect.isawaitable(res):
+                    await res
+            if hasattr(conn, "close"):
+                res = conn.close()
+                if inspect.isawaitable(res):
+                    await res
+        except BaseException:
+            pass
+
+    async def _commit_if_autocommit(self, conn: Any) -> None:
+        """Commit writes outside an active transaction.
+
+        Like ``AiosqliteAdapter``, standalone writes (depth 0) commit immediately
+        to ensure persistence matches asyncpg-style autocommit when autocommit is
+        disabled on the connection (default in asyncmy), preventing silent rollback
+        and pool connection drop on release (#58).
+        """
+        if self._depth == 0 and self._tx_state.active_depth == 0:
+            get_autocommit = getattr(conn, "get_autocommit", None)
+            if callable(get_autocommit):
+                res = get_autocommit()
+                if inspect.isawaitable(res):
+                    res = await res
+                if not res:
+                    await conn.commit()
+            elif hasattr(conn, "autocommit") and not conn.autocommit:
+                await conn.commit()
+
     @with_translated_errors
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         encoded = self._dialect.encode_params(params)
         conn = await self._acquire()
         try:
             async with conn.cursor() as cursor:
-                return int(await cursor.execute(sql, encoded))
+                result = int(await cursor.execute(sql, encoded))
+            await self._commit_if_autocommit(conn)
+            return result
         finally:
             await self._release(conn)
 
@@ -121,6 +181,7 @@ class AsyncmyAdapter:
         try:
             async with conn.cursor() as cursor:
                 await cursor.executemany(sql, encoded_seq)
+            await self._commit_if_autocommit(conn)
         finally:
             await self._release(conn)
 
@@ -152,90 +213,179 @@ class AsyncmyAdapter:
         # Match fetch_*/execute*: the outer pool adapter must not be reused
         # while this task already holds a checkout (use the yielded adapter).
         ensure_not_checked_out(self._checkout_owners)
+        if self._conn is not None and self._tx_state.active_depth != self._depth:
+            msg = (
+                "transaction already active on this adapter; "
+                "use the adapter yielded by transaction() for nesting"
+            )
+            raise RuntimeError(msg)
+
         if self._pool is not None and self._conn is None:
             # Per-task checkout: peers may still acquire from the same pool.
             with checkout_scope(self._checkout_owners):
                 active: Any = await self._pool.acquire()
+                tx_state = _TxState(1)
+                tx_failed = False
                 try:
-                    # MySQL/TiDB apply SET TRANSACTION to the *next* transaction.
-                    await self._apply_tx_options(
-                        active,
-                        isolation=isolation,
-                        readonly=readonly,
-                        deferrable=deferrable,
-                    )
-                    await active.begin()
-                except BaseException:
                     try:
-                        await active.rollback()
-                    except BaseException:
-                        pass
-                    raise
-                pinned = AsyncmyAdapter(active, dialect=self._dialect, _depth=1)
-                try:
-                    yield pinned
-                except BaseException as exc:
-                    await active.rollback()
-                    if isinstance(exc, Exception):
-                        reraise_translated(exc)
-                    raise
-                else:
-                    try:
-                        await active.commit()
-                    except Exception as exc:
+                        # MySQL/TiDB apply SET TRANSACTION to the *next* transaction.
+                        await self._apply_tx_options(
+                            active,
+                            isolation=isolation,
+                            readonly=readonly,
+                            deferrable=deferrable,
+                        )
+                        await active.begin()
+                    except BaseException as exc:
+                        tx_failed = True
                         try:
                             await active.rollback()
                         except BaseException:
-                            pass
-                        reraise_translated(exc)
+                            tx_state.active_depth = -1
+                            await self._close_broken_connection(active)
+                        if isinstance(exc, Exception):
+                            reraise_translated(exc)
+                        raise exc
+
+                    pinned = AsyncmyAdapter(
+                        active,
+                        dialect=self._dialect,
+                        _depth=1,
+                        _tx_state=tx_state,
+                    )
+                    try:
+                        yield pinned
+                    except BaseException as exc:
+                        tx_failed = True
+                        try:
+                            await active.rollback()
+                        except BaseException:
+                            tx_state.active_depth = -1
+                            await self._close_broken_connection(active)
+                        else:
+                            tx_state.active_depth = 0
+                        if isinstance(exc, Exception):
+                            reraise_translated(exc)
+                        raise exc
+                    else:
+                        try:
+                            await active.commit()
+                        except BaseException as exc:
+                            tx_failed = True
+                            try:
+                                await active.rollback()
+                            except BaseException:
+                                tx_state.active_depth = -1
+                                await self._close_broken_connection(active)
+                            else:
+                                tx_state.active_depth = 0
+                            if isinstance(exc, Exception):
+                                reraise_translated(exc)
+                            raise
+                        else:
+                            tx_state.active_depth = 0
                 finally:
-                    await self._pool.release(active)
+                    try:
+                        await self._pool.release(active)
+                    except BaseException:
+                        if not tx_failed:
+                            raise
             return
 
         assert self._conn is not None
         if self._depth == 0:
-            await self._apply_tx_options(
-                self._conn,
-                isolation=isolation,
-                readonly=readonly,
-                deferrable=deferrable,
-            )
-            await self._conn.begin()
-            pinned = AsyncmyAdapter(self._conn, dialect=self._dialect, _depth=1)
-            try:
-                yield pinned
-            except BaseException as exc:
-                await self._conn.rollback()
-                if isinstance(exc, Exception):
-                    reraise_translated(exc)
-                raise
-            else:
+            with checkout_scope(self._checkout_owners):
                 try:
-                    await self._conn.commit()
-                except Exception as exc:
+                    await self._apply_tx_options(
+                        self._conn,
+                        isolation=isolation,
+                        readonly=readonly,
+                        deferrable=deferrable,
+                    )
+                    await self._conn.begin()
+                except BaseException as exc:
                     try:
                         await self._conn.rollback()
                     except BaseException:
-                        pass
-                    reraise_translated(exc)
+                        self._tx_state.active_depth = -1
+                        await self._close_broken_connection(self._conn)
+                    if isinstance(exc, Exception):
+                        reraise_translated(exc)
+                    raise exc
+
+                self._tx_state.active_depth = 1
+                pinned = AsyncmyAdapter(
+                    self._conn,
+                    dialect=self._dialect,
+                    _depth=1,
+                    _tx_state=self._tx_state,
+                )
+                try:
+                    yield pinned
+                except BaseException as exc:
+                    try:
+                        await self._conn.rollback()
+                    except BaseException:
+                        self._tx_state.active_depth = -1
+                        await self._close_broken_connection(self._conn)
+                    else:
+                        self._tx_state.active_depth = 0
+                    if isinstance(exc, Exception):
+                        reraise_translated(exc)
+                    raise exc
+                else:
+                    try:
+                        await self._conn.commit()
+                    except BaseException as exc:
+                        try:
+                            await self._conn.rollback()
+                        except BaseException:
+                            self._tx_state.active_depth = -1
+                            await self._close_broken_connection(self._conn)
+                        else:
+                            self._tx_state.active_depth = 0
+                        if isinstance(exc, Exception):
+                            reraise_translated(exc)
+                        raise exc
+                    else:
+                        self._tx_state.active_depth = 0
             return
 
         savepoint = f"atla_sp_{self._depth}"
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(f"SAVEPOINT {savepoint}")
-        pinned = AsyncmyAdapter(
-            self._conn,
-            dialect=self._dialect,
-            _depth=self._depth + 1,
-            _savepoint=savepoint,
-        )
-        try:
-            yield pinned
-        except BaseException:
-            async with self._conn.cursor() as cursor:
-                await cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-                await cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
-            raise
-        else:
-            async with self._conn.cursor() as cursor:
-                await cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+        with checkout_scope(self._checkout_owners):
+            try:
+                async with self._conn.cursor() as cursor:
+                    await cursor.execute(f"SAVEPOINT {savepoint}")
+            except Exception as exc:
+                reraise_translated(exc)
+            self._tx_state.active_depth = self._depth + 1
+            pinned = AsyncmyAdapter(
+                self._conn,
+                dialect=self._dialect,
+                _depth=self._depth + 1,
+                _savepoint=savepoint,
+                _tx_state=self._tx_state,
+            )
+            try:
+                yield pinned
+            except BaseException as exc:
+                try:
+                    async with self._conn.cursor() as cursor:
+                        await cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        await cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    self._tx_state.active_depth = self._depth
+                except BaseException:
+                    self._tx_state.active_depth = -1
+                    await self._close_broken_connection(self._conn)
+                if isinstance(exc, Exception):
+                    reraise_translated(exc)
+                raise exc
+            else:
+                try:
+                    async with self._conn.cursor() as cursor:
+                        await cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    self._tx_state.active_depth = self._depth
+                except Exception as exc:
+                    self._tx_state.active_depth = -1
+                    await self._close_broken_connection(self._conn)
+                    reraise_translated(exc)

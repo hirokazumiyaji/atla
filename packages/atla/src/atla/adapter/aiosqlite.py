@@ -12,6 +12,13 @@ from atla.adapter.translate import reraise_translated, with_translated_errors
 from atla.dialect import Dialect, SQLiteDialect
 
 
+class _TxState:
+    __slots__ = ("active_depth",)
+
+    def __init__(self, depth: int = 0) -> None:
+        self.active_depth = depth
+
+
 class AiosqliteAdapter:
     """Adapter over an ``aiosqlite.Connection`` with SAVEPOINT nesting.
 
@@ -32,7 +39,7 @@ class AiosqliteAdapter:
         "_foreign_keys",
         "_lock",
         "_needs_configure",
-        "_tx_active",
+        "_tx_state",
     )
 
     def __init__(
@@ -44,6 +51,7 @@ class AiosqliteAdapter:
         _depth: int = 0,
         _configure: bool = True,
         _tx_active: bool = False,
+        _tx_state: _TxState | None = None,
         _lock: asyncio.Lock | None = None,
     ) -> None:
         self._conn = connection
@@ -54,9 +62,13 @@ class AiosqliteAdapter:
         self._depth = _depth
         self._foreign_keys = foreign_keys
         self._needs_configure = _configure
-        self._tx_active = _tx_active
+        self._tx_state = _tx_state if _tx_state is not None else _TxState(_depth)
         # Share one lock across outer and transaction-pinned adapters.
         self._lock = _lock if _lock is not None else asyncio.Lock()
+
+    @property
+    def _tx_active(self) -> bool:
+        return self._tx_state.active_depth != self._depth
 
     @property
     def dialect(self) -> Dialect:
@@ -69,7 +81,7 @@ class AiosqliteAdapter:
         adapter has ``_depth > 0`` and is the only allowed entry point for the
         connection during that window.
         """
-        if self._depth == 0 and self._tx_active:
+        if self._tx_active:
             msg = (
                 "connection is checked out for an active transaction; "
                 "use the adapter yielded by transaction()"
@@ -85,7 +97,7 @@ class AiosqliteAdapter:
         self._needs_configure = False
 
     async def _commit_if_autocommit(self) -> None:
-        if self._depth == 0 and not self._tx_active:
+        if self._depth == 0 and self._tx_state.active_depth == 0:
             await self._conn.commit()
 
     @with_translated_errors
@@ -167,24 +179,21 @@ class AiosqliteAdapter:
         if self._depth == 0:
             async with self._lock:
                 await self._ensure_configured_unlocked()
-                if self._tx_active:
+                if self._tx_state.active_depth != self._depth:
                     msg = (
                         "transaction already active on this adapter; "
                         "use the adapter yielded by transaction() for nesting"
                     )
                     raise RuntimeError(msg)
-                self._tx_active = True
-                try:
-                    await self._exec_control("BEGIN")
-                except BaseException:
-                    self._tx_active = False
-                    raise
+                await self._exec_control("BEGIN")
+                self._tx_state.active_depth = 1
             pinned = AiosqliteAdapter(
                 self._conn,
                 dialect=self._dialect,
                 foreign_keys=self._foreign_keys,
                 _depth=1,
                 _configure=False,
+                _tx_state=self._tx_state,
                 _lock=self._lock,
             )
             try:
@@ -193,42 +202,71 @@ class AiosqliteAdapter:
                 async with self._lock:
                     try:
                         await self._exec_control("ROLLBACK")
-                    finally:
-                        self._tx_active = False
+                    except BaseException:
+                        self._tx_state.active_depth = -1
+                        if isinstance(exc, Exception):
+                            reraise_translated(exc)
+                        raise
+                    else:
+                        self._tx_state.active_depth = 0
                 if isinstance(exc, Exception):
                     reraise_translated(exc)
                 raise
             else:
                 async with self._lock:
                     try:
+                        await self._exec_control("COMMIT")
+                    except BaseException as exc:
                         try:
-                            await self._exec_control("COMMIT")
-                        except Exception as exc:
+                            await self._exec_control("ROLLBACK")
+                        except BaseException:
+                            self._tx_state.active_depth = -1
+                        else:
+                            self._tx_state.active_depth = 0
+                        if isinstance(exc, Exception):
                             reraise_translated(exc)
-                    finally:
-                        self._tx_active = False
+                        raise
+                    else:
+                        self._tx_state.active_depth = 0
             return
 
         savepoint = f"atla_sp_{self._depth}"
         async with self._lock:
+            if self._tx_state.active_depth != self._depth:
+                msg = (
+                    "transaction already active on this adapter; "
+                    "use the adapter yielded by transaction() for nesting"
+                )
+                raise RuntimeError(msg)
             await self._exec_control(f"SAVEPOINT {savepoint}")
+            self._tx_state.active_depth = self._depth + 1
         pinned = AiosqliteAdapter(
             self._conn,
             dialect=self._dialect,
             foreign_keys=self._foreign_keys,
             _depth=self._depth + 1,
             _configure=False,
+            _tx_state=self._tx_state,
             _lock=self._lock,
         )
         try:
             yield pinned
         except BaseException as exc:
             async with self._lock:
-                await self._exec_control(f"ROLLBACK TO SAVEPOINT {savepoint}")
-                await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+                try:
+                    await self._exec_control(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+                    self._tx_state.active_depth = self._depth
+                except BaseException:
+                    self._tx_state.active_depth = -1
             if isinstance(exc, Exception):
                 reraise_translated(exc)
             raise
         else:
             async with self._lock:
-                await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+                try:
+                    await self._exec_control(f"RELEASE SAVEPOINT {savepoint}")
+                    self._tx_state.active_depth = self._depth
+                except Exception as exc:
+                    self._tx_state.active_depth = -1
+                    reraise_translated(exc)

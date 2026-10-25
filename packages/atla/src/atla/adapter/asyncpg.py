@@ -171,12 +171,13 @@ class AsyncpgAdapter:
                         reraise_translated(exc)
             return
 
-        try:
-            async with self._target.transaction(**tx_kwargs):
-                yield AsyncpgAdapter(
-                    self._target,
-                    dialect=self._dialect,
-                    _depth=self._depth + 1,
-                )
-        except Exception as exc:
-            reraise_translated(exc)
+        with checkout_scope(self._checkout_owners):
+            try:
+                async with self._target.transaction(**tx_kwargs):
+                    yield AsyncpgAdapter(
+                        self._target,
+                        dialect=self._dialect,
+                        _depth=self._depth + 1,
+                    )
+            except Exception as exc:
+                reraise_translated(exc)
