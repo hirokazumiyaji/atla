@@ -183,7 +183,7 @@ class SQLCompiler:
             isinstance(node, UnaryOp) and node.postfix
         ):
             self.write("(")
-            self.visit(node)
+            self.visit(node)  # pyright: ignore[reportUnknownArgumentType]
             self.write(")")
             return
         self.visit(node)
@@ -218,7 +218,7 @@ class SQLCompiler:
         if node.postfix:
             if isinstance(node.operand, compound):
                 self.write("(")
-                self.visit(node.operand)
+                self.visit(node.operand)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
                 self.write(")")
             else:
                 self.visit(node.operand)
@@ -227,7 +227,7 @@ class SQLCompiler:
         self.write(node.op)
         if isinstance(node.operand, compound):
             self.write("(")
-            self.visit(node.operand)
+            self.visit(node.operand)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             self.write(")")
         else:
             self.visit(node.operand)
@@ -237,7 +237,7 @@ class SQLCompiler:
             isinstance(node.expr, UnaryOp) and node.expr.postfix
         ):
             self.write("(")
-            self.visit(node.expr)
+            self.visit(node.expr)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             self.write(")")
         else:
             self.visit(node.expr)

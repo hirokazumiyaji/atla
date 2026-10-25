@@ -52,9 +52,7 @@ SCHEMA_JSON = {
                             "null": True,
                         },
                     ],
-                    "primary_key": {
-                        "columns": [{"name": "id"}]
-                    },
+                    "primary_key": {"columns": [{"name": "id"}]},
                     "indexes": [],
                     "foreign_keys": [],
                 }
@@ -63,7 +61,7 @@ SCHEMA_JSON = {
     ]
 }
 
-APP_PY = '''\
+APP_PY = """\
 from __future__ import annotations
 
 from typing import Any, assert_type
@@ -101,7 +99,7 @@ async def test_app(db: AtlaClient) -> None:
         payloads=[{"a": 1}],
         tags=["test"],
     )
-'''
+"""
 
 
 def test_not_null_arrays_and_prepared_insert_pass_strict_typecheck(tmp_path: Path) -> None:

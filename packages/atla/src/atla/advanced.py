@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Self, cast
 
-from atla.adapter.base import CopyAdapter, DBAdapter
+from atla.adapter.base import DBAdapter, is_copy_adapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
 from atla.expressions import AliasedExpr, Column, Expr, OrderByClause, SubqueryExpr, and_
@@ -247,7 +247,7 @@ class BaseInsertManyQuery[RecordT]:
         *not* filled in for omitted columns, so every row must carry the full
         column set.
         """
-        if not isinstance(self._adapter, CopyAdapter):
+        if not is_copy_adapter(self._adapter):
             msg = (
                 "copy() requires an adapter implementing CopyAdapter "
                 "(AsyncpgAdapter); use execute_many() or execute() instead"

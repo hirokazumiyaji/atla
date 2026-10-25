@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, TypeGuard, runtime_checkable
 
 from atla.dialect import Dialect
 
@@ -53,8 +53,39 @@ class DBAdapter(Protocol):
         ...
 
 
+class _CopyAdapterMeta(type(Protocol)):  # type: ignore[misc]
+    """Custom metaclass for CopyAdapter to verify underlying capabilities."""
+
+    def __instancecheck__(cls, instance: Any) -> bool:
+        if not super().__instancecheck__(instance):
+            return False
+        # Unwrap wrappers to find underlying adapter capability
+        visited: set[int] = set()
+        curr: Any = instance
+        while curr is not None:
+            curr_id = id(curr)
+            if curr_id in visited:
+                return False
+            visited.add(curr_id)
+
+            inner = getattr(curr, "_inner", None)
+            if inner is None:
+                inner = getattr(curr, "_primary", None)
+
+            if inner is not None:
+                if not super().__instancecheck__(inner):
+                    return False
+                curr = inner
+            else:
+                supports = getattr(curr, "supports_copy", None)
+                if supports is not None:
+                    return bool(supports)
+                return True
+        return True
+
+
 @runtime_checkable
-class CopyAdapter(Protocol):
+class CopyAdapter(Protocol, metaclass=_CopyAdapterMeta):
     """Optional adapter capability: bulk binary ``COPY`` insert.
 
     Implemented by :class:`~atla.adapter.asyncpg.AsyncpgAdapter` (PostgreSQL /
@@ -77,3 +108,13 @@ class CopyAdapter(Protocol):
         driver.
         """
         ...
+
+
+def is_copy_adapter(adapter: Any) -> TypeGuard[CopyAdapter]:
+    """Return True if *adapter* genuinely supports ``copy_records_to_table``.
+
+    Checks both direct capability (e.g. ``AsyncpgAdapter``) and unwraps
+    forwarding adapters (``RoutingAdapter``, ``InstrumentedAdapter``,
+    ``OTelAdapter``) to ensure the underlying database driver supports bulk COPY.
+    """
+    return isinstance(adapter, CopyAdapter)

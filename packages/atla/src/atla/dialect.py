@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal
 from uuid import UUID
 
 from atla.types import Json
@@ -147,14 +147,20 @@ class Dialect:
         if isinstance(value, time):
             return value if self.native_datetime else value.isoformat()
         if isinstance(value, Json):
-            return json.dumps(value.value, separators=(",", ":"), default=str)
+            return json.dumps(
+                value.value,  # pyright: ignore[reportUnknownMemberType]
+                separators=(",", ":"),
+                default=str,
+            )
         if isinstance(value, list):
+            # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportUnknownVariableType]
             if self.native_array:
-                encoded = [self.encode_param(elem) for elem in value]
-                if any(e is not elem for e, elem in zip(encoded, value, strict=True)):
+                raw_list: list[Any] = value  # pyright: ignore[reportExplicitAny, reportUnknownVariableType]
+                encoded = [self.encode_param(elem) for elem in raw_list]
+                if any(e is not elem for e, elem in zip(encoded, raw_list, strict=True)):
                     return encoded
-                return cast("list[object]", value)
-            return json.dumps(value, separators=(",", ":"), default=str)
+                return raw_list
+            return json.dumps(value, separators=(",", ":"), default=str)  # pyright: ignore[reportUnknownArgumentType]
         if isinstance(value, dict):
             return json.dumps(value, separators=(",", ":"), default=str)
         return value

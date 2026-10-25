@@ -64,6 +64,11 @@ class AsyncpgAdapter:
         # Connection does not. Prefer acquire() as the sole pool marker.
         self._pool_mode = hasattr(pool_or_conn, "acquire")
 
+    @property
+    def supports_copy(self) -> bool:
+        """Return True: asyncpg supports PostgreSQL binary COPY."""
+        return True
+
     # Public ``dialect`` accessor; unrelated to the per-task checkout work (#26)
     # and kept here only because callers read ``adapter.dialect``.
     @property

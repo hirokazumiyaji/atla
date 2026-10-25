@@ -13,15 +13,15 @@ import pytest
 from atla.dialect import SQLiteDialect
 from atlagen.config import ConfigError, resolve_config
 from atlagen.emitter import generate_files
-from atlagen.emitter.enums import _safe_member, emit_enums
+from atlagen.emitter.enums import _safe_member, emit_enums  # pyright: ignore[reportPrivateUsage]
 from atlagen.emitter.query import (
-    _inbound_relations,
-    _outbound_non_pk_fk_comments,
-    _outbound_relations,
+    _inbound_relations,  # pyright: ignore[reportPrivateUsage]
+    _outbound_non_pk_fk_comments,  # pyright: ignore[reportPrivateUsage]
+    _outbound_relations,  # pyright: ignore[reportPrivateUsage]
 )
 from atlagen.ir import ColumnIR, EnumIR, ForeignKeyIR, SchemaIR, TableIR
 from atlagen.mapper import map_schema, resolve_sql_type
-from atlagen.parser import AtlasParseError, _assert_no_symbol_collisions, _validate_override_ident
+from atlagen.parser import AtlasParseError, _assert_no_symbol_collisions, _validate_override_ident  # pyright: ignore[reportPrivateUsage]
 
 
 def _col(name: str, *, pk: bool = False, py: str = "int", raw: str = "integer") -> ColumnIR:
