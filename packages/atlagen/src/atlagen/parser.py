@@ -108,17 +108,31 @@ _RESERVED_MODEL_NAMES = frozenset(
         "TableRef",
         "Any",
         "Sequence",
+        "dataclass",
+        "TypedDict",
+        "Required",
+        "NotRequired",
         # query.py / client.py imports
         "Expr",
         "Mapping",
         "DBAdapter",
+        "IsolationLevel",
         "AsyncGenerator",
+        "Awaitable",
+        "Callable",
+        "TypeVar",
+        "TypeAlias",
+        "asynccontextmanager",
         "BaseSelectQuery",
         "BaseInsertQuery",
         "BaseUpdateQuery",
         "BaseDeleteQuery",
         "BaseInsertManyQuery",
         "PreloadSelectQuery",
+        "PreloadOneSelectQuery",
+        "UpsertQuery",
+        "NotFoundError",
+        "OrderByClause",
         # common column-type imports from atlagen.mapper
         "Decimal",
         "UUID",
@@ -142,7 +156,16 @@ def _validate_override_ident(value: str, *, kind: str, table_name: str) -> str:
         raise AtlasParseError(msg)
     if kind == "model_name" and (
         text in _RESERVED_MODEL_NAMES
-        or text.endswith(("Record", "Repository", "Query", "Table", "Builder"))
+        or text.endswith(
+            (
+                "Record",
+                "Repository",
+                "Query",
+                "Table",
+                "Builder",
+                "InsertParam",
+            )
+        )
     ):
         msg = (
             f"override model_name {value!r} for table {table_name!r} "
@@ -189,6 +212,9 @@ def _assert_no_symbol_collisions(tables: list[TableIR], enums: list[EnumIR]) -> 
             f"{table.model_name}InsertBuilder": f"table {table.name!r} insert builder",
             f"{table.model_name}UpdateBuilder": f"table {table.name!r} update builder",
             f"{table.model_name}InsertManyBuilder": f"table {table.name!r} insert-many builder",
+            f"{table.model_name}UpsertBuilder": f"table {table.name!r} upsert builder",
+            f"{table.model_name}DeleteBuilder": f"table {table.name!r} delete builder",
+            f"{table.model_name}InsertParam": f"table {table.name!r} insert param",
         }
         for symbol, owner in owners.items():
             prior = occupied.get(symbol)

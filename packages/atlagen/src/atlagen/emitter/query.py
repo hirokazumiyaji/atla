@@ -11,7 +11,7 @@ from atla.dialect import (
     TiDBDialect,
 )
 from atlagen.ir import ColumnIR, SchemaIR, TableIR
-from atlagen.naming import safe_attr_name
+from atlagen.naming import safe_attr_name, table_accessor_name
 
 
 def emit_query(schema: SchemaIR) -> str:
@@ -305,11 +305,24 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
     return lines
 
 
+def _resolve_table(ref_table: str, schema: SchemaIR) -> TableIR | None:
+    for candidate in schema.tables:
+        if candidate.name == ref_table:
+            return candidate
+    ref_leaf = ref_table.rsplit(".", 1)[-1]
+    candidates = [
+        candidate for candidate in schema.tables if candidate.name.rsplit(".", 1)[-1] == ref_leaf
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, str, str]]:
     """Return ``(child_table, fk_attr, parent_key_attr)`` for single-column inbound FKs."""
-    pk = table.primary_key[0] if table.primary_key else None
-    if pk is None:
+    if len(table.primary_key) != 1:
         return []
+    pk = table.primary_key[0]
     parent_key_attr = next(
         (column.attr_name for column in table.columns if column.name == pk),
         pk,
@@ -319,7 +332,7 @@ def _inbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR, 
         if child.name == table.name:
             continue
         for foreign_key in child.foreign_keys:
-            if foreign_key.ref_table.rsplit(".", 1)[-1] != table.name.rsplit(".", 1)[-1]:
+            if _resolve_table(foreign_key.ref_table, schema) is not table:
                 continue
             if len(foreign_key.columns) != 1 or len(foreign_key.ref_columns) != 1:
                 continue
@@ -342,25 +355,13 @@ def _outbound_relations(table: TableIR, schema: SchemaIR) -> list[tuple[TableIR,
             continue
         fk_name = foreign_key.columns[0]
         ref_col = foreign_key.ref_columns[0]
-        ref_table = foreign_key.ref_table
-        ref_leaf = ref_table.rsplit(".", 1)[-1]
-        parent = next(
-            (candidate for candidate in schema.tables if candidate.name == ref_table),
-            None,
-        )
-        if parent is None:
-            parent = next(
-                (
-                    candidate
-                    for candidate in schema.tables
-                    if candidate.name.rsplit(".", 1)[-1] == ref_leaf
-                ),
-                None,
-            )
+        parent = _resolve_table(foreign_key.ref_table, schema)
         if parent is None:
             continue
-        parent_pk = parent.primary_key[0] if parent.primary_key else None
-        if parent_pk is None or ref_col != parent_pk:
+        if len(parent.primary_key) != 1:
+            continue
+        parent_pk = parent.primary_key[0]
+        if ref_col != parent_pk:
             continue
         fk_column = next((column for column in table.columns if column.name == fk_name), None)
         fk_attr = fk_column.attr_name if fk_column is not None else fk_name
@@ -381,27 +382,12 @@ def _outbound_non_pk_fk_comments(table: TableIR, schema: SchemaIR) -> list[str]:
             continue
         fk_name = foreign_key.columns[0]
         ref_col = foreign_key.ref_columns[0]
-        ref_table = foreign_key.ref_table
-        ref_leaf = ref_table.rsplit(".", 1)[-1]
-        parent = next(
-            (candidate for candidate in schema.tables if candidate.name == ref_table),
-            None,
-        )
-        if parent is None:
-            parent = next(
-                (
-                    candidate
-                    for candidate in schema.tables
-                    if candidate.name.rsplit(".", 1)[-1] == ref_leaf
-                ),
-                None,
-            )
+        parent = _resolve_table(foreign_key.ref_table, schema)
         if parent is None:
             continue
-        parent_pk = parent.primary_key[0] if parent.primary_key else None
-        if parent_pk is None or ref_col != parent_pk:
+        if len(parent.primary_key) != 1 or ref_col != parent.primary_key[0]:
             comments.append(
-                f"    # FK to non-PK column: {fk_name} -> {ref_table}({ref_col}); "
+                f"    # FK to non-PK column: {fk_name} -> {foreign_key.ref_table}({ref_col}); "
                 "no eager-load helper"
             )
     return comments
@@ -426,10 +412,14 @@ def _emit_with_methods(table: TableIR, *, schema: SchemaIR, on_query: bool) -> l
     receiver = "self" if on_query else f"{table.model_name}Query(self._adapter)"
 
     for child, fk_attr, parent_key_attr in _inbound_relations(table, schema):
-        child_sql = child.name.rsplit(".", 1)[-1]
-        method = safe_attr_name(f"with_{child_sql}")
+        default_acc = table_accessor_name(child.name)
+        if child.accessor_name != default_acc:
+            child_name = child.accessor_name
+        else:
+            child_name = child.name.rsplit(".", 1)[-1]
+        method = safe_attr_name(f"with_{child_name}")
         if method in used_names:
-            method = safe_attr_name(f"with_{child_sql}_{fk_attr}")
+            method = safe_attr_name(f"with_{child_name}_{fk_attr}")
         used_names.add(method)
         lines.extend(
             [
@@ -684,6 +674,9 @@ def _emit_pk_lookup_methods(
             "            groups: list[str] = []",
             "            params: list[Any] = []",
             "            for key in batch:",
+            "                if len(key) != width:",
+            '                    msg = f"expected key tuple of length {width}, got {len(key)}"',
+            "                    raise ValueError(msg)",
             "                base = len(params)",
             "                marks = [dialect.placeholder(base + i + 1) for i in range(width)]",
             '                groups.append("(" + ", ".join(marks) + ")")',

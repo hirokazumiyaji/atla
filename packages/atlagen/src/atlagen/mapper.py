@@ -31,7 +31,10 @@ class TypeMapping:
 
 def map_schema(schema: SchemaIR) -> SchemaIR:
     """Fill ``python_type`` / ``import_symbol`` / ``row_codec`` on every column."""
-    enum_by_name = {enum.name: enum for enum in schema.enums}
+    enum_by_name: dict[str, EnumIR] = {}
+    for enum in schema.enums:
+        enum_by_name[enum.name.lower()] = enum
+        enum_by_name.setdefault(enum.name.rsplit(".", 1)[-1].lower(), enum)
     tables = tuple(
         _map_table(table, dialect=schema.dialect, enums=enum_by_name) for table in schema.tables
     )
@@ -81,13 +84,18 @@ def resolve_sql_type(
     mapping: TypeMapping | None = None
     if _MYSQL_ENUM_RE.match(raw_type.strip()) and dialect_key in {"mysql", "tidb"}:
         if table_name and column_name:
-            enum_name = mysql_inline_enum_name(table_name, column_name)
+            enum_name = mysql_inline_enum_name(table_name, column_name).lower()
             enum = enums.get(enum_name)
             if enum is not None:
                 mapping = _enum_mapping(enum, dialect=dialect_key)
 
-    if mapping is None and normalized in enums:
-        mapping = _enum_mapping(enums[normalized], dialect=dialect_key)
+    if mapping is None:
+        normalized_key = normalized.lower()
+        enum = enums.get(normalized_key)
+        if enum is None and "." in normalized_key:
+            enum = enums.get(normalized_key.rsplit(".", 1)[-1])
+        if enum is not None:
+            mapping = _enum_mapping(enum, dialect=dialect_key)
 
     if mapping is None:
         mapping = _map_normalized_type(
