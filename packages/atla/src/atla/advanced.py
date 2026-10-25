@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Self, cast
 from atla.adapter.base import CopyAdapter, DBAdapter
 from atla.compiler import SQLCompiler
 from atla.errors import MultipleResultsError, NotFoundError
-from atla.expressions import Column, Expr, OrderByClause, SubqueryExpr, and_
+from atla.expressions import AliasedExpr, Column, Expr, OrderByClause, SubqueryExpr, and_
 from atla.prepared import CompiledQuery, rows_mapper_from_record
 from atla.select_clauses import (
     LockClause,
@@ -450,6 +450,15 @@ class UpsertQuery[RecordT]:
         return type(self)._ROW_MAPPER(rows[0])
 
 
+def _extract_decoder(expr: Expr[Any]) -> Callable[[Any], Any] | None:
+    current: Expr[Any] = expr
+    while isinstance(current, AliasedExpr):
+        current = current.expr
+    if isinstance(current, Column):
+        return current.decoder
+    return None
+
+
 class ProjectedSelectQuery[*Ts]:
     """SELECT of explicit expressions hydrating ``tuple[*Ts]``.
 
@@ -505,7 +514,7 @@ class ProjectedSelectQuery[*Ts]:
         self._distinct_on = distinct_on
         self._locking = locking
         self._join_parts = join_parts
-        decoders = tuple(expr.decoder if isinstance(expr, Column) else None for expr in columns)
+        decoders = tuple(_extract_decoder(expr) for expr in columns)
         self._decoders = decoders
         self._needs_decode = any(decoder is not None for decoder in decoders)
 

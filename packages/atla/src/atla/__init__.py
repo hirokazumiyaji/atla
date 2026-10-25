@@ -81,7 +81,7 @@ from atla.query import (
 )
 from atla.table import TableRef
 from atla.transaction import IsolationLevel, run_in_transaction
-from atla.types import UNSET, UnsetType
+from atla.types import UNSET, Json, UnsetType
 
 __version__ = "0.1.0"
 
@@ -114,6 +114,7 @@ __all__ = [
     "IntegrityError",
     "IsolationLevel",
     "JoinedSelectQuery",
+    "Json",
     "Literal",
     "LogicalOp",
     "MultiPreloadSelectQuery",
