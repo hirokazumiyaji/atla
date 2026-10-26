@@ -108,7 +108,7 @@ class FakeAsyncpgConnection:
         return f"COPY {len(rows)}"
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[None]:
+    async def transaction(self, **kwargs: Any) -> AsyncGenerator[None]:
         self.calls.append("transaction")
         yield None
 
@@ -143,9 +143,13 @@ class FakeAsyncmyConnection:
         self.began = 0
         self.committed = 0
         self.rolled_back = 0
+        self._autocommit = False
 
     def cursor(self) -> FakeAsyncmyCursor:
         return self.cursor_obj
+
+    def get_autocommit(self) -> bool:
+        return self._autocommit
 
     async def begin(self) -> None:
         self.began += 1
@@ -657,3 +661,119 @@ async def test_asyncpg_pool_blocks_nested_outer_transaction() -> None:
             async with adapter.transaction():
                 pass
         assert await tx.fetch_all("SELECT 1") == [(1, "alice")]
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_transaction_start_error_releases_connection() -> None:
+    conn = FakeAsyncmyConnection()
+    pool = FakeAsyncmyPool(conn)
+    adapter = AsyncmyAdapter(pool, dialect=MySQLDialect())
+
+    with pytest.raises(ValueError, match="deferrable transactions"):
+        async with adapter.transaction(deferrable=True):
+            pass
+
+    assert pool.released == 1
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_autocommit_false_commits_outside_transaction() -> None:
+    conn = FakeAsyncmyConnection()
+    conn._autocommit = False
+    adapter = AsyncmyAdapter(conn, dialect=MySQLDialect())
+
+    assert conn.committed == 0
+    await adapter.execute("INSERT INTO t VALUES (1)")
+    assert conn.committed == 1
+    await adapter.execute_many("INSERT INTO t VALUES (%s)", [(2,), (3,)])
+    assert conn.committed == 2
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_savepoint_deadlock_does_not_mask_original_error() -> None:
+    import asyncmy
+
+    from atla.errors import SerializationError
+
+    conn = FakeAsyncmyConnection()
+    pool = FakeAsyncmyPool(conn)
+    adapter = AsyncmyAdapter(pool, dialect=MySQLDialect())
+
+    class DeadlockCursor(FakeAsyncmyCursor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_rollback_sp = False
+
+        async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+            if "ROLLBACK TO SAVEPOINT" in sql and self.fail_rollback_sp:
+                raise asyncmy.errors.OperationalError(1305, "SAVEPOINT does not exist")
+            return await super().execute(sql, params)
+
+    cursor = DeadlockCursor()
+    conn.cursor_obj = cursor
+
+    with pytest.raises(SerializationError):
+        async with adapter.transaction() as tx:
+            async with tx.transaction():
+                cursor.fail_rollback_sp = True
+                raise asyncmy.errors.OperationalError(
+                    1213, "Deadlock found when trying to get lock"
+                )
+
+
+@pytest.mark.asyncio
+async def test_adapter_guards_single_connection_and_nested_transactions() -> None:
+    # 1. Asyncmy single connection and nested
+    conn = FakeAsyncmyConnection()
+    adapter = AsyncmyAdapter(conn, dialect=MySQLDialect())
+
+    async with adapter.transaction() as my_tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await adapter.fetch_all("SELECT 1")
+        async with my_tx.transaction() as nested:
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await my_tx.fetch_all("SELECT 1")
+            assert await nested.fetch_all("SELECT 1") == [(1, "alice")]
+
+    # 2. Asyncpg single connection and nested
+    pg_conn = FakeAsyncpgConnection()
+    pg_adapter = AsyncpgAdapter(pg_conn, dialect=PostgresDialect())
+
+    async with pg_adapter.transaction() as pg_tx:
+        with pytest.raises(RuntimeError, match="active transaction"):
+            await pg_adapter.fetch_all("SELECT 1")
+        async with pg_tx.transaction() as nested_pg:
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await pg_tx.fetch_all("SELECT 1")
+            assert await nested_pg.fetch_all("SELECT 1") == [(1, "alice")]
+
+    # 3. Aiosqlite single connection and nested
+    sqlite_conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    sqlite_adapter = AiosqliteAdapter(sqlite_conn)
+    try:
+        await sqlite_adapter.execute("CREATE TABLE t (id INT)")
+        async with sqlite_adapter.transaction() as sq_tx:
+            with pytest.raises(RuntimeError, match="active transaction"):
+                await sqlite_adapter.fetch_all("SELECT * FROM t")
+            async with sq_tx.transaction() as nested_sq:
+                with pytest.raises(RuntimeError, match="active transaction"):
+                    await sq_tx.fetch_all("SELECT * FROM t")
+                assert await nested_sq.fetch_all("SELECT * FROM t") == []
+    finally:
+        await sqlite_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_asyncmy_pool_release_error_does_not_mask_transaction_error() -> None:
+    conn = FakeAsyncmyConnection()
+
+    class FailingReleasePool(FakeAsyncmyPool):
+        async def release(self, conn: FakeAsyncmyConnection) -> None:
+            raise RuntimeError("release failed")
+
+    pool = FailingReleasePool(conn)
+    adapter = AsyncmyAdapter(pool, dialect=MySQLDialect())
+
+    with pytest.raises(RuntimeError, match="tx error"):
+        async with adapter.transaction():
+            raise RuntimeError("tx error")
