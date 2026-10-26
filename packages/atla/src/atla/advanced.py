@@ -15,6 +15,8 @@ from atla.select_clauses import (
     fetch_first,
     fetch_one,
     lock_of_targets,
+    validate_limit,
+    validate_offset,
     write_distinct,
     write_group_having,
     write_locking,
@@ -327,12 +329,14 @@ class UpsertQuery[RecordT]:
         if not pairs:
             msg = "do_update() requires at least one column"
             raise ValueError(msg)
+        merged = dict(self._set_values)
+        merged.update(pairs)
         return type(self)(
             self._adapter,
             table_name=self._table_name,
             values=self._values,
             conflict_columns=self._conflict_columns,
-            set_values=pairs,
+            set_values=tuple(merged.items()),
             do_nothing=False,
             returning=self._returning,
         )
@@ -560,10 +564,10 @@ class ProjectedSelectQuery[*Ts]:
         return self._clone(order_by=self._order_by + clauses)
 
     def limit(self, n: int) -> ProjectedSelectQuery[*Ts]:
-        return self._clone(limit=n, replace_limit=True)
+        return self._clone(limit=validate_limit(n), replace_limit=True)
 
     def offset(self, n: int) -> ProjectedSelectQuery[*Ts]:
-        return self._clone(offset=n, replace_offset=True)
+        return self._clone(offset=validate_offset(n), replace_offset=True)
 
     def group_by(self, *exprs: Expr[Any]) -> ProjectedSelectQuery[*Ts]:
         if not exprs:
@@ -723,6 +727,52 @@ class ProjectedSelectQuery[*Ts]:
 
     async def one(self) -> tuple[*Ts]:
         return await fetch_one(self._with_fetch_limit(2).all)
+
+    async def count(self) -> int:
+        """Return total rows matching WHERE (ignores LIMIT/OFFSET pagination)."""
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "count() ignores group_by/having/distinct; remove those clauses "
+                "or use select(count(...)) for grouped aggregates"
+            )
+            raise ValueError(msg)
+        compiler = SQLCompiler(self._adapter.dialect)
+        compiler.write(f"SELECT COUNT(*) FROM {self._from_sql}")
+        for prefix, on in self._join_parts:
+            compiler.write(prefix)
+            compiler.visit(and_(*on))
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        sql, params = compiler.build()
+        value = await self._adapter.fetch_val(sql, params)
+        return int(value)
+
+    async def exists(self) -> bool:
+        """Return whether any matching row exists without hydrating records."""
+        if self._group_by or self._having or self._distinct or self._distinct_on:
+            msg = (
+                "exists() ignores group_by/having/distinct; remove those clauses "
+                "or use select(...) with a subquery"
+            )
+            raise ValueError(msg)
+        if self._limit == 0:
+            return False
+        compiler = SQLCompiler(self._adapter.dialect)
+        compiler.write(f"SELECT 1 FROM {self._from_sql}")
+        for prefix, on in self._join_parts:
+            compiler.write(prefix)
+            compiler.visit(and_(*on))
+        if self._where:
+            compiler.write(" WHERE ")
+            compiler.visit(and_(*self._where))
+        compiler.write(" LIMIT ")
+        compiler.write(compiler.add_param(1))
+        if self._offset is not None:
+            compiler.write(" OFFSET ")
+            compiler.write(compiler.add_param(self._offset))
+        sql, params = compiler.build()
+        return (await self._adapter.fetch_val(sql, params)) is not None
 
     async def scalars[T](self: ProjectedSelectQuery[T]) -> list[T]:
         """Unwrap a single-column projection into a flat list."""
