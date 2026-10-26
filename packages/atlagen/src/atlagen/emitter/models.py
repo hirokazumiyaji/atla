@@ -145,7 +145,7 @@ def _decode_expr(column: ColumnIR, value: str) -> str:
     expr = column.row_codec.replace("{value}", value)
     null_prefix = f"None if {value} is None else "
     if not column.nullable and expr.startswith(null_prefix):
-        return f"({expr[len(null_prefix):]})"
+        return f"({expr[len(null_prefix) :]})"
     if column.nullable and not expr.startswith(null_prefix):
         return f"(None if {value} is None else ({expr}))"
     return f"({expr})"

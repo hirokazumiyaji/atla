@@ -247,4 +247,3 @@ def test_mysql_and_sqlite_codec_evaluation() -> None:
         eval_scope,
     )
     assert decode_sq_time("14:30:15") == time(14, 30, 15)
-

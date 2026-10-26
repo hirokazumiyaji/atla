@@ -66,7 +66,7 @@ def write_group_having(
 
 def validate_limit(n: int) -> int:
     """Validate LIMIT argument; reject negative values and booleans."""
-    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:  # pyright: ignore[reportUnnecessaryIsInstance]
         msg = f"limit must be a non-negative integer, got {n!r}"
         raise ValueError(msg)
     return n
@@ -74,7 +74,7 @@ def validate_limit(n: int) -> int:
 
 def validate_offset(n: int) -> int:
     """Validate OFFSET argument; reject negative values and booleans."""
-    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:  # pyright: ignore[reportUnnecessaryIsInstance]
         msg = f"offset must be a non-negative integer, got {n!r}"
         raise ValueError(msg)
     return n

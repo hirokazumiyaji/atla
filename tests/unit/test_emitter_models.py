@@ -133,4 +133,3 @@ def test_array_row_codec_nullability() -> None:
     assert "([(Role(item)) for item in c1])" in source
     assert "None if c1 is None" not in source
     assert "None if c2 is None" in source
-

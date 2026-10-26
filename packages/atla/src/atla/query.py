@@ -1555,7 +1555,7 @@ class PreloadSelectQuery[ParentT, ChildT]:
         return self._clone(self._parent.offset(validate_offset(n)))
 
     def _with_fetch_limit(self, maximum: int) -> PreloadSelectQuery[ParentT, ChildT]:
-        return self._clone(self._parent._with_fetch_limit(maximum))
+        return self._clone(self._parent._with_fetch_limit(maximum))  # pyright: ignore[reportPrivateUsage]
 
     def preload[OtherT](
         self,
@@ -1747,7 +1747,7 @@ class PreloadOneSelectQuery[ChildT, ParentT]:
         return self._clone(self._parent.offset(validate_offset(n)))
 
     def _with_fetch_limit(self, maximum: int) -> PreloadOneSelectQuery[ChildT, ParentT]:
-        return self._clone(self._parent._with_fetch_limit(maximum))
+        return self._clone(self._parent._with_fetch_limit(maximum))  # pyright: ignore[reportPrivateUsage]
 
     def preload[OtherT](
         self,
@@ -1931,7 +1931,7 @@ class MultiPreloadSelectQuery[ParentT, *Ts]:
         return self._clone(self._parent.offset(validate_offset(n)))
 
     def _with_fetch_limit(self, maximum: int) -> MultiPreloadSelectQuery[ParentT, *Ts]:
-        return self._clone(self._parent._with_fetch_limit(maximum))
+        return self._clone(self._parent._with_fetch_limit(maximum))  # pyright: ignore[reportPrivateUsage]
 
     def preload[OtherT](
         self,

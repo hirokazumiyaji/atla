@@ -76,7 +76,7 @@ class UsersTable(TableRef[UserRecord]):
     __slots__ = ("id", "name", "org_id")
     __table_name__ = "users"
     _COLUMNS = ("id", "name", "org_id")
-    _ROW_MAPPER = UserRecord._from_row
+    _ROW_MAPPER = UserRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
     def __init__(self, alias: str | None = None) -> None:
         super().__init__(alias)
@@ -90,7 +90,7 @@ class PostsTable(TableRef[PostRecord]):
     __slots__ = ("id", "title", "user_id")
     __table_name__ = "posts"
     _COLUMNS = ("id", "user_id", "title")
-    _ROW_MAPPER = PostRecord._from_row
+    _ROW_MAPPER = PostRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
     def __init__(self, alias: str | None = None) -> None:
         super().__init__(alias)
@@ -104,7 +104,7 @@ class OrgsTable(TableRef[OrgRecord]):
     __slots__ = ("id", "name")
     __table_name__ = "orgs"
     _COLUMNS = ("id", "name")
-    _ROW_MAPPER = OrgRecord._from_row
+    _ROW_MAPPER = OrgRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
     def __init__(self, alias: str | None = None) -> None:
         super().__init__(alias)
@@ -163,7 +163,7 @@ class UserQuery(BaseSelectQuery[UserRecord]):
     _COLUMN_COUNT = 3
     _SELECT_SQL = 'SELECT "users"."id", "users"."name", "users"."org_id" FROM "users"'
     _COUNT_SQL = 'SELECT COUNT(*) FROM "users"'
-    _ROW_MAPPER = UserRecord._from_row
+    _ROW_MAPPER = UserRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
     def with_posts(self) -> PreloadSelectQuery[UserRecord, PostRecord]:
         return self.preload(
@@ -189,14 +189,14 @@ class InsertQuery(BaseInsertQuery[UserRecord]):
     __slots__ = ()
     _TABLE_NAME = '"users"'
     _RETURNING_COLS = '"id", "name"'
-    _ROW_MAPPER = UserRecord._from_row
+    _ROW_MAPPER = UserRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
 
 class UpdateQuery(BaseUpdateQuery[UserRecord]):
     __slots__ = ()
     _TABLE_NAME = '"users"'
     _RETURNING_COLS = '"id", "name"'
-    _ROW_MAPPER = UserRecord._from_row
+    _ROW_MAPPER = UserRecord._from_row  # pyright: ignore[reportPrivateUsage]
 
     def set(self, **columns: Any) -> UpdateQuery:
         return self._set_values(**columns)

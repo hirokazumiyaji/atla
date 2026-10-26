@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from atla.adapter.base import CopyAdapter, DBAdapter
+from atla.adapter.base import DBAdapter, is_copy_adapter
 from atla.dialect import Dialect
 from atla.observability.sql_meta import extract_sql_meta
 
@@ -59,6 +59,11 @@ class InstrumentedAdapter:
         self._on_error = on_error
 
     @property
+    def supports_copy(self) -> bool:
+        """Return True if the wrapped adapter supports bulk COPY."""
+        return is_copy_adapter(self._inner)
+
+    @property
     def dialect(self) -> Dialect:
         return self._inner.dialect
 
@@ -68,7 +73,7 @@ class InstrumentedAdapter:
         params: Sequence[Any] | None,
         coro: Awaitable[T],
     ) -> T:
-        operation, collection = extract_sql_meta(sql)
+        operation, collection = extract_sql_meta(sql, self.dialect)
         started = time.perf_counter()
         try:
             result = await coro
@@ -122,7 +127,7 @@ class InstrumentedAdapter:
     ) -> int:
         """Time a bulk ``COPY`` and forward it to the wrapped adapter."""
         inner = self._inner
-        if not isinstance(inner, CopyAdapter):
+        if not is_copy_adapter(inner):
             msg = "wrapped adapter does not support copy_records_to_table"
             raise TypeError(msg)
         # COPY has no SQL text of its own; synthesize one for hooks / logs.

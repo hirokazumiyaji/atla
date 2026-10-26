@@ -109,4 +109,3 @@ def test_postgres_array_elements_encoded_recursively() -> None:
     # Json wrapper forces json serialization even on native_array dialect
     assert dialect.encode_param(Json([1, 2, 3])) == "[1,2,3]"
     assert dialect.encode_param(Json({"a": [1, 2]})) == '{"a":[1,2]}'
-

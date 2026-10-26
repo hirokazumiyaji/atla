@@ -79,6 +79,11 @@ class AsyncmyAdapter:
             self._tx_state = _tx_state if _tx_state is not None else _TxState(_depth)
 
     @property
+    def supports_copy(self) -> bool:
+        """Return False: MySQL/asyncmy does not support PostgreSQL binary COPY."""
+        return False
+
+    @property
     def dialect(self) -> Dialect:
         return self._dialect
 

@@ -109,6 +109,7 @@ async def test_instrumented_adapter_times_copy_with_synthesized_sql() -> None:
     assert copied == 1
     assert inner.calls == [("copy_records_to_table", "users", [[1, "a@example.com"]])]
     assert seen and seen[0][0] == "COPY"
+    assert seen[0][1] == "users"
 
 
 @pytest.mark.asyncio
@@ -148,6 +149,7 @@ async def test_otel_adapter_records_copy_span() -> None:
     assert len(spans) == 1
     attrs = dict(spans[0].attributes or {})
     assert attrs["db.operation.name"] == "COPY"
+    assert attrs["db.collection.name"] == "users"
     assert attrs["db.response.returned_rows"] == 2
 
 

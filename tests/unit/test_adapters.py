@@ -679,7 +679,7 @@ async def test_asyncmy_transaction_start_error_releases_connection() -> None:
 @pytest.mark.asyncio
 async def test_asyncmy_autocommit_false_commits_outside_transaction() -> None:
     conn = FakeAsyncmyConnection()
-    conn._autocommit = False
+    conn._autocommit = False  # pyright: ignore[reportPrivateUsage]
     adapter = AsyncmyAdapter(conn, dialect=MySQLDialect())
 
     assert conn.committed == 0

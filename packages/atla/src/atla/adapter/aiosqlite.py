@@ -71,6 +71,11 @@ class AiosqliteAdapter:
         return self._tx_state.active_depth != self._depth
 
     @property
+    def supports_copy(self) -> bool:
+        """Return False: SQLite does not support bulk COPY."""
+        return False
+
+    @property
     def dialect(self) -> Dialect:
         return self._dialect
 

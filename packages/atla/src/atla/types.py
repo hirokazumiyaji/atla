@@ -35,5 +35,6 @@ class Json[T]:
         return f"Json({self.value!r})"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Json) and self.value == other.value
-
+        if isinstance(other, Json):
+            return bool(self.value == other.value)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportUnknownArgumentType]
+        return False

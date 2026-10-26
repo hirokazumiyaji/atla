@@ -244,8 +244,7 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
     for column in optional:
         value_type = column.python_type or column.base_python_type
         lines.append(
-            f"        {column.attr_name}: {value_type} | "
-            f"Expr[{value_type}] | UnsetType = UNSET,"
+            f"        {column.attr_name}: {value_type} | Expr[{value_type}] | UnsetType = UNSET,"
         )
     lines.append(f"    ) -> {table.model_name}InsertBuilder:")
     lines.extend(

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from functools import cache
 from typing import Any
 
-from atla.adapter.base import CopyAdapter, DBAdapter
+from atla.adapter.base import DBAdapter, is_copy_adapter
 from atla.dialect import Dialect
 from atla.observability.instrumented import transaction_kwargs
 from atla.observability.sql_meta import extract_sql_meta
@@ -151,6 +151,11 @@ class OTelAdapter:
         return clone
 
     @property
+    def supports_copy(self) -> bool:
+        """Return True if the wrapped adapter supports bulk COPY."""
+        return is_copy_adapter(self._inner)
+
+    @property
     def dialect(self) -> Dialect:
         return self._inner.dialect
 
@@ -185,7 +190,7 @@ class OTelAdapter:
         row_count: Callable[[T], int | None] | None = None,
     ) -> T:
         _, _, _, _, SpanKind = _require_otel()
-        operation, collection = extract_sql_meta(sql)
+        operation, collection = extract_sql_meta(sql, self._dialect_name)
         span_name = f"{operation} {collection}" if collection else operation
         # Low-cardinality labels only — never put SQL text or parameter values on
         # metric attribute sets (cardinality explosion + credential leakage).
@@ -275,7 +280,7 @@ class OTelAdapter:
     ) -> int:
         """Trace a bulk ``COPY`` and forward it to the wrapped adapter."""
         inner = self._inner
-        if not isinstance(inner, CopyAdapter):
+        if not is_copy_adapter(inner):
             msg = "wrapped adapter does not support copy_records_to_table"
             raise TypeError(msg)
         # COPY carries no SQL text; synthesize one so spans still get an operation.

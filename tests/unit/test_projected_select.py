@@ -128,4 +128,3 @@ async def test_projected_select_applies_decoder_on_aliased_column() -> None:
     )
     rows = await ItemQuery(adapter).select(created.as_("ts")).all()
     assert rows == [(datetime(2024, 1, 2, 3, 4, 5),)]
-

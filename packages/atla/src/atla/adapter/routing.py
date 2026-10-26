@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from atla.adapter.base import CopyAdapter, DBAdapter, IsolationLevel
+from atla.adapter.base import DBAdapter, IsolationLevel, is_copy_adapter
 from atla.dialect import Dialect
 
 # Postgres/MySQL row locks that must hit primary (incl. weaker / MySQL variants).
@@ -86,12 +86,20 @@ class RoutingAdapter:
         *,
         strategy: Literal["round_robin", "random"] = "round_robin",
     ) -> None:
+        if strategy not in ("round_robin", "random"):
+            msg = f"Unknown routing strategy {strategy!r}; expected 'round_robin' or 'random'"
+            raise ValueError(msg)
         if not replicas:
             replicas = (primary,)
         self._primary = primary
         self._replicas = tuple(replicas)
         self._strategy = strategy
         self._rr = itertools.cycle(range(len(self._replicas)))
+
+    @property
+    def supports_copy(self) -> bool:
+        """Return True if the primary adapter supports bulk COPY."""
+        return is_copy_adapter(self._primary)
 
     @property
     def dialect(self) -> Dialect:
@@ -131,7 +139,7 @@ class RoutingAdapter:
     ) -> int:
         """Forward the bulk ``COPY`` path to the primary adapter."""
         primary = self._primary
-        if not isinstance(primary, CopyAdapter):
+        if not is_copy_adapter(primary):
             msg = "primary adapter does not support copy_records_to_table"
             raise TypeError(msg)
         return await primary.copy_records_to_table(table, columns=columns, records=records)

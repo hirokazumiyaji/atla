@@ -19,9 +19,7 @@ _NATIVE_BOOL_DIALECTS = frozenset({"postgres", "cockroach", "sqlite"})
 _NATIVE_JSON_DIALECTS: frozenset[str] = frozenset()
 _NATIVE_DECIMAL_DIALECTS = frozenset({"postgres", "cockroach"})
 
-_JSON_ROW_CODEC = (
-    "json.loads({value}) if isinstance({value}, (str, bytes, bytearray)) else {value}"
-)
+_JSON_ROW_CODEC = "json.loads({value}) if isinstance({value}, (str, bytes, bytearray)) else {value}"
 
 
 @dataclass(slots=True, frozen=True)

@@ -241,9 +241,11 @@ async def _exercise_client(client: Any, *, models: Any, supports_returning: bool
     assert fetched is not None and fetched.name == "Bob"
     assert await prepared.first(email="missing@example.com") is None
 
-    async with client.transaction():
-        await client.user.update().set(name="Alicia").where(user_model.id == user_id).execute()
-        updated = await client.user.where(user_model.id == user_id).one()
+    async with client.transaction() as tx:
+        with pytest.raises(RuntimeError, match="connection is checked out"):
+            await client.user.where(user_model.id == user_id).one()
+        await tx.user.update().set(name="Alicia").where(user_model.id == user_id).execute()
+        updated = await tx.user.where(user_model.id == user_id).one()
         assert updated.name == "Alicia"
 
     await client.post.delete().where(post_model.user_id == user_id).execute()
