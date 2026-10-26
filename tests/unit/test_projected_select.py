@@ -116,3 +116,16 @@ async def test_projected_select_scalar_one_and_multi_column_error() -> None:
     assert only == 7
     with pytest.raises(ValueError, match="single-column"):
         await ItemQuery(adapter).select(id_col, id_col).scalars()  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_projected_select_applies_decoder_on_aliased_column() -> None:
+    adapter = _FakeAdapter(rows=[("2024-01-02T03:04:05",)])
+    created = Column[datetime](
+        "items",
+        "created_at",
+        decoder=lambda v: datetime.fromisoformat(v) if isinstance(v, str) else v,
+    )
+    rows = await ItemQuery(adapter).select(created.as_("ts")).all()
+    assert rows == [(datetime(2024, 1, 2, 3, 4, 5),)]
+

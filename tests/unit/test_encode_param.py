@@ -14,6 +14,7 @@ import pytest
 from atla.compiler import SQLCompiler
 from atla.dialect import CockroachDialect, MySQLDialect, PostgresDialect, SQLiteDialect
 from atla.expressions import Column, Literal
+from atla.types import Json
 
 
 class Role(StrEnum):
@@ -97,3 +98,15 @@ def test_postgres_list_param_stays_native_array() -> None:
 def test_non_array_dialects_json_encode_list_param() -> None:
     for dialect in (SQLiteDialect(), MySQLDialect()):
         assert dialect.encode_params([[1, 2]]) == ("[1,2]",)
+
+
+def test_postgres_array_elements_encoded_recursively() -> None:
+    dialect = PostgresDialect()
+    # list[Enum]
+    assert dialect.encode_param([Role.ADMIN, Role.USER]) == ["admin", "user"]
+    # list[dict] (jsonb[] elements serialized to JSON strings for driver)
+    assert dialect.encode_param([{"a": 1}, {"b": 2}]) == ['{"a":1}', '{"b":2}']
+    # Json wrapper forces json serialization even on native_array dialect
+    assert dialect.encode_param(Json([1, 2, 3])) == "[1,2,3]"
+    assert dialect.encode_param(Json({"a": [1, 2]})) == '{"a":[1,2]}'
+

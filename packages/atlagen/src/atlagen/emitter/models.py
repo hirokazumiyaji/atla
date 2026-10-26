@@ -12,6 +12,21 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
             if column.import_symbol is not None:
                 imports.add(column.import_symbol)
 
+    needs_datetime = any(
+        column.row_codec and "datetime." in column.row_codec
+        for table in schema.tables
+        for column in table.columns
+    )
+    needs_timedelta = any(
+        column.row_codec and "timedelta" in column.row_codec
+        for table in schema.tables
+        for column in table.columns
+    )
+    if needs_datetime:
+        imports.add(("datetime", "datetime"))
+    if needs_timedelta:
+        imports.add(("datetime", "timedelta"))
+
     needs_json = any(
         column.row_codec and "json." in column.row_codec
         for table in schema.tables
@@ -41,7 +56,7 @@ def emit_models(schema: SchemaIR, *, frozen: bool = True) -> str:
         [
             "from dataclasses import dataclass",
             f"from typing import {', '.join(typing_imports)}",
-            "from atla.expressions import Column",
+            "from atla.expressions import Column, Expr",
             "from atla.table import TableRef",
         ]
     )
@@ -85,7 +100,8 @@ def _emit_insert_param(table: TableIR) -> list[str]:
         lines.append("    pass")
         return lines
     for column in table.columns:
-        value_type = (column.python_type or column.base_python_type or "Any").strip() or "Any"
+        raw_val = (column.python_type or column.base_python_type or "Any").strip() or "Any"
+        value_type = f"{raw_val} | Expr[{raw_val}]"
         required = not column.nullable and not column.has_default
         wrapper = "Required" if required else "NotRequired"
         lines.append(f"    {column.attr_name}: {wrapper}[{value_type}]")
@@ -127,7 +143,10 @@ def _decode_expr(column: ColumnIR, value: str) -> str:
     if column.row_codec is None:
         return value
     expr = column.row_codec.replace("{value}", value)
-    if column.nullable:
+    null_prefix = f"None if {value} is None else "
+    if not column.nullable and expr.startswith(null_prefix):
+        return f"({expr[len(null_prefix):]})"
+    if column.nullable and not expr.startswith(null_prefix):
         return f"(None if {value} is None else ({expr}))"
     return f"({expr})"
 

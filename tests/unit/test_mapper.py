@@ -101,12 +101,35 @@ def test_mysql_tinyint_bool_and_inline_enum() -> None:
     assert mapped.row_codec is not None
     assert "UserStatusEnum({value})" in mapped.row_codec
 
+    js = resolve_sql_type("json", dialect="mysql")
+    assert js.base_python_type == "Any"
+    assert js.row_codec is not None
+    assert "json.loads" in js.row_codec
+
+    tm = resolve_sql_type("time", dialect="mysql")
+    assert tm.base_python_type == "time"
+    assert tm.import_symbol == ("datetime", "time")
+    assert tm.row_codec is not None
+    assert "timedelta" in tm.row_codec
+    assert "datetime.min" in tm.row_codec
+
 
 def test_sqlite_codecs() -> None:
     dt = resolve_sql_type("DATETIME", dialect="sqlite")
     assert dt.base_python_type == "datetime"
     assert dt.row_codec is not None
     assert "fromisoformat" in dt.row_codec
+
+    tm = resolve_sql_type("time", dialect="sqlite")
+    assert tm.base_python_type == "time"
+    assert tm.import_symbol == ("datetime", "time")
+    assert tm.row_codec is not None
+    assert "fromisoformat" in tm.row_codec
+
+    tmtz = resolve_sql_type("timetz", dialect="sqlite")
+    assert tmtz.base_python_type == "time"
+    assert tmtz.row_codec is not None
+    assert "fromisoformat" in tmtz.row_codec
 
     uuid = resolve_sql_type("uuid", dialect="sqlite")
     assert uuid.row_codec is not None
@@ -155,15 +178,15 @@ def test_postgres_enum_array() -> None:
     assert mapping.base_python_type == "list[Status]"
     assert mapping.import_symbol == (".enums", "Status")
     assert mapping.row_codec is not None
-    assert "Status(v)" in mapping.row_codec
+    assert "Status(item)" in mapping.row_codec
 
 
 def test_sqlite_array_preserves_element_codec() -> None:
     mapping = resolve_sql_type("uuid[]", dialect="sqlite")
     assert mapping.base_python_type == "list[UUID]"
     assert mapping.row_codec is not None
-    assert "UUID(v)" in mapping.row_codec
-    assert "for v in" in mapping.row_codec
+    assert "UUID(item)" in mapping.row_codec
+    assert "for item in" in mapping.row_codec
     assert "or ()" not in mapping.row_codec
     assert "None if {value} is None" in mapping.row_codec
 
@@ -172,3 +195,56 @@ def test_cockroach_and_tidb_aliases() -> None:
     assert resolve_sql_type("int8", dialect="cockroach").base_python_type == "int"
     assert resolve_sql_type("varchar(64)", dialect="tidb").base_python_type == "str"
     assert resolve_sql_type("tinyint(1)", dialect="tidb").base_python_type == "bool"
+
+
+def test_mysql_and_sqlite_codec_evaluation() -> None:
+    import json
+    from datetime import datetime, time, timedelta
+
+    eval_scope = {
+        "json": json,
+        "datetime": datetime,
+        "time": time,
+        "timedelta": timedelta,
+    }
+
+    # MySQL JSON
+    js_map = resolve_sql_type("json", dialect="mysql")
+    assert js_map.row_codec is not None
+    decode_json = eval(
+        f"lambda value: {js_map.row_codec.replace('{value}', 'value')}",
+        eval_scope,
+    )
+    assert decode_json('{"foo": 123}') == {"foo": 123}
+    assert decode_json(b'{"foo": 123}') == {"foo": 123}
+    assert decode_json({"already": "parsed"}) == {"already": "parsed"}
+
+    # MySQL TIME (asyncmy yields timedelta)
+    tm_map = resolve_sql_type("time", dialect="mysql")
+    assert tm_map.row_codec is not None
+    decode_time = eval(
+        f"lambda value: {tm_map.row_codec.replace('{value}', 'value')}",
+        eval_scope,
+    )
+    td = timedelta(hours=14, minutes=30, seconds=15, microseconds=500)
+    assert decode_time(td) == time(14, 30, 15, 500)
+    assert decode_time("14:30:15") == time(14, 30, 15)
+    assert decode_time(time(14, 30, 15)) == time(14, 30, 15)
+    # Negative timedelta / string should not raise OverflowError and remain as duration
+    neg_td = timedelta(hours=-8, minutes=-30)
+    assert decode_time(neg_td) == neg_td
+    assert decode_time("-08:30:00") == "-08:30:00"
+    # Durations beyond 24 hours cannot be represented by datetime.time and remain as duration
+    over_24h_td = timedelta(hours=25, minutes=10)
+    assert decode_time(over_24h_td) == over_24h_td
+    assert decode_time("25:10:00") == "25:10:00"
+
+    # SQLite TIME
+    sq_tm_map = resolve_sql_type("time", dialect="sqlite")
+    assert sq_tm_map.row_codec is not None
+    decode_sq_time = eval(
+        f"lambda value: {sq_tm_map.row_codec.replace('{value}', 'value')}",
+        eval_scope,
+    )
+    assert decode_sq_time("14:30:15") == time(14, 30, 15)
+

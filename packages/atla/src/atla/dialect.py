@@ -10,6 +10,8 @@ from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 from uuid import UUID
 
+from atla.types import Json
+
 _REQUIRED_DIALECT_ATTRS = (
     "name",
     "quote_char",
@@ -144,8 +146,13 @@ class Dialect:
             return value if self.native_datetime else value.isoformat()
         if isinstance(value, time):
             return value if self.native_datetime else value.isoformat()
+        if isinstance(value, Json):
+            return json.dumps(value.value, separators=(",", ":"), default=str)
         if isinstance(value, list):
             if self.native_array:
+                encoded = [self.encode_param(elem) for elem in value]
+                if any(e is not elem for e, elem in zip(encoded, value, strict=True)):
+                    return encoded
                 return cast("list[object]", value)
             return json.dumps(value, separators=(",", ":"), default=str)
         if isinstance(value, dict):

@@ -98,3 +98,39 @@ def test_non_null_single_pk_emits_indexes() -> None:
     )
     source = emit_models(schema)
     assert "_PK_INDEXES = (0,)" in source
+
+
+def test_array_row_codec_nullability() -> None:
+    schema = SchemaIR(
+        name="public",
+        dialect="postgres",
+        tables=(
+            TableIR(
+                name="users",
+                model_name="User",
+                accessor_name="user",
+                columns=(
+                    _col("id", raw_type="bigint", is_primary_key=True),
+                    _col(
+                        "roles",
+                        raw_type="role[]",
+                        nullable=False,
+                        row_codec="None if {value} is None else [(Role(item)) for item in {value}]",
+                    ),
+                    _col(
+                        "opt_roles",
+                        raw_type="role[]",
+                        nullable=True,
+                        row_codec="None if {value} is None else [(Role(item)) for item in {value}]",
+                    ),
+                ),
+                primary_key=("id",),
+                foreign_keys=(),
+            ),
+        ),
+    )
+    source = emit_models(schema)
+    assert "([(Role(item)) for item in c1])" in source
+    assert "None if c1 is None" not in source
+    assert "None if c2 is None" in source
+

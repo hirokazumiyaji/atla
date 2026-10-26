@@ -237,10 +237,16 @@ def _emit_table_builders(table: TableIR, *, schema: SchemaIR, dialect: str) -> l
     ]
     optional = [column for column in table.columns if column.nullable or column.has_default]
     for column in required:
-        lines.append(f"        {column.attr_name}: {column.base_python_type},")
+        lines.append(
+            f"        {column.attr_name}: {column.base_python_type} | "
+            f"Expr[{column.base_python_type}],"
+        )
     for column in optional:
         value_type = column.python_type or column.base_python_type
-        lines.append(f"        {column.attr_name}: {value_type} | UnsetType = UNSET,")
+        lines.append(
+            f"        {column.attr_name}: {value_type} | "
+            f"Expr[{value_type}] | UnsetType = UNSET,"
+        )
     lines.append(f"    ) -> {table.model_name}InsertBuilder:")
     lines.extend(
         _emit_mapped_call(

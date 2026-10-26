@@ -19,6 +19,10 @@ _NATIVE_BOOL_DIALECTS = frozenset({"postgres", "cockroach", "sqlite"})
 _NATIVE_JSON_DIALECTS: frozenset[str] = frozenset()
 _NATIVE_DECIMAL_DIALECTS = frozenset({"postgres", "cockroach"})
 
+_JSON_ROW_CODEC = (
+    "json.loads({value}) if isinstance({value}, (str, bytes, bytearray)) else {value}"
+)
+
 
 @dataclass(slots=True, frozen=True)
 class TypeMapping:
@@ -99,9 +103,9 @@ def resolve_sql_type(
     if is_array:
         array_codec: str | None = None
         if mapping.row_codec is not None:
-            element_expr = mapping.row_codec.replace("{value}", "v")
+            element_expr = mapping.row_codec.replace("{value}", "item")
             # Preserve SQL NULL; do not coerce it to an empty list.
-            array_codec = f"None if {{value}} is None else [({element_expr}) for v in {{value}}]"
+            array_codec = f"None if {{value}} is None else [({element_expr}) for item in {{value}}]"
         return TypeMapping(
             base_python_type=f"list[{mapping.base_python_type}]",
             import_symbol=mapping.import_symbol,
@@ -347,11 +351,30 @@ def _map_mysql_family(normalized: str, *, dialect: str) -> TypeMapping:
     if normalized == "date":
         return TypeMapping("date", import_symbol=("datetime", "date"))
     if normalized == "time":
-        return TypeMapping("time", import_symbol=("datetime", "time"))
+        return TypeMapping(
+            "time",
+            import_symbol=("datetime", "time"),
+            row_codec=(
+                "{value} if isinstance({value}, time) else ("
+                "(datetime.min + {value}).time() "
+                "if isinstance({value}, timedelta) "
+                "and timedelta(0) <= {value} < timedelta(days=1) else ("
+                "{value} if isinstance({value}, timedelta) or ("
+                "isinstance({value}, str) and ("
+                "{value}.startswith('-') or "
+                "(':' in {value} and int({value}.split(':', 1)[0]) >= 24)"
+                ")"
+                ") else time.fromisoformat(str({value}))))"
+            ),
+        )
     if normalized in {"datetime", "timestamp"}:
         return TypeMapping("datetime", import_symbol=("datetime", "datetime"))
     if normalized == "json":
-        return TypeMapping("Any", import_symbol=("typing", "Any"))
+        return TypeMapping(
+            "Any",
+            import_symbol=("typing", "Any"),
+            row_codec=_JSON_ROW_CODEC,
+        )
     return TypeMapping("Any", import_symbol=("typing", "Any"))
 
 
@@ -387,6 +410,12 @@ def _map_sqlite(normalized: str) -> TypeMapping:
             import_symbol=("datetime", "date"),
             row_codec=("date.fromisoformat({value}) if isinstance({value}, str) else {value}"),
         )
+    if normalized in {"time", "timetz"}:
+        return TypeMapping(
+            "time",
+            import_symbol=("datetime", "time"),
+            row_codec=("time.fromisoformat({value}) if isinstance({value}, str) else {value}"),
+        )
     if normalized == "uuid":
         return TypeMapping(
             "UUID",
@@ -397,8 +426,6 @@ def _map_sqlite(normalized: str) -> TypeMapping:
         return TypeMapping(
             "Any",
             import_symbol=("typing", "Any"),
-            row_codec=(
-                "json.loads({value}) if isinstance({value}, (str, bytes, bytearray)) else {value}"
-            ),
+            row_codec=_JSON_ROW_CODEC,
         )
     return TypeMapping("Any", import_symbol=("typing", "Any"))
