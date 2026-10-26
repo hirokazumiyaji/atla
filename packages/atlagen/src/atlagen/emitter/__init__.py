@@ -23,6 +23,7 @@ def generate_files(schema: SchemaIR, *, frozen: bool = True) -> dict[str, str]:
         "AtlaClient",
         *[enum.class_name for enum in schema.enums],
         *[f"{table.model_name}Record" for table in schema.tables],
+        *[f"{table.model_name}InsertParam" for table in schema.tables],
         *[table.model_name for table in schema.tables],
     ]
     init_lines = [
@@ -37,7 +38,10 @@ def generate_files(schema: SchemaIR, *, frozen: bool = True) -> dict[str, str]:
     if schema.tables:
         init_lines.append(
             "from .models import "
-            + ", ".join(f"{table.model_name}, {table.model_name}Record" for table in schema.tables)
+            + ", ".join(
+                f"{table.model_name}, {table.model_name}Record, {table.model_name}InsertParam"
+                for table in schema.tables
+            )
         )
     init_lines.extend(
         [

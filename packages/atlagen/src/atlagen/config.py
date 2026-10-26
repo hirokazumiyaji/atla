@@ -27,6 +27,9 @@ class AtlagenConfig:
 
 
 _OVERRIDE_KEYS = ("model_name", "accessor_name")
+_KNOWN_ATLAGEN_SETTINGS = frozenset(
+    {"dialect", "out", "schema", "dev_url", "schema_name", "frozen", "tables"}
+)
 
 
 class ConfigError(ValueError):
@@ -120,6 +123,11 @@ def resolve_config(
 ) -> AtlagenConfig:
     """Merge CLI args with pyproject settings into a validated config."""
     settings = pyproject_settings if pyproject_settings is not None else load_pyproject_settings()
+    unknown = sorted(set(settings) - _KNOWN_ATLAGEN_SETTINGS)
+    if unknown:
+        keys_str = ", ".join(repr(k) for k in unknown)
+        msg = f"[tool.atlagen] unrecognized configuration key(s): {keys_str}"
+        raise ConfigError(msg)
     dialect = _coalesce_str(args.dialect, settings.get("dialect"))
     out_value = args.out if args.out is not None else settings.get("out")
     schema = _coalesce_str(args.schema, settings.get("schema"), default="-") or "-"

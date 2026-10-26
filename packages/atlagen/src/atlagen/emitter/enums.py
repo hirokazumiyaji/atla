@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from atlagen.ir import SchemaIR
 
 
@@ -38,11 +40,9 @@ def _unique_member(value: str, used: set[str]) -> str:
 
 
 def _safe_member(value: str) -> str:
-    if value.isidentifier() and value.isupper():
-        return value
-    if value.isidentifier():
-        return value.upper()
-    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value)
-    if not cleaned or cleaned[0].isdigit():
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
+    if not cleaned:
+        return "VALUE"
+    if cleaned[0].isdigit():
         cleaned = f"V_{cleaned}"
     return cleaned.upper()
